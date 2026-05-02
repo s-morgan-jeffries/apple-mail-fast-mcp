@@ -1,6 +1,7 @@
 """Unit tests for mail connector."""
 
 import logging
+import time
 import warnings
 from unittest.mock import MagicMock, patch
 
@@ -1007,6 +1008,191 @@ class TestAppleMailConnector:
             r for r in caplog.records if r.levelno == logging.WARNING
         ]
         assert len(warning_records) == 1
+
+    # --- Issue #118: per-account circuit breaker --------------------------
+
+    def test_breaker_default_ttl_is_30s(
+        self, connector: AppleMailConnector
+    ) -> None:
+        """Class constant sanity — drift here would silently change
+        offline-burst behavior."""
+        assert connector._IMAP_BREAKER_TTL_S == 30.0
+
+    def test_breaker_starts_closed(
+        self, connector: AppleMailConnector
+    ) -> None:
+        """A fresh connector has no per-account cooldown set."""
+        assert connector._imap_failure_until == {}
+        assert connector._imap_breaker_open("iCloud") is False
+
+    def test_breaker_opens_after_first_non_benign_failure(
+        self, connector: AppleMailConnector
+    ) -> None:
+        """A LoginError (or any non-benign fallback exception) sets the
+        deadline ~TTL into the future."""
+        before = time.monotonic()
+        connector._log_imap_fallback("iCloud", LoginError("bad pw"))
+        deadline = connector._imap_failure_until["iCloud"]
+        # Deadline lands within the TTL window (allowing for sub-second
+        # scheduling jitter from the test runner).
+        assert deadline > before + connector._IMAP_BREAKER_TTL_S - 1
+        assert deadline <= before + connector._IMAP_BREAKER_TTL_S + 1
+        assert connector._imap_breaker_open("iCloud") is True
+
+    def test_breaker_does_not_open_for_keychain_miss(
+        self, connector: AppleMailConnector
+    ) -> None:
+        """Missing Keychain entry is the user's explicit opt-out — no
+        cooldown, just silent DEBUG logging. Otherwise every call to a
+        non-IMAP-configured account would consult a deadline lookup
+        before falling through."""
+        connector._log_imap_fallback(
+            "iCloud", MailKeychainEntryNotFoundError("missing")
+        )
+        assert "iCloud" not in connector._imap_failure_until
+        assert connector._imap_breaker_open("iCloud") is False
+
+    def test_breaker_resets_after_ttl(
+        self, connector: AppleMailConnector,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Once the deadline is in the past, the breaker is closed again
+        and the next call attempts IMAP organically."""
+        from apple_mail_mcp import mail_connector as mc_mod
+        # Freeze time at a known point so we can advance deterministically.
+        clock = [1000.0]
+        monkeypatch.setattr(mc_mod.time, "monotonic", lambda: clock[0])
+
+        connector._log_imap_fallback("iCloud", LoginError("bad"))
+        assert connector._imap_breaker_open("iCloud") is True
+
+        # Just before the deadline — still open.
+        clock[0] = 1000.0 + connector._IMAP_BREAKER_TTL_S - 0.1
+        assert connector._imap_breaker_open("iCloud") is True
+
+        # Past the deadline — closed.
+        clock[0] = 1000.0 + connector._IMAP_BREAKER_TTL_S + 0.1
+        assert connector._imap_breaker_open("iCloud") is False
+
+    def test_breaker_is_per_account(
+        self, connector: AppleMailConnector
+    ) -> None:
+        """Failure on iCloud must not skip IMAP for Gmail."""
+        connector._log_imap_fallback("iCloud", LoginError("rejected"))
+        assert connector._imap_breaker_open("iCloud") is True
+        assert connector._imap_breaker_open("Gmail") is False
+
+    def test_clear_breaker_removes_entry(
+        self, connector: AppleMailConnector
+    ) -> None:
+        connector._log_imap_fallback("iCloud", LoginError("rejected"))
+        assert connector._imap_breaker_open("iCloud") is True
+        connector._imap_clear_breaker("iCloud")
+        assert connector._imap_breaker_open("iCloud") is False
+        # Idempotent — clearing an already-clear account is fine.
+        connector._imap_clear_breaker("iCloud")
+        connector._imap_clear_breaker("Never-Set")
+
+    def test_search_messages_skips_imap_when_breaker_is_open(
+        self, connector: AppleMailConnector
+    ) -> None:
+        """End-to-end: open the breaker, then call search_messages —
+        the IMAP path is bypassed entirely (saving the wasted round
+        trip), AppleScript runs."""
+        connector._imap_failure_until["iCloud"] = (
+            time.monotonic() + 60  # breaker open for the next minute
+        )
+        with patch.object(
+            connector, "_imap_search"
+        ) as imap_path, patch.object(
+            connector, "_search_messages_applescript",
+            return_value=[],
+        ) as as_path:
+            connector.search_messages("iCloud", "INBOX")
+        imap_path.assert_not_called()
+        as_path.assert_called_once()
+
+    def test_successful_imap_call_clears_breaker_via_search(
+        self, connector: AppleMailConnector
+    ) -> None:
+        """A successful IMAP call after a transient failure must clear
+        the cooldown so we don't leave the breaker open longer than the
+        problem persists."""
+        # Pretend a previous failure opened the breaker.
+        connector._imap_failure_until["iCloud"] = time.monotonic() - 1  # already expired
+        # Manually re-open: a fresh failure with a future deadline.
+        connector._imap_failure_until["iCloud"] = time.monotonic() + 60
+        # Then make IMAP work normally.
+        with patch.object(
+            connector, "_imap_search", return_value=[{"id": "x"}]
+        ):
+            # We need the breaker closed to let IMAP run, then verify
+            # success clears it. The clean way: clear first, then call.
+            connector._imap_clear_breaker("iCloud")
+            connector.search_messages("iCloud", "INBOX")
+        assert "iCloud" not in connector._imap_failure_until
+
+    def test_get_message_skips_imap_when_breaker_open(
+        self, connector: AppleMailConnector
+    ) -> None:
+        """Same gate applies to get_message's hint-gated IMAP path."""
+        connector._imap_failure_until["iCloud"] = time.monotonic() + 60
+        with patch.object(
+            connector, "_imap_get_message"
+        ) as imap_path, patch.object(
+            connector, "_get_message_applescript",
+            return_value={"id": "1"},
+        ) as as_path:
+            connector.get_message("123", account="iCloud", mailbox="INBOX")
+        imap_path.assert_not_called()
+        as_path.assert_called_once()
+
+    def test_login_error_warning_includes_setup_imap_command(
+        self, connector: AppleMailConnector,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A revoked / expired app password is the most common cause of
+        LoginError. The fallback works, but the user has no way to know
+        IMAP is broken because results are correct via AppleScript. The
+        specialized WARNING text names the exact `setup-imap` command
+        so they can fix at their leisure."""
+        with caplog.at_level(
+            logging.DEBUG, logger="apple_mail_mcp.mail_connector"
+        ):
+            connector._log_imap_fallback("iCloud", LoginError("AUTHENTICATIONFAILED"))
+
+        warnings = [
+            r for r in caplog.records if r.levelno == logging.WARNING
+        ]
+        assert len(warnings) == 1
+        msg = warnings[0].getMessage()
+        assert "iCloud" in msg
+        # The actionable instruction must be present and command-perfect.
+        assert "apple-mail-mcp setup-imap --account iCloud" in msg
+        # Reassurance that the user isn't blocked.
+        assert "AppleScript fallback" in msg
+
+    def test_non_login_failure_uses_generic_warning(
+        self, connector: AppleMailConnector,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """OSError (offline / DNS / unreachable) gets the generic
+        message — there's no setup-imap command that would help."""
+        with caplog.at_level(
+            logging.DEBUG, logger="apple_mail_mcp.mail_connector"
+        ):
+            connector._log_imap_fallback("iCloud", OSError("network unreachable"))
+
+        warnings = [
+            r for r in caplog.records if r.levelno == logging.WARNING
+        ]
+        assert len(warnings) == 1
+        msg = warnings[0].getMessage()
+        # The generic message references AppleScript fallback but does
+        # NOT name a setup-imap command (would be misleading for a
+        # network-level failure).
+        assert "AppleScript" in msg
+        assert "setup-imap" not in msg
 
     # --- _imap_search helper ---------------------------------------------
 

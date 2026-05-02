@@ -204,6 +204,14 @@ def _bulk_repeat_block(
 class AppleMailConnector:
     """Interface to Apple Mail via AppleScript."""
 
+    _IMAP_BREAKER_TTL_S: float = 30.0
+    """How long to skip IMAP for an account after a fallback-triggering
+    failure. 30s is long enough to skip a tight burst of calls (typical
+    agent workloads do many calls in succession), short enough that a
+    refreshed Keychain entry or recovered network is picked up within a
+    minute. Class constant — no public knob; tune by subclassing if
+    really needed. See issue #118."""
+
     def __init__(
         self,
         timeout: int = 60,
@@ -228,13 +236,40 @@ class AppleMailConnector:
         # Subsequent failures for the same account are demoted to DEBUG per
         # invariant 5 in docs/research/imap-auth-options-decision.md.
         self._imap_failures: set[str] = set()
+        # Issue #118: per-account circuit breaker state. Maps account name
+        # to the monotonic deadline before which IMAP is skipped entirely
+        # (the orchestrator goes straight to the AppleScript path without
+        # paying the connect/login round trip).
+        self._imap_failure_until: dict[str, float] = {}
+
+    def _imap_breaker_open(self, account: str) -> bool:
+        """True if a recent IMAP failure on this account is still cooling
+        down. Callers consult this *before* attempting IMAP — when True,
+        skip IMAP entirely for this call (issue #118)."""
+        deadline = self._imap_failure_until.get(account)
+        return deadline is not None and time.monotonic() < deadline
+
+    def _imap_clear_breaker(self, account: str) -> None:
+        """Reset the cooldown for an account. Called after every
+        successful IMAP call so a transient blip doesn't leave the
+        breaker open longer than necessary."""
+        self._imap_failure_until.pop(account, None)
 
     def _log_imap_fallback(self, account: str, exc: Exception) -> None:
-        """Log an IMAP fallback event at the level specified by the invariants.
+        """Log an IMAP fallback event AND open the circuit breaker.
 
-        MailKeychainEntryNotFoundError is a benign opt-out signal — always DEBUG,
-        never tracked. For any other failure, the first per-account occurrence
-        logs WARNING; subsequent occurrences for the same account log DEBUG.
+        MailKeychainEntryNotFoundError is a benign opt-out signal — always
+        DEBUG, never tracked, never opens the breaker (the user explicitly
+        chose not to configure IMAP for this account; cooling down would
+        do nothing but cost a deadline lookup on every subsequent call).
+
+        For any other failure: the first per-account occurrence logs
+        WARNING; subsequent occurrences log DEBUG. LoginError gets a
+        specialized message that names the exact `setup-imap` command —
+        a stale/revoked Keychain password is the most common cause and
+        the AppleScript fallback would otherwise hide the breakage from
+        the user indefinitely (issue #118). For all non-benign failures,
+        the breaker opens for ``_IMAP_BREAKER_TTL_S`` seconds.
         """
         if isinstance(exc, MailKeychainEntryNotFoundError):
             logger.debug(
@@ -242,15 +277,31 @@ class AppleMailConnector:
                 account,
             )
             return
+
+        # Non-benign failure: open the breaker.
+        self._imap_failure_until[account] = (
+            time.monotonic() + self._IMAP_BREAKER_TTL_S
+        )
+
         if account not in self._imap_failures:
             self._imap_failures.add(account)
-            logger.warning(
-                "IMAP failed for %s (%s: %s), falling back to AppleScript; "
-                "subsequent failures for this account will log at DEBUG",
-                account,
-                type(exc).__name__,
-                exc,
-            )
+            if isinstance(exc, LoginError):
+                logger.warning(
+                    "IMAP login rejected for %r — likely an expired or "
+                    "revoked app password. To refresh: "
+                    "`apple-mail-mcp setup-imap --account %s`. The "
+                    "AppleScript fallback is being used in the meantime; "
+                    "results will be correct but slower.",
+                    account, account,
+                )
+            else:
+                logger.warning(
+                    "IMAP failed for %s (%s: %s), falling back to AppleScript; "
+                    "subsequent failures for this account will log at DEBUG",
+                    account,
+                    type(exc).__name__,
+                    exc,
+                )
         else:
             logger.debug(
                 "IMAP retry failed for %s: %s: %s",
@@ -940,22 +991,25 @@ class AppleMailConnector:
         Keychain entry, a revoked password, or a dropped network still gets
         working search via AppleScript.
         """
-        try:
-            return self._imap_search(
-                account,
-                mailbox,
-                sender_contains,
-                subject_contains,
-                read_status,
-                is_flagged,
-                date_from,
-                date_to,
-                has_attachment,
-                limit,
-            )
-        except _IMAP_FALLBACK_EXCS as exc:
-            self._log_imap_fallback(account, exc)
-            # fall through to AppleScript
+        if not self._imap_breaker_open(account):
+            try:
+                result = self._imap_search(
+                    account,
+                    mailbox,
+                    sender_contains,
+                    subject_contains,
+                    read_status,
+                    is_flagged,
+                    date_from,
+                    date_to,
+                    has_attachment,
+                    limit,
+                )
+                self._imap_clear_breaker(account)
+                return result
+            except _IMAP_FALLBACK_EXCS as exc:
+                self._log_imap_fallback(account, exc)
+                # fall through to AppleScript
 
         start = time.perf_counter()
         try:
@@ -1188,15 +1242,21 @@ class AppleMailConnector:
         Raises:
             MailMessageNotFoundError: Message not found via either path.
         """
-        if account is not None and mailbox is not None:
+        if (
+            account is not None
+            and mailbox is not None
+            and not self._imap_breaker_open(account)
+        ):
             try:
-                return self._imap_get_message(
+                result = self._imap_get_message(
                     account=account,
                     mailbox=mailbox,
                     message_id=message_id,
                     include_content=include_content,
                     headers_only=headers_only,
                 )
+                self._imap_clear_breaker(account)
+                return result
             except _IMAP_FALLBACK_EXCS as exc:
                 self._log_imap_fallback(account, exc)
                 # fall through to AppleScript
@@ -1561,13 +1621,19 @@ class AppleMailConnector:
         Raises:
             MailMessageNotFoundError: Message not found via either path.
         """
-        if account is not None and mailbox is not None:
+        if (
+            account is not None
+            and mailbox is not None
+            and not self._imap_breaker_open(account)
+        ):
             try:
-                return self._imap_get_attachments(
+                result = self._imap_get_attachments(
                     account=account,
                     mailbox=mailbox,
                     message_id=message_id,
                 )
+                self._imap_clear_breaker(account)
+                return result
             except _IMAP_FALLBACK_EXCS as exc:
                 self._log_imap_fallback(account, exc)
                 # fall through to AppleScript
@@ -1659,11 +1725,15 @@ class AppleMailConnector:
             MailMessageNotFoundError: If no message with the given id exists.
         """
         anchor = self._resolve_thread_anchor_applescript(message_id)
-        try:
-            return self._imap_get_thread(anchor)
-        except _IMAP_FALLBACK_EXCS as exc:
-            self._log_imap_fallback(cast(str, anchor["account"]), exc)
-            # fall through to AppleScript
+        anchor_account = cast(str, anchor["account"])
+        if not self._imap_breaker_open(anchor_account):
+            try:
+                result = self._imap_get_thread(anchor)
+                self._imap_clear_breaker(anchor_account)
+                return result
+            except _IMAP_FALLBACK_EXCS as exc:
+                self._log_imap_fallback(anchor_account, exc)
+                # fall through to AppleScript
         return self._collect_thread_applescript(anchor)
 
     def _imap_get_thread(
