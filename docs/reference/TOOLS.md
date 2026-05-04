@@ -17,7 +17,7 @@ Search for messages matching specified criteria.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `account` | string | Yes | - | Account name (e.g., "Gmail", "iCloud") |
+| `account` | string | Conditional | None | Account name (e.g., "Gmail", "iCloud"). Required when `source="all"`; ignored when `source="selected"`. |
 | `mailbox` | string | No | "INBOX" | Mailbox/folder name |
 | `sender_contains` | string | No | None | Filter by sender email or domain |
 | `subject_contains` | string | No | None | Filter by subject keywords |
@@ -27,10 +27,13 @@ Search for messages matching specified criteria.
 | `date_to` | string | No | None | Inclusive upper bound on `date_received` (full day included). ISO 8601 YYYY-MM-DD. |
 | `has_attachment` | boolean | No | None | Filter messages with (true) or without (false) attachments |
 | `limit` | integer | No | 50 | Maximum number of results to return |
+| `source` | string | No | `"all"` | `"all"` searches the given account/mailbox; `"selected"` returns Mail.app's current UI selection. |
 
 **Notes:**
 - Malformed `date_from` / `date_to` raise `error_type: validation_error`. Only ISO 8601 YYYY-MM-DD is accepted; relative dates like "7 days ago" are not supported.
 - `has_attachment` is filtered after the initial server-side match because Mail.app rejects attachment predicates inside its `whose` clause.
+- `source="selected"` (folded-in `get_selected_messages` in #131) ignores all other parameters — selection is global to Mail.app, not bound to an account/mailbox. Message bodies are always included via the `content` row field. Returns `account: null` and `mailbox: null` in the response.
+- With `source="all"` (default), omitting `account` returns `error_type: validation_error`.
 
 **Returns:**
 
@@ -61,6 +64,9 @@ search_messages(account="Gmail", read_status=False)
 
 # Find messages from specific sender
 search_messages(account="Gmail", sender_contains="john@example.com")
+
+# Return Mail.app's current UI selection (folds in get_selected_messages)
+search_messages(source="selected")
 
 # Find messages with keyword in subject
 search_messages(account="Gmail", subject_contains="invoice", limit=10)

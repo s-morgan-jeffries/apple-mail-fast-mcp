@@ -28,7 +28,6 @@ EXPECTED_TOOLS = {
     "list_rules",
     "search_messages",
     "get_message",
-    "get_selected_messages",
     "get_thread",
     "get_attachments",
     # Send / reply / forward
@@ -90,7 +89,6 @@ class TestToolRegistration:
         "tool_name,expected_required",
         [
             ("send_email", {"to", "subject", "body"}),
-            ("search_messages", {"account"}),
             ("move_messages", {"message_ids", "account", "destination_mailbox"}),
         ],
     )

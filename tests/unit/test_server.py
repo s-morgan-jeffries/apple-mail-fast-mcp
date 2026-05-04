@@ -589,6 +589,107 @@ class TestSearchMessages:
         assert result["success"] is False
         assert result["error_type"] == "unknown"
 
+    # ---- source="selected" (folded-in get_selected_messages, #131) -------
+
+    def test_source_selected_returns_selection(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        mock_mail.get_selected_messages.return_value = [
+            {
+                "id": "12345",
+                "subject": "Hello",
+                "sender": "alice@example.com",
+                "date_received": "Mon Jan 1 2024",
+                "read_status": True,
+                "flagged": False,
+                "content": "Hi there",
+            }
+        ]
+
+        result = search_messages(source="selected")
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["account"] is None
+        assert result["mailbox"] is None
+        assert result["messages"][0]["id"] == "12345"
+        assert result["messages"][0]["content"] == "Hi there"
+        mock_mail.get_selected_messages.assert_called_once_with(
+            include_content=True
+        )
+        mock_mail.search_messages.assert_not_called()
+
+    def test_source_selected_ignores_filters(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        """Filter params are silently ignored when source='selected'."""
+        mock_mail.get_selected_messages.return_value = []
+
+        result = search_messages(
+            account="Gmail",
+            mailbox="Archive",
+            sender_contains="alice@example.com",
+            subject_contains="hi",
+            read_status=False,
+            is_flagged=True,
+            date_from="2026-01-01",
+            date_to="2026-01-31",
+            has_attachment=True,
+            limit=10,
+            source="selected",
+        )
+
+        assert result["success"] is True
+        mock_mail.get_selected_messages.assert_called_once_with(
+            include_content=True
+        )
+        mock_mail.search_messages.assert_not_called()
+
+    def test_source_selected_does_not_require_account(
+        self, mock_mail: MagicMock
+    ) -> None:
+        mock_mail.get_selected_messages.return_value = []
+
+        result = search_messages(source="selected")
+
+        assert result["success"] is True
+        assert result["count"] == 0
+
+    def test_source_selected_empty_selection(
+        self, mock_mail: MagicMock
+    ) -> None:
+        mock_mail.get_selected_messages.return_value = []
+
+        result = search_messages(source="selected")
+
+        assert result["success"] is True
+        assert result["count"] == 0
+        assert result["messages"] == []
+
+    def test_source_all_without_account_returns_validation_error(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        result = search_messages()  # source defaults to "all", no account
+
+        assert result["success"] is False
+        assert result["error_type"] == "validation_error"
+        assert "account" in result["error"]
+        mock_mail.search_messages.assert_not_called()
+        mock_mail.get_selected_messages.assert_not_called()
+
+    def test_source_all_default_unchanged(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        """Regression: existing positional callers still work."""
+        mock_mail.search_messages.return_value = [{"id": "1"}]
+
+        result = search_messages("Gmail")
+
+        assert result["success"] is True
+        assert result["account"] == "Gmail"
+        mock_mail.search_messages.assert_called_once()
+        mock_mail.get_selected_messages.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # 3. get_message

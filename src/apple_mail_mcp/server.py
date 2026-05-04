@@ -4,7 +4,7 @@ FastMCP server for Apple Mail integration.
 
 import argparse
 import logging
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from fastmcp import Context, FastMCP
 from fastmcp.server.elicitation import AcceptedElicitation
@@ -570,7 +570,7 @@ def list_mailboxes(account: str) -> dict[str, Any]:
 
 @mcp.tool()
 def search_messages(
-    account: str,
+    account: str | None = None,
     mailbox: str = "INBOX",
     sender_contains: str | None = None,
     subject_contains: str | None = None,
@@ -580,14 +580,24 @@ def search_messages(
     date_to: str | None = None,
     has_attachment: bool | None = None,
     limit: int = 50,
+    source: Literal["all", "selected"] = "all",
 ) -> dict[str, Any]:
     """
     Search for messages matching criteria.
 
+    When ``source="selected"`` (folded-in ``get_selected_messages``), returns
+    the messages currently highlighted in Mail.app's UI. In that mode all
+    other parameters — ``account``, ``mailbox``, ``sender_contains``,
+    ``subject_contains``, ``read_status``, ``is_flagged``, ``date_from``,
+    ``date_to``, ``has_attachment``, ``limit`` — are silently ignored
+    (selection is global to Mail.app, not bound to an account/mailbox).
+    Message bodies are always included via the ``content`` row field.
+
     Args:
         account: Mail.app account display name (e.g., "Gmail", "iCloud") or
-            UUID (from list_accounts). Names are convenient but unstable
-            across renames; UUIDs are stable.
+            UUID (from list_accounts). Required when ``source="all"``;
+            ignored when ``source="selected"``. Names are convenient but
+            unstable across renames; UUIDs are stable.
         mailbox: Mailbox name (default: "INBOX").
         sender_contains: Filter by sender email/domain substring.
         subject_contains: Filter by subject keywords substring.
@@ -597,16 +607,43 @@ def search_messages(
         date_to: Inclusive upper bound on date received (full day included). ISO 8601 YYYY-MM-DD.
         has_attachment: Filter messages with (true) or without (false) attachments.
         limit: Maximum results to return (default: 50).
+        source: ``"all"`` (default) searches the given account/mailbox.
+            ``"selected"`` returns Mail.app's current UI selection.
 
     Returns:
         Dictionary containing matching messages. Each message row includes
-        id, subject, sender, date_received, read_status, flagged.
+        id, subject, sender, date_received, read_status, flagged. When
+        ``source="selected"``, rows additionally include ``content``.
 
     Example:
         >>> search_messages("Gmail", sender_contains="john@example.com", read_status=False, limit=10)
         {"success": True, "messages": [...], "count": 5}
+        >>> search_messages(source="selected")
+        {"success": True, "messages": [...], "count": 2}
     """
     try:
+        if source == "selected":
+            messages = mail.get_selected_messages(include_content=True)
+            operation_logger.log_operation(
+                "search_messages",
+                {"source": "selected"},
+                "success",
+            )
+            return {
+                "success": True,
+                "account": None,
+                "mailbox": None,
+                "messages": messages,
+                "count": len(messages),
+            }
+
+        if account is None:
+            return {
+                "success": False,
+                "error": "account is required when source='all'",
+                "error_type": "validation_error",
+            }
+
         safety_err = check_test_mode_safety("search_messages", account=account)
         if safety_err:
             return safety_err
@@ -748,48 +785,6 @@ def get_message(
         }
     except Exception as e:
         logger.error(f"Error getting message: {e}")
-        return {
-            "success": False,
-            "error": str(e),
-            "error_type": "unknown",
-        }
-
-
-@mcp.tool()
-def get_selected_messages(include_content: bool = True) -> dict[str, Any]:
-    """
-    Get messages currently selected in the Apple Mail application.
-
-    Returns the full details of whichever message(s) the user has highlighted
-    in Mail's message list at the time of the call.
-
-    Args:
-        include_content: Include message body text (default: true)
-
-    Returns:
-        Dictionary containing selected messages and count
-
-    Example:
-        >>> get_selected_messages()
-        {"success": True, "messages": [...], "count": 1}
-    """
-    try:
-        messages = mail.get_selected_messages(include_content=include_content)
-
-        operation_logger.log_operation(
-            "get_selected_messages",
-            {"include_content": include_content},
-            "success",
-        )
-
-        return {
-            "success": True,
-            "messages": messages,
-            "count": len(messages),
-        }
-
-    except Exception as e:
-        logger.error(f"Error getting selected messages: {e}")
         return {
             "success": False,
             "error": str(e),
