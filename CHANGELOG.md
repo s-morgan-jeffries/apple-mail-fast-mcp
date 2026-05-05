@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+**`body_contains` and `text_contains` filters on `search_messages` (#145):** Substring match against message body content (`body_contains`) or headers + body (`text_contains`, RFC 3501 `TEXT` semantics). Sub-second on the IMAP path (server-side `BODY` / `TEXT` predicates). Slow on the AppleScript fallback — measured 148s for 100 cold-cache messages on a 47k-message Gmail INBOX. AppleScript `text_contains` approximates the IMAP semantic by matching `content + subject + sender` (recipients omitted). Combinable with all other filter parameters and with `source=[ids]` scoping.
+
+**Slow-operation warnings (#146):** `search_messages` responses may include a new `warnings: list[str]` field that surfaces proactive cost concerns before slow paths run. v0.7.0 detection: when the call commits to AppleScript with `body_contains` or `text_contains` set, the response includes a warning advising IMAP setup for sub-second body search. Schema is additive — existing callers ignoring the field are unaffected, the field is omitted entirely when no warnings fire. Mechanism is general enough that future tools can opt in.
+
 ### Changed
 
 **`update_rule` absorbs `set_rule_enabled` (#130):** The standalone `set_rule_enabled` MCP tool is removed; toggle a rule's enabled state via `update_rule(rule_index, enabled=True|False)` instead. `update_rule` now prompts for confirmation only when the patch touches `conditions`, `actions`, or `match_logic` (irreversible fields); patches limited to `enabled` and/or `name` skip the prompt. Migration: callers that did `set_rule_enabled(idx, True)` should call `update_rule(idx, enabled=True)`. First of the consolidations from the #129 audit (27 → 20 tools).

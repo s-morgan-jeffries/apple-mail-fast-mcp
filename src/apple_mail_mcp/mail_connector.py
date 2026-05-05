@@ -7,6 +7,7 @@ import re
 import subprocess
 import time
 import warnings
+from collections.abc import Callable
 from datetime import date as _date
 from datetime import timedelta as _timedelta
 from pathlib import Path
@@ -940,6 +941,8 @@ class AppleMailConnector:
         has_attachment: bool | None = None,
         limit: int | None = None,
         include_attachments: bool = False,
+        body_contains: str | None = None,
+        text_contains: str | None = None,
     ) -> list[dict[str, Any]]:
         """Run search_messages through the IMAP path.
 
@@ -970,6 +973,8 @@ class AppleMailConnector:
             has_attachment=has_attachment,
             limit=limit,
             include_attachments=include_attachments,
+            body_contains=body_contains,
+            text_contains=text_contains,
         )
 
     def search_messages(
@@ -985,6 +990,9 @@ class AppleMailConnector:
         has_attachment: bool | None = None,
         limit: int | None = None,
         include_attachments: bool = False,
+        body_contains: str | None = None,
+        text_contains: str | None = None,
+        on_warning: Callable[[str], None] | None = None,
     ) -> list[dict[str, Any]]:
         """Search for messages matching criteria.
 
@@ -1001,7 +1009,17 @@ class AppleMailConnector:
         FETCH); on the AppleScript fallback, per-row attachment enumeration
         can be expensive on cold caches — see the ``include_attachments``
         notes in TOOLS.md and #142.
+
+        ``body_contains`` and ``text_contains`` filter by message content
+        (RFC 3501 ``BODY`` / ``TEXT`` semantics on IMAP; ``content of msg``
+        on AppleScript). On AppleScript these can be very slow — measured
+        148s for 100 cold-cache messages on a 47k-message INBOX. When the
+        call commits to AppleScript and a body/text filter is set,
+        ``on_warning`` (if provided) is invoked with a human-readable string
+        describing the cost. See #145 / #146.
         """
+        body_search = bool(body_contains or text_contains)
+
         if not self._imap_breaker_open(account):
             try:
                 result = self._imap_search(
@@ -1016,12 +1034,26 @@ class AppleMailConnector:
                     has_attachment,
                     limit,
                     include_attachments,
+                    body_contains,
+                    text_contains,
                 )
                 self._imap_clear_breaker(account)
                 return result
             except _IMAP_FALLBACK_EXCS as exc:
                 self._log_imap_fallback(account, exc)
                 # fall through to AppleScript
+
+        # We're committed to the AppleScript path. Warn proactively if a
+        # body/text search is set — that's the multi-order-of-magnitude
+        # slow case (#146).
+        if on_warning is not None and body_search:
+            on_warning(
+                f"AppleScript body search can take minutes on large "
+                f"mailboxes (measured 148s for 100 cold-cache messages on "
+                f"a 47k-message Gmail INBOX). Run "
+                f"`apple-mail-mcp setup-imap --account {account!r}` for "
+                f"sub-second IMAP body search."
+            )
 
         start = time.perf_counter()
         try:
@@ -1037,6 +1069,8 @@ class AppleMailConnector:
                 has_attachment,
                 limit,
                 include_attachments,
+                body_contains,
+                text_contains,
             )
         finally:
             elapsed = time.perf_counter() - start
@@ -1062,6 +1096,8 @@ class AppleMailConnector:
         has_attachment: bool | None = None,
         limit: int | None = None,
         include_attachments: bool = False,
+        body_contains: str | None = None,
+        text_contains: str | None = None,
     ) -> list[dict[str, Any]]:
         """AppleScript path for search_messages (the universal baseline).
 
@@ -1174,6 +1210,32 @@ class AppleMailConnector:
             filter_checks.append(
                 "if (count of mail attachments of msg) > 0 "
                 "then set includeThis to false"
+            )
+
+        # Body / text filters (#145). AppleScript `contains` is
+        # case-insensitive by default, matching IMAP `SEARCH BODY`/`TEXT`
+        # semantics. Reading `content of msg` is expensive — see #146 for
+        # the proactive warning surfaced before this script runs.
+        if body_contains:
+            body_safe = escape_applescript_string(sanitize_input(body_contains))
+            filter_checks.append(
+                f'if (content of msg) does not contain "{body_safe}" '
+                f'then set includeThis to false'
+            )
+
+        if text_contains:
+            # `text_contains` is the IMAP `TEXT` predicate — substring match
+            # against headers + body. AppleScript can't easily address all
+            # headers in a per-msg property; we approximate with content +
+            # subject + sender (the practical cases). Recipients omitted —
+            # callers who need recipient matching should use `sender_contains`
+            # or future params. Documented in TOOLS.md.
+            text_safe = escape_applescript_string(sanitize_input(text_contains))
+            filter_checks.append(
+                f'if not ((content of msg) contains "{text_safe}" or '
+                f'(subject of msg) contains "{text_safe}" or '
+                f'(sender of msg) contains "{text_safe}") '
+                f'then set includeThis to false'
             )
 
         # Render filter checks each on their own line, indented for the loop.

@@ -228,6 +228,8 @@ def _build_search_criteria(
     is_flagged: bool | None,
     date_from: str | None = None,
     date_to: str | None = None,
+    body_contains: str | None = None,
+    text_contains: str | None = None,
 ) -> list[Any]:
     """Translate ImapConnector.search_messages parameters to IMAP SEARCH criteria.
 
@@ -251,6 +253,10 @@ def _build_search_criteria(
         criteria.extend(["SINCE", _iso_to_imap_date(date_from, "date_from")])
     if date_to is not None:
         criteria.extend(["BEFORE", _iso_to_imap_before(date_to, "date_to")])
+    if body_contains:
+        criteria.extend(["BODY", body_contains])
+    if text_contains:
+        criteria.extend(["TEXT", text_contains])
     return criteria or ["ALL"]
 
 
@@ -496,6 +502,8 @@ class ImapConnector:
         has_attachment: bool | None = None,
         limit: int | None = None,
         include_attachments: bool = False,
+        body_contains: str | None = None,
+        text_contains: str | None = None,
     ) -> list[dict[str, Any]]:
         # Validate and translate filters before opening a connection so that
         # invalid input fails fast without the TCP-connect + LOGIN round trip.
@@ -506,6 +514,8 @@ class ImapConnector:
             is_flagged,
             date_from,
             date_to,
+            body_contains,
+            text_contains,
         )
 
         with self._session() as client:

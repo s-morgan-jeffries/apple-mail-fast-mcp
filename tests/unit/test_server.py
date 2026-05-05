@@ -11,7 +11,7 @@ operation_logger calls.
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from fastmcp.server.elicitation import (
@@ -494,6 +494,9 @@ class TestSearchMessages:
             has_attachment=None,
             limit=10,
             include_attachments=False,
+            body_contains=None,
+            text_contains=None,
+            on_warning=ANY,
         )
         mock_logger.log_operation.assert_called_once()
         logged_op, logged_params, logged_status = mock_logger.log_operation.call_args.args
@@ -552,6 +555,9 @@ class TestSearchMessages:
             has_attachment=True,
             limit=25,
             include_attachments=False,
+            body_contains=None,
+            text_contains=None,
+            on_warning=ANY,
         )
         logged_params = mock_logger.log_operation.call_args.args[1]
         assert logged_params["filters"] == {
@@ -562,6 +568,8 @@ class TestSearchMessages:
             "date_from": "2026-04-01",
             "date_to": "2026-04-15",
             "has_attachment": True,
+            "body_contains": None,
+            "text_contains": None,
         }
 
     def test_malformed_date_maps_to_validation_error(
@@ -879,6 +887,149 @@ class TestSearchMessages:
 
         first_call = mock_mail.get_message.call_args_list[0]
         assert first_call.kwargs.get("include_attachments") is True
+
+    # ---- body_contains / text_contains (#145) ---------------------------
+
+    def test_body_contains_passes_through_to_connector(
+        self, mock_mail: MagicMock
+    ) -> None:
+        mock_mail.search_messages.return_value = []
+
+        search_messages("Gmail", body_contains="urgent")
+
+        kwargs = mock_mail.search_messages.call_args.kwargs
+        assert kwargs["body_contains"] == "urgent"
+
+    def test_text_contains_passes_through_to_connector(
+        self, mock_mail: MagicMock
+    ) -> None:
+        mock_mail.search_messages.return_value = []
+
+        search_messages("Gmail", text_contains="alice")
+
+        kwargs = mock_mail.search_messages.call_args.kwargs
+        assert kwargs["text_contains"] == "alice"
+
+    def test_body_and_text_contains_both_supplied(
+        self, mock_mail: MagicMock
+    ) -> None:
+        """Both filters compose (AND)."""
+        mock_mail.search_messages.return_value = []
+
+        search_messages(
+            "Gmail", body_contains="report", text_contains="alice"
+        )
+
+        kwargs = mock_mail.search_messages.call_args.kwargs
+        assert kwargs["body_contains"] == "report"
+        assert kwargs["text_contains"] == "alice"
+
+    def test_default_no_body_or_text_contains(
+        self, mock_mail: MagicMock
+    ) -> None:
+        mock_mail.search_messages.return_value = []
+
+        search_messages("Gmail")
+
+        kwargs = mock_mail.search_messages.call_args.kwargs
+        assert kwargs["body_contains"] is None
+        assert kwargs["text_contains"] is None
+
+    def test_source_list_with_body_contains_forces_content_fetch(
+        self, mock_mail: MagicMock
+    ) -> None:
+        """source=[ids] + body_contains: per-id fetch must include content
+        so the post-filter can match against bodies."""
+        mock_mail.get_message.return_value = {
+            "id": "1",
+            "subject": "x",
+            "sender": "a@example.com",
+            "date_received": "2026-04-01",
+            "read_status": True,
+            "flagged": False,
+            "content": "this body contains urgent text",
+        }
+
+        search_messages(source=["1"], body_contains="urgent")
+
+        first_call = mock_mail.get_message.call_args_list[0]
+        # Body needed for the post-filter — include_content forced True.
+        assert first_call.kwargs.get("include_content") is True
+
+    def test_source_list_body_contains_post_filters(
+        self, mock_mail: MagicMock
+    ) -> None:
+        """source=[ids] post-filter drops rows whose body doesn't match."""
+        mock_mail.get_message.side_effect = [
+            {
+                "id": "match",
+                "subject": "x",
+                "sender": "a@example.com",
+                "date_received": "2026-04-01",
+                "read_status": True,
+                "flagged": False,
+                "content": "the body has urgent text",
+            },
+            {
+                "id": "no-match",
+                "subject": "x",
+                "sender": "b@example.com",
+                "date_received": "2026-04-02",
+                "read_status": True,
+                "flagged": False,
+                "content": "nothing relevant here",
+            },
+        ]
+
+        result = search_messages(
+            source=["match", "no-match"], body_contains="urgent"
+        )
+
+        assert [m["id"] for m in result["messages"]] == ["match"]
+
+    # ---- warnings field (#146) ------------------------------------------
+
+    def test_warnings_field_present_when_callback_fires(
+        self, mock_mail: MagicMock
+    ) -> None:
+        """When the connector emits a warning via the on_warning callback,
+        the response includes a warnings list."""
+        def fake_search(**kwargs: Any) -> list[dict[str, Any]]:
+            on_warning = kwargs.get("on_warning")
+            if on_warning is not None:
+                on_warning("AppleScript body search may be slow")
+            return []
+
+        mock_mail.search_messages.side_effect = fake_search
+
+        result = search_messages("Gmail", body_contains="urgent")
+
+        assert "warnings" in result
+        assert any(
+            "AppleScript body search" in w for w in result["warnings"]
+        )
+
+    def test_warnings_field_omitted_when_no_callback_fires(
+        self, mock_mail: MagicMock
+    ) -> None:
+        """No warnings emitted by connector → response has no warnings field
+        (don't pollute the cheap-call default case)."""
+        mock_mail.search_messages.return_value = []
+
+        result = search_messages("Gmail")
+
+        assert "warnings" not in result
+
+    def test_on_warning_callback_passed_to_connector(
+        self, mock_mail: MagicMock
+    ) -> None:
+        """Server creates a callback and passes it through to the connector."""
+        mock_mail.search_messages.return_value = []
+
+        search_messages("Gmail", body_contains="x")
+
+        kwargs = mock_mail.search_messages.call_args.kwargs
+        assert callable(kwargs.get("on_warning"))
 
 
 # ---------------------------------------------------------------------------

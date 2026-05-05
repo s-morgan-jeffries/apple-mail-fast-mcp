@@ -1232,6 +1232,8 @@ class TestAppleMailConnector:
             has_attachment=None,
             include_attachments=False,
             limit=5,
+            body_contains=None,
+            text_contains=None,
         )
         assert result == [{"id": "1", "subject": "S"}]
 
@@ -1632,6 +1634,8 @@ class TestAppleMailConnector:
             True,
             10,
             False,  # include_attachments
+            None,  # body_contains
+            None,  # text_contains
         )
 
     @patch.object(AppleMailConnector, "_search_messages_applescript")

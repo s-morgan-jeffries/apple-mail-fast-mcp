@@ -29,6 +29,8 @@ Search for messages matching specified criteria.
 | `limit` | integer | No | 50 | Maximum number of results to return |
 | `source` | list[string] \| null | No | null | Optional list of message ids (with optional `"SELECTED"` sentinel) to scope the search to. `null` (default) searches the account/mailbox normally. |
 | `include_attachments` | boolean | No | false | When true, each row includes an `attachments` field with per-attachment metadata. Default off — opt-in because the AppleScript fallback path can be slow on cold caches (#142). Free on the IMAP fast path. |
+| `body_contains` | string | No | None | Substring match against message body content. IMAP: server-side `BODY` predicate (sub-second). AppleScript: per-message body read (very slow — see performance note). Case-insensitive. |
+| `text_contains` | string | No | None | Substring match against headers + body (RFC 3501 `TEXT`). IMAP: server-side `TEXT` predicate. AppleScript: matches `content + subject + sender` (recipients omitted). Same perf characteristics as `body_contains`. |
 
 **Notes:**
 - Returns metadata-only rows (id, subject, sender, date_received, read_status, flagged). For full bodies, pipe the result ids into `get_messages([ids])`.
@@ -38,6 +40,27 @@ Search for messages matching specified criteria.
 - For thread retrieval, call `get_thread(message_id)` to expand an anchor into thread member ids; pipe those ids into `source=[ids]` for filtered metadata.
 - Omitting both `account` and `source` returns `error_type: validation_error`.
 - `include_attachments` defaults to **false** for `search_messages` (unlike `get_messages` which defaults to true). Reason: search results can span 50+ rows, and the AppleScript fallback path enumerates attachments per row — measured 1s for 50 messages but 97s for 100 cold-cache messages on a 47k-message Gmail INBOX (#142). To get attachment metadata for a small known set, prefer the two-step: `search_messages(...)` to get ids → `get_messages([those_ids])` (default-on attachments, bounded cardinality).
+
+**Performance note for `body_contains` / `text_contains`:**
+
+On the IMAP path, body search is server-side and sub-second. On the AppleScript fallback, body search is **dramatically slower** — measured 148s for 100 cold-cache messages on a 47k-message INBOX, vs 1s for `subject_contains` on the same slice. This is because Mail.app must read each candidate message's body from disk. To get sub-second body search, run `apple-mail-mcp setup-imap --account <name>` to enable IMAP delegation for that account.
+
+When the call commits to the AppleScript path **and** a body/text filter is set, the response includes a `warnings` field describing the cost — see "Warnings" below.
+
+**Warnings field:**
+
+`search_messages` responses may include an optional `warnings: list[str]` field that surfaces proactive cost concerns before slow paths run. The field is **omitted** when there are no warnings (don't pollute the cheap-call default case). Currently only fires for AppleScript-path body/text search; future detection conditions may extend the mechanism. Example:
+
+```json
+{
+  "success": true,
+  "messages": [...],
+  "count": 17,
+  "warnings": [
+    "AppleScript body search can take minutes on large mailboxes (measured 148s for 100 cold-cache messages on a 47k-message Gmail INBOX). Run `apple-mail-mcp setup-imap --account 'Gmail'` for sub-second IMAP body search."
+  ]
+}
+```
 
 **Returns:**
 

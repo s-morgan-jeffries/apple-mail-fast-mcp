@@ -629,6 +629,8 @@ def _apply_search_filters(
     date_to: str | None,
     has_attachment: bool | None,
     limit: int,
+    body_contains: str | None = None,
+    text_contains: str | None = None,
 ) -> list[dict[str, Any]]:
     """Post-filter a list of message dicts in Python.
 
@@ -639,6 +641,12 @@ def _apply_search_filters(
     IMAP/AppleScript search paths apply server-side, then truncate to
     ``limit``. The corpus is bounded by the caller's id list, so the
     cost is negligible.
+
+    ``body_contains`` and ``text_contains`` (#145) match against the
+    ``content`` field — the server tier forces ``include_content=True``
+    on the per-id fetch when these filters are set, so ``content`` is
+    populated. ``text_contains`` checks ``content + subject + sender``
+    (the practical IMAP ``TEXT`` approximation; recipients omitted).
     """
     def matches(m: dict[str, Any]) -> bool:
         if sender_contains is not None and sender_contains.lower() not in str(
@@ -661,6 +669,21 @@ def _apply_search_filters(
             m.get("has_attachment")
         ) != has_attachment:
             return False
+        if body_contains is not None and body_contains.lower() not in str(
+            m.get("content", "")
+        ).lower():
+            return False
+        if text_contains is not None:
+            needle = text_contains.lower()
+            haystack = (
+                str(m.get("content", "")).lower()
+                + " "
+                + str(m.get("subject", "")).lower()
+                + " "
+                + str(m.get("sender", "")).lower()
+            )
+            if needle not in haystack:
+                return False
         return True
 
     return [m for m in messages if matches(m)][:limit]
@@ -680,6 +703,8 @@ def search_messages(
     limit: int = 50,
     source: list[str] | None = None,
     include_attachments: bool = False,
+    body_contains: str | None = None,
+    text_contains: str | None = None,
 ) -> dict[str, Any]:
     """
     Search for messages matching criteria. Returns metadata-only rows.
@@ -729,6 +754,17 @@ def search_messages(
             IMAP fast path. To fetch attachment metadata for a known list
             of ids cheaply, prefer ``get_messages([ids])`` (default-on
             attachments, bounded cardinality).
+        body_contains: Substring match against message body content. IMAP
+            uses ``BODY`` predicate (sub-second); AppleScript reads
+            ``content of msg`` per candidate (very slow on large mailboxes
+            — measured 148s for 100 cold-cache messages). When the call
+            commits to AppleScript with this filter set, a ``warnings``
+            field is included in the response. Case-insensitive on both
+            paths.
+        text_contains: Substring match against headers + body (RFC 3501
+            ``TEXT`` semantics). On AppleScript, approximated as
+            ``content + subject + sender`` (recipients and other headers
+            not matched). Same perf characteristics as ``body_contains``.
 
     Returns:
         Dictionary containing matching messages. Each message row includes
@@ -744,10 +780,16 @@ def search_messages(
         {"success": True, "messages": [...], "count": 3}
     """
     try:
+        warnings: list[str] = []
+
         if source is not None:
+            # body/text filters need bodies on the resolved messages so the
+            # post-filter can match content. Force include_content=True for
+            # the per-id fetch when these filters are set.
+            need_body = bool(body_contains or text_contains)
             resolved = _resolve_id_list_to_messages(
                 source,
-                include_content=False,
+                include_content=need_body,
                 account=account,
                 mailbox=mailbox,
                 include_attachments=include_attachments,
@@ -762,6 +804,8 @@ def search_messages(
                 date_to,
                 has_attachment,
                 limit,
+                body_contains=body_contains,
+                text_contains=text_contains,
             )
             operation_logger.log_operation(
                 "search_messages",
@@ -775,17 +819,22 @@ def search_messages(
                         "date_from": date_from,
                         "date_to": date_to,
                         "has_attachment": has_attachment,
+                        "body_contains": body_contains,
+                        "text_contains": text_contains,
                     },
                 },
                 "success",
             )
-            return {
+            response: dict[str, Any] = {
                 "success": True,
                 "account": None,
                 "mailbox": None,
                 "messages": filtered,
                 "count": len(filtered),
             }
+            if warnings:
+                response["warnings"] = warnings
+            return response
 
         if account is None:
             return {
@@ -821,6 +870,9 @@ def search_messages(
             has_attachment=has_attachment,
             limit=limit,
             include_attachments=include_attachments,
+            body_contains=body_contains,
+            text_contains=text_contains,
+            on_warning=warnings.append,
         )
 
         operation_logger.log_operation(
@@ -836,18 +888,23 @@ def search_messages(
                     "date_from": date_from,
                     "date_to": date_to,
                     "has_attachment": has_attachment,
+                    "body_contains": body_contains,
+                    "text_contains": text_contains,
                 },
             },
             "success"
         )
 
-        return {
+        response = {
             "success": True,
             "account": account,
             "mailbox": mailbox,
             "messages": messages,
             "count": len(messages),
         }
+        if warnings:
+            response["warnings"] = warnings
+        return response
 
     except (MailAccountNotFoundError, MailMailboxNotFoundError) as e:
         logger.error(f"Not found error: {e}")
