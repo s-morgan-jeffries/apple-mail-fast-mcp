@@ -4,7 +4,7 @@ FastMCP server for Apple Mail integration.
 
 import argparse
 import logging
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 from fastmcp import Context, FastMCP
 from fastmcp.server.elicitation import AcceptedElicitation
@@ -568,6 +568,53 @@ def list_mailboxes(account: str) -> dict[str, Any]:
         }
 
 
+_SELECTED_SENTINEL = "SELECTED"
+
+
+def _resolve_id_list_to_messages(
+    ids: list[str],
+    include_content: bool,
+    account: str | None,
+    mailbox: str | None,
+    headers_only: bool = False,
+) -> list[dict[str, Any]]:
+    """Resolve a mixed list of ids and ``SELECTED`` tokens to message dicts.
+
+    ``SELECTED`` tokens expand inline to Mail.app's current UI selection
+    (zero-or-more messages). Real ids are looked up via
+    ``mail.get_message()``. Missing ids drop out silently
+    (partial-results convention). The connector ``get_selected_messages``
+    is called at most once even if ``SELECTED`` appears multiple times.
+
+    Used by both ``search_messages.source`` (metadata mode,
+    ``include_content=False``) and ``get_messages.message_ids`` (bodies
+    mode, ``include_content=True``).
+    """
+    selected_resolved: list[dict[str, Any]] | None = None
+    out: list[dict[str, Any]] = []
+    for id_or_token in ids:
+        if id_or_token == _SELECTED_SENTINEL:
+            if selected_resolved is None:
+                selected_resolved = mail.get_selected_messages(
+                    include_content=include_content
+                )
+            out.extend(selected_resolved)
+        else:
+            try:
+                msg = mail.get_message(
+                    id_or_token,
+                    include_content=include_content,
+                    headers_only=headers_only,
+                    account=account,
+                    mailbox=mailbox,
+                )
+                out.append(msg)
+            except MailMessageNotFoundError:
+                # Partial-results: missing ids drop out silently.
+                continue
+    return out
+
+
 def _apply_search_filters(
     messages: list[dict[str, Any]],
     sender_contains: str | None,
@@ -581,11 +628,13 @@ def _apply_search_filters(
 ) -> list[dict[str, Any]]:
     """Post-filter a list of message dicts in Python.
 
-    Used by the ``thread_of`` dispatch path of ``search_messages``: the
-    connector's ``get_thread`` returns the full thread, then we filter
-    here. Applies the same predicates the IMAP/AppleScript search paths
-    apply server-side, then truncates to ``limit``. Threads are typically
-    small (<50 messages), so the cost is negligible.
+    Used by the ``source=[ids]`` dispatch path of ``search_messages``:
+    after resolving the id list to message dicts (some via
+    ``mail.get_selected_messages`` for the ``SELECTED`` sentinel, others
+    via per-id ``mail.get_message``), apply the same predicates the
+    IMAP/AppleScript search paths apply server-side, then truncate to
+    ``limit``. The corpus is bounded by the caller's id list, so the
+    cost is negligible.
     """
     def matches(m: dict[str, Any]) -> bool:
         if sender_contains is not None and sender_contains.lower() not in str(
@@ -625,36 +674,38 @@ def search_messages(
     date_to: str | None = None,
     has_attachment: bool | None = None,
     limit: int = 50,
-    source: Literal["all", "selected"] = "all",
-    thread_of: str | None = None,
+    source: list[str] | None = None,
 ) -> dict[str, Any]:
     """
-    Search for messages matching criteria.
+    Search for messages matching criteria. Returns metadata-only rows.
 
-    When ``source="selected"`` (folded-in ``get_selected_messages``), returns
-    the messages currently highlighted in Mail.app's UI. In that mode all
-    other parameters — ``account``, ``mailbox``, ``sender_contains``,
-    ``subject_contains``, ``read_status``, ``is_flagged``, ``date_from``,
-    ``date_to``, ``has_attachment``, ``limit`` — are silently ignored
-    (selection is global to Mail.app, not bound to an account/mailbox).
-    Message bodies are always included via the ``content`` row field.
+    Two corpus modes:
 
-    When ``thread_of`` is set (folded-in ``get_thread``), returns all
-    messages in the same thread as the anchor message, sorted by
-    ``date_received`` ascending. Composes with the other filter
-    parameters: ``thread_of=X + read_status=False`` returns unread thread
-    members, ``thread_of=X + sender_contains="alice"`` returns alice's
-    contributions, etc. ``account`` and ``mailbox`` are not needed — the
-    anchor's account is resolved from the message id. If the anchor id
-    doesn't exist, returns ``error_type: "message_not_found"``.
+    - ``source=None`` (default): search the given account/mailbox using
+      the IMAP/AppleScript SEARCH path. ``account`` is required.
+    - ``source=[id1, id2, ...]``: scope the search to the specific
+      messages identified by the given ids. ``account``/``mailbox`` are
+      ignored; the connector resolves each id self-sufficiently. The
+      resulting message dicts are post-filtered by the other criteria
+      (``sender_contains``, ``read_status``, etc.) — full filter
+      composition. The literal token ``"SELECTED"`` may appear in the
+      list and is server-resolved at call time to Mail.app's current UI
+      selection (zero-or-more messages). Mixed lists like
+      ``["SELECTED", "12345"]`` are valid. Missing ids drop out silently
+      (partial-results).
+
+    For thread retrieval, call ``get_thread(message_id)`` to expand an
+    anchor into thread member ids, then optionally pipe those ids into
+    ``source=[ids]`` for filtered metadata browsing or into
+    ``get_messages([ids])`` for full bodies.
 
     Args:
         account: Mail.app account display name (e.g., "Gmail", "iCloud") or
-            UUID (from list_accounts). Required when ``source="all"`` and
-            ``thread_of`` is None; ignored otherwise. Names are convenient
-            but unstable across renames; UUIDs are stable.
-        mailbox: Mailbox name (default: "INBOX"). Ignored when
-            ``thread_of`` or ``source="selected"`` is set.
+            UUID (from list_accounts). Required when ``source is None``;
+            ignored when ``source`` is a list. Names are convenient but
+            unstable across renames; UUIDs are stable.
+        mailbox: Mailbox name (default: "INBOX"). Ignored when ``source``
+            is a list.
         sender_contains: Filter by sender email/domain substring.
         subject_contains: Filter by subject keywords substring.
         read_status: Filter by read status (true=read, false=unread).
@@ -663,29 +714,33 @@ def search_messages(
         date_to: Inclusive upper bound on date received (full day included). ISO 8601 YYYY-MM-DD.
         has_attachment: Filter messages with (true) or without (false) attachments.
         limit: Maximum results to return (default: 50).
-        source: ``"all"`` (default) searches the given account/mailbox.
-            ``"selected"`` returns Mail.app's current UI selection.
-        thread_of: When set to a message id, returns all messages in that
-            message's thread. Composes with the other filter parameters.
+        source: Optional list of message ids (with optional ``"SELECTED"``
+            sentinel) to restrict the search to. ``None`` (default)
+            searches the account/mailbox normally.
 
     Returns:
         Dictionary containing matching messages. Each message row includes
-        id, subject, sender, date_received, read_status, flagged. When
-        ``source="selected"``, rows additionally include ``content``.
+        id, subject, sender, date_received, read_status, flagged. Rows
+        are metadata-only — call ``get_messages([ids])`` for bodies.
 
     Example:
         >>> search_messages("Gmail", sender_contains="john@example.com", read_status=False, limit=10)
         {"success": True, "messages": [...], "count": 5}
-        >>> search_messages(source="selected")
+        >>> search_messages(source=["SELECTED"])
         {"success": True, "messages": [...], "count": 2}
-        >>> search_messages(thread_of="12345", read_status=False)
+        >>> search_messages(source=["12345", "SELECTED"], read_status=False)
         {"success": True, "messages": [...], "count": 3}
     """
     try:
-        if thread_of is not None:
-            thread = mail.get_thread(thread_of)
+        if source is not None:
+            resolved = _resolve_id_list_to_messages(
+                source,
+                include_content=False,
+                account=account,
+                mailbox=mailbox,
+            )
             filtered = _apply_search_filters(
-                thread,
+                resolved,
                 sender_contains,
                 subject_contains,
                 read_status,
@@ -698,7 +753,7 @@ def search_messages(
             operation_logger.log_operation(
                 "search_messages",
                 {
-                    "thread_of": thread_of,
+                    "source": source,
                     "filters": {
                         "sender": sender_contains,
                         "subject": subject_contains,
@@ -719,25 +774,10 @@ def search_messages(
                 "count": len(filtered),
             }
 
-        if source == "selected":
-            messages = mail.get_selected_messages(include_content=True)
-            operation_logger.log_operation(
-                "search_messages",
-                {"source": "selected"},
-                "success",
-            )
-            return {
-                "success": True,
-                "account": None,
-                "mailbox": None,
-                "messages": messages,
-                "count": len(messages),
-            }
-
         if account is None:
             return {
                 "success": False,
-                "error": "account is required when source='all'",
+                "error": "account is required when source is not provided",
                 "error_type": "validation_error",
             }
 
@@ -795,13 +835,6 @@ def search_messages(
             "count": len(messages),
         }
 
-    except MailMessageNotFoundError as e:
-        logger.error(f"Thread anchor not found: {e}")
-        return {
-            "success": False,
-            "error": str(e),
-            "error_type": "message_not_found",
-        }
     except (MailAccountNotFoundError, MailMailboxNotFoundError) as e:
         logger.error(f"Not found error: {e}")
         return {
@@ -826,69 +859,79 @@ def search_messages(
 
 
 @mcp.tool()
-def get_message(
-    message_id: str,
+def get_messages(
+    message_ids: list[str],
     include_content: bool = True,
     headers_only: bool = False,
     account: str | None = None,
     mailbox: str | None = None,
 ) -> dict[str, Any]:
     """
-    Get full details of a specific message.
+    Get full details of one or more messages, with bodies.
+
+    Returns a list of message dicts (possibly of length 0 or 1). Pair with
+    ``search_messages`` (metadata-only) and ``get_thread`` (thread member
+    ids) to fetch bodies for specific messages.
 
     Args:
-        message_id: Message ID from search results.
-        include_content: Include message body (default: True).
-        headers_only: Skip body fetch on the IMAP path (default: False).
-            Silently ignored when falling back to AppleScript.
-        account: Mail.app account name. Together with `mailbox`, activates
-            the IMAP fast path: one round-trip lookup instead of an
-            account×mailbox AppleScript scan (issue #72). Without these,
-            falls back to the slower AppleScript scan.
+        message_ids: List of message ids to fetch. May include the literal
+            token ``"SELECTED"``, which the server resolves at call time
+            to Mail.app's current UI selection (zero-or-more messages).
+            Mixed lists like ``["SELECTED", "12345"]`` are valid. Empty
+            list is a no-op (returns empty result, no error). Missing ids
+            drop out silently (partial-results convention) — the response
+            contains whatever was found.
+        include_content: Include message bodies (default: True).
+        headers_only: Skip body fetch on the IMAP path for explicit ids
+            (default: False). Silently ignored on the AppleScript fallback.
+        account: Mail.app account name. Together with ``mailbox``, activates
+            the IMAP fast path for explicit ids: one round-trip lookup
+            instead of an account×mailbox AppleScript scan (issue #72).
+            Ignored for the ``"SELECTED"`` sentinel (selection is global).
         mailbox: Folder to look in for the IMAP fast path (e.g. "INBOX").
 
     Returns:
-        Dictionary containing message details.
+        Dictionary containing the list of messages and count.
 
     Example:
-        >>> get_message("12345", account="iCloud", mailbox="INBOX")
-        {"success": True, "message": {...}}
+        >>> get_messages(["12345"], account="iCloud", mailbox="INBOX")
+        {"success": True, "messages": [...], "count": 1}
+        >>> get_messages(["SELECTED"])
+        {"success": True, "messages": [...], "count": 2}
+        >>> get_messages(["SELECTED", "12345"])
+        {"success": True, "messages": [...], "count": 3}
     """
     try:
-        rate_err = check_rate_limit("get_message", {"message_id": message_id})
+        rate_err = check_rate_limit(
+            "get_messages", {"count": len(message_ids)}
+        )
         if rate_err:
             return rate_err
 
-        logger.info(f"Getting message: {message_id}")
+        logger.info(f"Getting messages: {len(message_ids)} ids")
 
-        message = mail.get_message(
-            message_id,
+        messages = _resolve_id_list_to_messages(
+            message_ids,
             include_content=include_content,
-            headers_only=headers_only,
             account=account,
             mailbox=mailbox,
+            headers_only=headers_only,
         )
 
         operation_logger.log_operation(
-            "get_message",
-            {"message_id": message_id},
+            "get_messages",
+            {"count": len(message_ids)},
             "success"
         )
 
         return {
             "success": True,
-            "message": message,
+            "messages": messages,
+            "count": len(messages),
         }
 
-    except MailMessageNotFoundError as e:
-        logger.error(f"Message not found: {e}")
-        return {
-            "success": False,
-            "error": f"Message '{message_id}' not found",
-            "error_type": "message_not_found",
-        }
     except Exception as e:
-        logger.error(f"Error getting message: {e}")
+        logger.error(f"Error getting messages: {e}")
         return {
             "success": False,
             "error": str(e),
@@ -1287,6 +1330,71 @@ def get_attachments(
         }
     except Exception as e:
         logger.error(f"Error getting attachments: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "error_type": "unknown",
+        }
+
+
+@mcp.tool()
+def get_thread(message_id: str) -> dict[str, Any]:
+    """
+    Return all messages in the thread containing the given message.
+
+    Looks up the anchor message by its id, then reconstructs the
+    conversation via the connector's tiered IMAP threading dispatch
+    (Tier 1 X-GM-THRID for Gmail, Tier 3 header-search BFS fallback)
+    or the AppleScript path. Result rows are sorted by ``date_received``
+    ascending.
+
+    The returned ids can be piped into ``search_messages(source=[ids])``
+    for filtered metadata or ``get_messages([ids])`` for full bodies.
+
+    Known limitation: thread members whose subject was rewritten
+    mid-conversation are missed on the AppleScript fallback path
+    (subject prefilter tradeoff).
+
+    Args:
+        message_id: Internal id of any message in the thread
+            (from ``search_messages`` or ``get_messages`` results).
+
+    Returns:
+        Dictionary with the thread list. Rows are metadata-only —
+        id, subject, sender, date_received, read_status, flagged.
+
+    Example:
+        >>> get_thread("12345")
+        {"success": True, "thread": [{...}, {...}], "count": 2}
+    """
+    try:
+        rate_err = check_rate_limit("get_thread", {"message_id": message_id})
+        if rate_err:
+            return rate_err
+
+        logger.info(f"Getting thread for message: {message_id}")
+
+        thread = mail.get_thread(message_id)
+
+        operation_logger.log_operation(
+            "get_thread", {"message_id": message_id}, "success"
+        )
+
+        return {
+            "success": True,
+            "thread": thread,
+            "count": len(thread),
+        }
+
+    except MailMessageNotFoundError as e:
+        logger.error(f"Message not found: {e}")
+        return {
+            "success": False,
+            "error": f"Message '{message_id}' not found",
+            "error_type": "message_not_found",
+        }
+    except Exception as e:
+        logger.error(f"Error getting thread: {e}")
         return {
             "success": False,
             "error": str(e),

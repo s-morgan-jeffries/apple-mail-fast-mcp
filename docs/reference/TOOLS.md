@@ -17,8 +17,8 @@ Search for messages matching specified criteria.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `account` | string | Conditional | None | Account name (e.g., "Gmail", "iCloud"). Required when `source="all"`; ignored when `source="selected"`. |
-| `mailbox` | string | No | "INBOX" | Mailbox/folder name |
+| `account` | string | Conditional | None | Account name (e.g., "Gmail", "iCloud"). Required when `source` is None; ignored when `source` is a list. |
+| `mailbox` | string | No | "INBOX" | Mailbox/folder name. Ignored when `source` is a list. |
 | `sender_contains` | string | No | None | Filter by sender email or domain |
 | `subject_contains` | string | No | None | Filter by subject keywords |
 | `read_status` | boolean | No | None | Filter by read status (true=read, false=unread) |
@@ -27,15 +27,15 @@ Search for messages matching specified criteria.
 | `date_to` | string | No | None | Inclusive upper bound on `date_received` (full day included). ISO 8601 YYYY-MM-DD. |
 | `has_attachment` | boolean | No | None | Filter messages with (true) or without (false) attachments |
 | `limit` | integer | No | 50 | Maximum number of results to return |
-| `source` | string | No | `"all"` | `"all"` searches the given account/mailbox; `"selected"` returns Mail.app's current UI selection. |
-| `thread_of` | string | No | None | Message id of any message in a thread; returns all messages in that thread, sorted by `date_received` ascending. Composes with the other filter parameters. |
+| `source` | list[string] \| null | No | null | Optional list of message ids (with optional `"SELECTED"` sentinel) to scope the search to. `null` (default) searches the account/mailbox normally. |
 
 **Notes:**
+- Returns metadata-only rows (id, subject, sender, date_received, read_status, flagged). For full bodies, pipe the result ids into `get_messages([ids])`.
 - Malformed `date_from` / `date_to` raise `error_type: validation_error`. Only ISO 8601 YYYY-MM-DD is accepted; relative dates like "7 days ago" are not supported.
 - `has_attachment` is filtered after the initial server-side match because Mail.app rejects attachment predicates inside its `whose` clause.
-- `source="selected"` (folded-in `get_selected_messages` in #131) ignores all other parameters — selection is global to Mail.app, not bound to an account/mailbox. Message bodies are always included via the `content` row field. Returns `account: null` and `mailbox: null` in the response.
-- `thread_of` (folded-in `get_thread` in #132) composes with the other filter parameters: `thread_of=X + read_status=False` returns unread thread members; `thread_of=X + sender_contains="alice"` returns alice's contributions to the thread. The anchor's account is resolved from the message id (so `account` and `mailbox` are not needed). Tier 1 / Tier 3 IMAP threading dispatch from #122 is preserved. Returns `account: null` and `mailbox: null` in the response. Anchor-not-found returns `error_type: "message_not_found"`.
-- With `source="all"` (default) and no `thread_of`, omitting `account` returns `error_type: validation_error`.
+- `source=[ids]` (folded-in `get_selected_messages` and the `thread_of` use case) scopes the search to a specific id list. Filter parameters (`sender_contains`, `read_status`, etc.) compose with `source` — the resolved messages are post-filtered. The literal token `"SELECTED"` may appear in the list and is server-resolved to Mail.app's current UI selection (zero-or-more ids); mixed lists like `["SELECTED", "12345"]` are valid. Returns `account: null` and `mailbox: null` in the response. Missing ids drop out silently (partial-results convention).
+- For thread retrieval, call `get_thread(message_id)` to expand an anchor into thread member ids; pipe those ids into `source=[ids]` for filtered metadata.
+- Omitting both `account` and `source` returns `error_type: validation_error`.
 
 **Returns:**
 
@@ -67,14 +67,17 @@ search_messages(account="Gmail", read_status=False)
 # Find messages from specific sender
 search_messages(account="Gmail", sender_contains="john@example.com")
 
-# Return Mail.app's current UI selection (folds in get_selected_messages)
-search_messages(source="selected")
+# Return metadata for Mail.app's current UI selection
+search_messages(source=["SELECTED"])
 
-# Return all messages in a thread (folds in get_thread)
-search_messages(thread_of="<message_id>")
+# Scope to specific ids (e.g., from a prior get_thread call)
+search_messages(source=["12345", "67890"])
 
-# Unread members of a specific thread
-search_messages(thread_of="<message_id>", read_status=False)
+# Mixed list: selection plus an explicit id
+search_messages(source=["SELECTED", "12345"])
+
+# Filter the selection to unread messages only
+search_messages(source=["SELECTED"], read_status=False)
 
 # Find messages with keyword in subject
 search_messages(account="Gmail", subject_contains="invoice", limit=10)
@@ -98,47 +101,109 @@ search_messages(
 
 ---
 
-### get_message
+### get_messages
 
-Retrieve full details of a specific message.
+Retrieve full details of one or more messages, with bodies. Returns a list (always — possibly of length 0 or 1).
 
 **Parameters:**
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `message_id` | string | Yes | - | Message ID from search results |
-| `include_content` | boolean | No | true | Include message body content |
+| `message_ids` | list[string] | Yes | - | List of message ids to fetch. May include the literal token `"SELECTED"` (server-resolved to Mail.app's current UI selection at call time). Mixed lists like `["SELECTED", "12345"]` are valid. Empty list is a no-op. |
+| `include_content` | boolean | No | true | Include message bodies |
+| `headers_only` | boolean | No | false | IMAP fast-path optimization for explicit ids; ignored on AppleScript fallback |
+| `account` | string | No | None | Mail.app account name. With `mailbox`, activates the IMAP fast path for explicit ids (issue #72) |
+| `mailbox` | string | No | None | Folder for the IMAP fast path (e.g. "INBOX") |
+
+**Notes:**
+- Missing ids drop out silently — the response contains whatever was found (partial-results convention).
+- The `"SELECTED"` sentinel is resolved server-side via `mail.get_selected_messages()` at call time. Empty selection expands to nothing.
+- Pair with `search_messages` (metadata-only, criteria-based) and `get_thread` (thread member ids) to fetch bodies for specific messages.
 
 **Returns:**
 
 ```json
 {
   "success": true,
-  "message": {
-    "id": "12345",
-    "subject": "Meeting Tomorrow",
-    "sender": "john@example.com",
-    "date_received": "Mon Jan 15 2024 10:30:00",
-    "read_status": false,
-    "flagged": true,
-    "content": "Let's meet tomorrow at 2pm to discuss the project..."
-  }
+  "messages": [
+    {
+      "id": "12345",
+      "subject": "Meeting Tomorrow",
+      "sender": "john@example.com",
+      "date_received": "Mon Jan 15 2024 10:30:00",
+      "read_status": false,
+      "flagged": true,
+      "content": "Let's meet tomorrow at 2pm to discuss the project..."
+    }
+  ],
+  "count": 1
 }
 ```
 
 **Examples:**
 
 ```python
-# Get message with content
-get_message(message_id="12345")
+# Get a single message with body
+get_messages(["12345"])
 
-# Get message without content (faster)
-get_message(message_id="12345", include_content=False)
+# Get the user's current selection (full bodies)
+get_messages(["SELECTED"])
+
+# Mixed: selection plus an explicit id
+get_messages(["SELECTED", "12345"])
+
+# Skip body fetch on the IMAP fast path
+get_messages(["abc@x"], account="iCloud", mailbox="INBOX", headers_only=True)
 ```
 
 **Error Codes:**
 
-- `message_not_found`: Message doesn't exist or was deleted
+- `unknown`: Unexpected error occurred
+
+---
+
+### get_thread
+
+Return all messages in the thread containing the given anchor message, sorted by `date_received` ascending. Result rows are metadata-only — pipe ids into `get_messages([ids])` for full bodies, or into `search_messages(source=[ids], ...)` for filtered metadata.
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `message_id` | string | Yes | - | Internal id of any message in the thread (from `search_messages` or `get_messages` results). |
+
+**Returns:**
+
+```json
+{
+  "success": true,
+  "thread": [
+    {"id": "100", "subject": "Q3 Report", "sender": "alice@x.com",
+     "date_received": "Mon Jan 1 2024 10:00:00", "read_status": true, "flagged": false},
+    {"id": "101", "subject": "Re: Q3 Report", "sender": "bob@x.com",
+     "date_received": "Mon Jan 1 2024 14:30:00", "read_status": true, "flagged": false}
+  ],
+  "count": 2
+}
+```
+
+Uses the connector's tiered IMAP threading dispatch (Tier 1 X-GM-THRID for Gmail per #122, Tier 3 header-search BFS fallback) when IMAP is configured; falls back to AppleScript otherwise.
+
+**Examples:**
+
+```python
+# Get the conversation around a message found via search
+matches = search_messages(account="Gmail", subject_contains="Q3")
+thread = get_thread(matches["messages"][0]["id"])
+
+# Pipe thread ids into get_messages for bodies
+ids = [m["id"] for m in thread["thread"]]
+full = get_messages(ids)
+```
+
+**Error Codes:**
+
+- `message_not_found`: Anchor message doesn't exist or was deleted
 - `unknown`: Unexpected error occurred
 
 ---

@@ -36,8 +36,9 @@ from apple_mail_mcp.server import (
     flag_message,
     forward_message,
     get_attachments,
-    get_message,
+    get_messages,
     get_template,
+    get_thread,
     list_accounts,
     list_mailboxes,
     list_rules,
@@ -590,93 +591,21 @@ class TestSearchMessages:
 
     # ---- source="selected" (folded-in get_selected_messages, #131) -------
 
-    def test_source_selected_returns_selection(
+    # ---- source=None default (search the mailbox) -----------------------
+
+    def test_no_source_no_account_returns_validation_error(
         self, mock_mail: MagicMock, mock_logger: MagicMock
     ) -> None:
-        mock_mail.get_selected_messages.return_value = [
-            {
-                "id": "12345",
-                "subject": "Hello",
-                "sender": "alice@example.com",
-                "date_received": "Mon Jan 1 2024",
-                "read_status": True,
-                "flagged": False,
-                "content": "Hi there",
-            }
-        ]
-
-        result = search_messages(source="selected")
-
-        assert result["success"] is True
-        assert result["count"] == 1
-        assert result["account"] is None
-        assert result["mailbox"] is None
-        assert result["messages"][0]["id"] == "12345"
-        assert result["messages"][0]["content"] == "Hi there"
-        mock_mail.get_selected_messages.assert_called_once_with(
-            include_content=True
-        )
-        mock_mail.search_messages.assert_not_called()
-
-    def test_source_selected_ignores_filters(
-        self, mock_mail: MagicMock, mock_logger: MagicMock
-    ) -> None:
-        """Filter params are silently ignored when source='selected'."""
-        mock_mail.get_selected_messages.return_value = []
-
-        result = search_messages(
-            account="Gmail",
-            mailbox="Archive",
-            sender_contains="alice@example.com",
-            subject_contains="hi",
-            read_status=False,
-            is_flagged=True,
-            date_from="2026-01-01",
-            date_to="2026-01-31",
-            has_attachment=True,
-            limit=10,
-            source="selected",
-        )
-
-        assert result["success"] is True
-        mock_mail.get_selected_messages.assert_called_once_with(
-            include_content=True
-        )
-        mock_mail.search_messages.assert_not_called()
-
-    def test_source_selected_does_not_require_account(
-        self, mock_mail: MagicMock
-    ) -> None:
-        mock_mail.get_selected_messages.return_value = []
-
-        result = search_messages(source="selected")
-
-        assert result["success"] is True
-        assert result["count"] == 0
-
-    def test_source_selected_empty_selection(
-        self, mock_mail: MagicMock
-    ) -> None:
-        mock_mail.get_selected_messages.return_value = []
-
-        result = search_messages(source="selected")
-
-        assert result["success"] is True
-        assert result["count"] == 0
-        assert result["messages"] == []
-
-    def test_source_all_without_account_returns_validation_error(
-        self, mock_mail: MagicMock, mock_logger: MagicMock
-    ) -> None:
-        result = search_messages()  # source defaults to "all", no account
+        result = search_messages()  # source=None default, no account
 
         assert result["success"] is False
         assert result["error_type"] == "validation_error"
         assert "account" in result["error"]
         mock_mail.search_messages.assert_not_called()
         mock_mail.get_selected_messages.assert_not_called()
+        mock_mail.get_message.assert_not_called()
 
-    def test_source_all_default_unchanged(
+    def test_no_source_with_account_unchanged(
         self, mock_mail: MagicMock, mock_logger: MagicMock
     ) -> None:
         """Regression: existing positional callers still work."""
@@ -688,14 +617,65 @@ class TestSearchMessages:
         assert result["account"] == "Gmail"
         mock_mail.search_messages.assert_called_once()
         mock_mail.get_selected_messages.assert_not_called()
+        mock_mail.get_message.assert_not_called()
 
-    # ---- thread_of (folded-in get_thread, #132) --------------------------
+    # ---- source=["SELECTED"] sentinel -----------------------------------
 
-    def _thread_fixture(self) -> list[dict[str, Any]]:
-        return [
+    def test_source_selected_sentinel_returns_selection(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        mock_mail.get_selected_messages.return_value = [
+            {
+                "id": "12345",
+                "subject": "Hello",
+                "sender": "alice@example.com",
+                "date_received": "Mon Jan 1 2024",
+                "read_status": True,
+                "flagged": False,
+            }
+        ]
+
+        result = search_messages(source=["SELECTED"])
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["account"] is None
+        assert result["mailbox"] is None
+        assert result["messages"][0]["id"] == "12345"
+        mock_mail.get_selected_messages.assert_called_once_with(
+            include_content=False
+        )
+        mock_mail.search_messages.assert_not_called()
+
+    def test_source_selected_empty_selection(
+        self, mock_mail: MagicMock
+    ) -> None:
+        mock_mail.get_selected_messages.return_value = []
+
+        result = search_messages(source=["SELECTED"])
+
+        assert result["success"] is True
+        assert result["count"] == 0
+        assert result["messages"] == []
+
+    def test_source_selected_does_not_require_account(
+        self, mock_mail: MagicMock
+    ) -> None:
+        mock_mail.get_selected_messages.return_value = []
+
+        result = search_messages(source=["SELECTED"])
+
+        assert result["success"] is True
+        # No validation_error even though account is None.
+
+    def test_source_selected_post_filters_by_other_params(
+        self, mock_mail: MagicMock
+    ) -> None:
+        """Filters compose with source=[ids] (unlike pre-#144 source='selected')."""
+        mock_mail.get_selected_messages.return_value = [
             {
                 "id": "1",
-                "subject": "Q3 plan",
+                "subject": "alpha",
                 "sender": "alice@example.com",
                 "date_received": "2026-04-01",
                 "read_status": True,
@@ -703,151 +683,172 @@ class TestSearchMessages:
             },
             {
                 "id": "2",
-                "subject": "Re: Q3 plan",
+                "subject": "beta",
                 "sender": "bob@example.com",
                 "date_received": "2026-04-02",
                 "read_status": False,
                 "flagged": False,
             },
-            {
-                "id": "3",
-                "subject": "Re: Q3 plan",
-                "sender": "alice@example.com",
-                "date_received": "2026-04-15",
-                "read_status": False,
-                "flagged": True,
-            },
         ]
 
-    def test_thread_of_returns_thread_members(
-        self, mock_mail: MagicMock, mock_logger: MagicMock
-    ) -> None:
-        mock_mail.get_thread.return_value = self._thread_fixture()
-
-        result = search_messages(thread_of="1")
-
-        assert result["success"] is True
-        assert result["count"] == 3
-        assert result["account"] is None
-        assert result["mailbox"] is None
-        assert [m["id"] for m in result["messages"]] == ["1", "2", "3"]
-        mock_mail.get_thread.assert_called_once_with("1")
-        mock_mail.search_messages.assert_not_called()
-
-    def test_thread_of_combines_with_read_status_filter(
-        self, mock_mail: MagicMock
-    ) -> None:
-        mock_mail.get_thread.return_value = self._thread_fixture()
-
-        result = search_messages(thread_of="1", read_status=False)
-
-        assert result["success"] is True
-        assert [m["id"] for m in result["messages"]] == ["2", "3"]
-        mock_mail.get_thread.assert_called_once_with("1")
-        mock_mail.search_messages.assert_not_called()
-
-    def test_thread_of_combines_with_sender_contains_filter(
-        self, mock_mail: MagicMock
-    ) -> None:
-        mock_mail.get_thread.return_value = self._thread_fixture()
-
-        result = search_messages(thread_of="1", sender_contains="alice")
-
-        assert [m["id"] for m in result["messages"]] == ["1", "3"]
-
-    def test_thread_of_combines_with_subject_contains_filter(
-        self, mock_mail: MagicMock
-    ) -> None:
-        mock_mail.get_thread.return_value = self._thread_fixture()
-
-        result = search_messages(thread_of="1", subject_contains="Re:")
-
-        assert [m["id"] for m in result["messages"]] == ["2", "3"]
-
-    def test_thread_of_combines_with_is_flagged_filter(
-        self, mock_mail: MagicMock
-    ) -> None:
-        mock_mail.get_thread.return_value = self._thread_fixture()
-
-        result = search_messages(thread_of="1", is_flagged=True)
-
-        assert [m["id"] for m in result["messages"]] == ["3"]
-
-    def test_thread_of_combines_with_date_range(
-        self, mock_mail: MagicMock
-    ) -> None:
-        mock_mail.get_thread.return_value = self._thread_fixture()
-
         result = search_messages(
-            thread_of="1", date_from="2026-04-02", date_to="2026-04-10"
+            source=["SELECTED"], read_status=False
         )
 
         assert [m["id"] for m in result["messages"]] == ["2"]
 
-    def test_thread_of_with_limit_truncates(
-        self, mock_mail: MagicMock
-    ) -> None:
-        mock_mail.get_thread.return_value = self._thread_fixture()
+    # ---- source=[explicit ids] -----------------------------------------
 
-        result = search_messages(thread_of="1", limit=2)
-
-        assert result["count"] == 2
-        assert [m["id"] for m in result["messages"]] == ["1", "2"]
-
-    def test_thread_of_anchor_not_found_returns_typed_error(
+    def test_source_explicit_ids_returns_those_messages(
         self, mock_mail: MagicMock, mock_logger: MagicMock
     ) -> None:
-        mock_mail.get_thread.side_effect = MailMessageNotFoundError("nope")
+        mock_mail.get_message.side_effect = [
+            {
+                "id": "12345",
+                "subject": "first",
+                "sender": "a@example.com",
+                "date_received": "2026-04-01",
+                "read_status": True,
+                "flagged": False,
+            },
+            {
+                "id": "67890",
+                "subject": "second",
+                "sender": "b@example.com",
+                "date_received": "2026-04-02",
+                "read_status": False,
+                "flagged": False,
+            },
+        ]
 
-        result = search_messages(thread_of="nope")
-
-        assert result["success"] is False
-        assert result["error_type"] == "message_not_found"
-        assert "nope" in result["error"]
-        mock_logger.log_operation.assert_not_called()
-
-    def test_thread_of_does_not_require_account(
-        self, mock_mail: MagicMock
-    ) -> None:
-        mock_mail.get_thread.return_value = []
-
-        result = search_messages(thread_of="x")  # no account, no validation_error
+        result = search_messages(source=["12345", "67890"])
 
         assert result["success"] is True
+        assert result["count"] == 2
+        assert result["account"] is None
+        assert result["mailbox"] is None
+        assert [m["id"] for m in result["messages"]] == ["12345", "67890"]
+        # Per-id metadata fetch with no body.
+        assert mock_mail.get_message.call_count == 2
+        first_call = mock_mail.get_message.call_args_list[0]
+        assert first_call.args[0] == "12345"
+        assert first_call.kwargs.get("include_content") is False
+        mock_mail.search_messages.assert_not_called()
+        mock_mail.get_selected_messages.assert_not_called()
 
-    def test_thread_of_logs_operation(
-        self, mock_mail: MagicMock, mock_logger: MagicMock
+    def test_source_explicit_ids_post_filters(
+        self, mock_mail: MagicMock
     ) -> None:
-        mock_mail.get_thread.return_value = self._thread_fixture()
+        mock_mail.get_message.side_effect = [
+            {
+                "id": "1",
+                "subject": "alpha",
+                "sender": "alice@example.com",
+                "date_received": "2026-04-01",
+                "read_status": True,
+                "flagged": False,
+            },
+            {
+                "id": "2",
+                "subject": "beta",
+                "sender": "bob@example.com",
+                "date_received": "2026-04-02",
+                "read_status": False,
+                "flagged": False,
+            },
+        ]
 
-        search_messages(thread_of="1", read_status=False)
-
-        mock_logger.log_operation.assert_called_once()
-        logged_op, logged_params, logged_status = (
-            mock_logger.log_operation.call_args.args
+        result = search_messages(
+            source=["1", "2"], read_status=False
         )
-        assert logged_op == "search_messages"
-        assert logged_status == "success"
-        assert logged_params["thread_of"] == "1"
+
+        assert [m["id"] for m in result["messages"]] == ["2"]
+
+    def test_source_mixed_selected_and_explicit_ids(
+        self, mock_mail: MagicMock
+    ) -> None:
+        """SELECTED token expands inline; mixed with real ids."""
+        mock_mail.get_selected_messages.return_value = [
+            {
+                "id": "sel-1",
+                "subject": "from selection",
+                "sender": "x@example.com",
+                "date_received": "2026-04-01",
+                "read_status": True,
+                "flagged": False,
+            },
+        ]
+        mock_mail.get_message.return_value = {
+            "id": "explicit-1",
+            "subject": "explicit",
+            "sender": "y@example.com",
+            "date_received": "2026-04-02",
+            "read_status": True,
+            "flagged": False,
+        }
+
+        result = search_messages(source=["SELECTED", "explicit-1"])
+
+        assert result["success"] is True
+        assert [m["id"] for m in result["messages"]] == ["sel-1", "explicit-1"]
+        mock_mail.get_selected_messages.assert_called_once_with(
+            include_content=False
+        )
+        mock_mail.get_message.assert_called_once()
+
+    def test_source_empty_list_returns_empty(
+        self, mock_mail: MagicMock
+    ) -> None:
+        result = search_messages(source=[])
+
+        assert result["success"] is True
+        assert result["count"] == 0
+        assert result["messages"] == []
+        mock_mail.search_messages.assert_not_called()
+        mock_mail.get_selected_messages.assert_not_called()
+        mock_mail.get_message.assert_not_called()
+
+    def test_source_nonexistent_id_skipped(
+        self, mock_mail: MagicMock
+    ) -> None:
+        """Partial-results: missing ids drop out, found ids return."""
+        from apple_mail_mcp.exceptions import MailMessageNotFoundError
+
+        mock_mail.get_message.side_effect = [
+            MailMessageNotFoundError("nope"),
+            {
+                "id": "good-id",
+                "subject": "found",
+                "sender": "a@example.com",
+                "date_received": "2026-04-01",
+                "read_status": True,
+                "flagged": False,
+            },
+        ]
+
+        result = search_messages(source=["bogus", "good-id"])
+
+        assert result["success"] is True
+        assert [m["id"] for m in result["messages"]] == ["good-id"]
 
 
 # ---------------------------------------------------------------------------
-# 3. get_message
+# 3. get_messages
 # ---------------------------------------------------------------------------
 
 
-class TestGetMessage:
-    def test_success_passes_include_content(
+class TestGetMessages:
+    def test_single_id_returns_one_in_list(
         self, mock_mail: MagicMock, mock_logger: MagicMock
     ) -> None:
         mock_mail.get_message.return_value = {"id": "1", "subject": "Hi"}
 
-        result = get_message("1", include_content=False)
+        result = get_messages(["1"], include_content=False)
 
         assert result["success"] is True
-        assert result["message"]["id"] == "1"
-        # All five params flow through; defaults preserve back-compat for
-        # callers who only pass message_id (+ include_content).
+        assert result["count"] == 1
+        assert result["messages"][0]["id"] == "1"
+        # All five params flow through per id.
         mock_mail.get_message.assert_called_once_with(
             "1",
             include_content=False,
@@ -855,20 +856,120 @@ class TestGetMessage:
             account=None,
             mailbox=None,
         )
-        mock_logger.log_operation.assert_called_once_with(
-            "get_message", {"message_id": "1"}, "success"
-        )
+        mock_logger.log_operation.assert_called_once()
 
-    def test_imap_hint_params_pass_through_to_connector(
-        self, mock_mail: MagicMock, mock_logger: MagicMock
+    def test_list_of_ids_returns_many(
+        self, mock_mail: MagicMock
     ) -> None:
-        """Issue #72: account+mailbox activate the IMAP fast path; the
-        server tool must forward them unchanged so the dispatch decision
-        happens in the connector."""
+        mock_mail.get_message.side_effect = [
+            {"id": "1", "subject": "first"},
+            {"id": "2", "subject": "second"},
+        ]
+
+        result = get_messages(["1", "2"])
+
+        assert result["success"] is True
+        assert result["count"] == 2
+        assert [m["id"] for m in result["messages"]] == ["1", "2"]
+        assert mock_mail.get_message.call_count == 2
+
+    def test_empty_list_returns_empty_no_error(
+        self, mock_mail: MagicMock
+    ) -> None:
+        result = get_messages([])
+
+        assert result["success"] is True
+        assert result["count"] == 0
+        assert result["messages"] == []
+        mock_mail.get_message.assert_not_called()
+        mock_mail.get_selected_messages.assert_not_called()
+
+    def test_selected_sentinel_expands_to_selection(
+        self, mock_mail: MagicMock
+    ) -> None:
+        mock_mail.get_selected_messages.return_value = [
+            {
+                "id": "sel-1",
+                "subject": "selected one",
+                "sender": "x@example.com",
+                "date_received": "Mon",
+                "read_status": True,
+                "flagged": False,
+                "content": "body",
+            },
+            {
+                "id": "sel-2",
+                "subject": "selected two",
+                "sender": "y@example.com",
+                "date_received": "Tue",
+                "read_status": True,
+                "flagged": False,
+                "content": "body",
+            },
+        ]
+
+        result = get_messages(["SELECTED"])
+
+        assert result["success"] is True
+        assert [m["id"] for m in result["messages"]] == ["sel-1", "sel-2"]
+        # SELECTED expands via get_selected_messages — full bodies (default).
+        mock_mail.get_selected_messages.assert_called_once_with(
+            include_content=True
+        )
+        # No per-id get_message lookup needed for SELECTED-resolved rows.
+        mock_mail.get_message.assert_not_called()
+
+    def test_mixed_selected_and_real_ids(
+        self, mock_mail: MagicMock
+    ) -> None:
+        mock_mail.get_selected_messages.return_value = [
+            {
+                "id": "sel-1",
+                "subject": "from selection",
+                "sender": "x@example.com",
+                "date_received": "Mon",
+                "read_status": True,
+                "flagged": False,
+                "content": "body",
+            },
+        ]
+        mock_mail.get_message.return_value = {
+            "id": "real-1",
+            "subject": "explicit",
+            "content": "explicit body",
+        }
+
+        result = get_messages(["SELECTED", "real-1"])
+
+        assert result["success"] is True
+        assert [m["id"] for m in result["messages"]] == ["sel-1", "real-1"]
+        mock_mail.get_selected_messages.assert_called_once_with(
+            include_content=True
+        )
+        mock_mail.get_message.assert_called_once()
+
+    def test_nonexistent_id_skipped_partial_results(
+        self, mock_mail: MagicMock
+    ) -> None:
+        """Per-id MailMessageNotFoundError is dropped silently (partial-results)."""
+        mock_mail.get_message.side_effect = [
+            MailMessageNotFoundError("missing"),
+            {"id": "good", "subject": "found"},
+        ]
+
+        result = get_messages(["bogus", "good"])
+
+        assert result["success"] is True
+        assert [m["id"] for m in result["messages"]] == ["good"]
+
+    def test_imap_hint_params_pass_through_per_id(
+        self, mock_mail: MagicMock
+    ) -> None:
+        """Issue #72: account+mailbox activate the IMAP fast path."""
         mock_mail.get_message.return_value = {"id": "abc@x", "subject": "Hi"}
 
-        result = get_message(
-            "abc@x", account="iCloud", mailbox="INBOX", headers_only=True
+        result = get_messages(
+            ["abc@x"], account="iCloud", mailbox="INBOX", headers_only=True
         )
 
         assert result["success"] is True
@@ -880,23 +981,12 @@ class TestGetMessage:
             mailbox="INBOX",
         )
 
-    def test_message_not_found_maps_to_message_not_found(
-        self, mock_mail: MagicMock, mock_logger: MagicMock
-    ) -> None:
-        mock_mail.get_message.side_effect = MailMessageNotFoundError("x")
-
-        result = get_message("999")
-
-        assert result["success"] is False
-        assert result["error_type"] == "message_not_found"
-        assert "999" in result["error"]
-
     def test_unexpected_exception_maps_to_unknown(
-        self, mock_mail: MagicMock, mock_logger: MagicMock
+        self, mock_mail: MagicMock
     ) -> None:
         mock_mail.get_message.side_effect = RuntimeError("boom")
 
-        result = get_message("1")
+        result = get_messages(["1"])
 
         assert result["success"] is False
         assert result["error_type"] == "unknown"
@@ -1266,6 +1356,54 @@ class TestGetAttachments:
         mock_mail.get_attachments.assert_called_once_with(
             "1", account=None, mailbox=None,
         )
+
+
+# ---------------------------------------------------------------------------
+# 7b. get_thread
+# ---------------------------------------------------------------------------
+
+
+class TestGetThread:
+    def test_success_returns_thread_and_logs(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        mock_mail.get_thread.return_value = [
+            {"id": "1", "subject": "Q3", "sender": "a@b", "date_received": "Mon", "read_status": True, "flagged": False},
+            {"id": "2", "subject": "Re: Q3", "sender": "c@d", "date_received": "Tue", "read_status": False, "flagged": False},
+        ]
+
+        result = get_thread("1")
+
+        assert result["success"] is True
+        assert result["count"] == 2
+        assert len(result["thread"]) == 2
+        mock_mail.get_thread.assert_called_once_with("1")
+        mock_logger.log_operation.assert_called_once_with(
+            "get_thread", {"message_id": "1"}, "success"
+        )
+
+    def test_message_not_found_maps_to_message_not_found(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        mock_mail.get_thread.side_effect = MailMessageNotFoundError("nope")
+
+        result = get_thread("nope")
+
+        assert result["success"] is False
+        assert result["error_type"] == "message_not_found"
+        assert "nope" in result["error"]
+        mock_logger.log_operation.assert_not_called()
+
+    def test_unexpected_exception_maps_to_unknown(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        mock_mail.get_thread.side_effect = RuntimeError("boom")
+
+        result = get_thread("1")
+
+        assert result["success"] is False
+        assert result["error_type"] == "unknown"
+        assert "boom" in result["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -1798,9 +1936,9 @@ class TestRateLimitingIntegration:
         """Prove the connector is never called once rate-limited."""
         mock_mail.get_message.return_value = {"id": "1"}
 
-        get_message("1")
-        get_message("1")
-        result = get_message("1")
+        get_messages(["1"])
+        get_messages(["1"])
+        result = get_messages(["1"])
 
         assert result["error_type"] == "rate_limited"
         assert mock_mail.get_message.call_count == 2

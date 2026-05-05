@@ -30,7 +30,8 @@ EXPECTED_TOOLS = {
     "list_mailboxes",
     "list_rules",
     "search_messages",
-    "get_message",
+    "get_messages",
+    "get_thread",
     "get_attachments",
     # Send / reply / forward
     "send_email",

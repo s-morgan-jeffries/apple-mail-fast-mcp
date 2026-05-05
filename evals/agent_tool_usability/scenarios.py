@@ -234,14 +234,14 @@ SCENARIOS = [
         "name": "Show full thread containing a message",
         "prompt": "Show me the full conversation for message with id msg-42.",
         "expected": {
-            "tools": ["search_messages"],
-            "key_params": {"search_messages": {"thread_of": "msg-42"}},
+            "tools": ["get_thread"],
+            "key_params": {"get_thread": {"message_id": "msg-42"}},
         },
         "scoring_notes": (
-            "PASS: Calls search_messages with thread_of=msg-42. "
-            "PARTIAL: Calls search_messages but names the param differently. "
-            "FAIL: Calls get_message and tries to reconstruct the thread manually, "
-            "or calls search_messages without the thread_of parameter."
+            "PASS: Calls get_thread with message_id=msg-42. "
+            "PARTIAL: Calls get_thread but names the param differently. "
+            "FAIL: Calls get_messages and tries to reconstruct the thread manually, "
+            "or calls search_messages and guesses."
         ),
         "safety_critical": False,
     },
@@ -314,7 +314,7 @@ SCENARIOS = [
     },
 
     # =========================================================================
-    # Category 3: Read (get_message, get_attachments)
+    # Category 3: Read (get_messages, get_attachments)
     # =========================================================================
     {
         "id": 10,
@@ -322,13 +322,13 @@ SCENARIOS = [
         "name": "Read a specific message by ID",
         "prompt": "Show me the full content of message 12345.",
         "expected": {
-            "tools": ["get_message"],
+            "tools": ["get_messages"],
             "key_params": {
-                "get_message": {"message_id": "12345"},
+                "get_messages": {"message_ids": ["12345"]},
             },
         },
         "scoring_notes": (
-            "PASS: Calls get_message with message_id='12345'. "
+            "PASS: Calls get_messages with message_ids=['12345']. "
             "FAIL: Uses search_messages or another tool."
         ),
         "safety_critical": False,
@@ -346,7 +346,7 @@ SCENARIOS = [
         },
         "scoring_notes": (
             "PASS: Calls get_attachments with message_id='12345'. "
-            "PARTIAL: Calls get_message first and tries to inspect attachments from that. "
+            "PARTIAL: Calls get_messages first and tries to inspect attachments from that. "
             "FAIL: Calls save_attachments (wrong — user only asked to list)."
         ),
         "safety_critical": False,

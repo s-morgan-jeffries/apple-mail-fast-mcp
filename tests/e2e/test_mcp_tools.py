@@ -27,7 +27,8 @@ EXPECTED_TOOLS = {
     "list_mailboxes",
     "list_rules",
     "search_messages",
-    "get_message",
+    "get_messages",
+    "get_thread",
     "get_attachments",
     # Send / reply / forward
     "send_email",
@@ -143,10 +144,17 @@ INVOCATION_CASES: list[tuple[str, dict[str, Any], str, Any]] = [
         [],
     ),
     (
-        "get_message",
-        {"message_id": "msg-1"},
+        "get_messages",
+        {"message_ids": ["msg-1"]},
         "get_message",
         {"id": "msg-1", "subject": "s", "from": "a@example.com"},
+    ),
+    (
+        "get_thread",
+        {"message_id": "msg-1"},
+        "get_thread",
+        [{"id": "msg-1", "subject": "Q3", "sender": "a@b",
+          "date_received": "Mon", "read_status": True, "flagged": False}],
     ),
     (
         "send_email",
