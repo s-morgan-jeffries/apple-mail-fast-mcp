@@ -1316,6 +1316,42 @@ class TestSendEmail:
         assert result["success"] is False
         assert result["error_type"] == "unknown"
 
+    # ---- from_account (#155) --------------------------------------------
+
+    async def test_from_account_passes_through_to_connector(
+        self, mock_mail: MagicMock
+    ) -> None:
+        mock_mail.send_email.return_value = True
+
+        await send_email(
+            subject="Hi",
+            body="b",
+            to=["a@example.com"],
+            from_account="iCloud",
+        )
+
+        kwargs = mock_mail.send_email.call_args.kwargs
+        assert kwargs["from_account"] == "iCloud"
+
+    async def test_from_account_not_found_returns_typed_error(
+        self, mock_mail: MagicMock
+    ) -> None:
+        from apple_mail_mcp.exceptions import MailAccountNotFoundError
+
+        mock_mail.send_email.side_effect = MailAccountNotFoundError(
+            "Account 'Bogus' not found"
+        )
+
+        result = await send_email(
+            subject="Hi",
+            body="b",
+            to=["a@example.com"],
+            from_account="Bogus",
+        )
+
+        assert result["success"] is False
+        assert result["error_type"] == "account_not_found"
+
 
 # ---------------------------------------------------------------------------
 # 5. mark_as_read
@@ -1523,7 +1559,47 @@ class TestSendEmailWithAttachments:
         assert result["success"] is False
         assert result["error_type"] == "unknown"
 
+    # ---- from_account (#155) --------------------------------------------
 
+    async def test_from_account_passes_through_to_connector(
+        self, mock_mail: MagicMock, tmp_path: Any
+    ) -> None:
+        att = tmp_path / "r.pdf"
+        att.write_bytes(b"x")
+        mock_mail.send_email_with_attachments.return_value = True
+
+        await send_email_with_attachments(
+            subject="Hi",
+            body="b",
+            to=["a@example.com"],
+            attachments=[str(att)],
+            from_account="iCloud",
+        )
+
+        kwargs = mock_mail.send_email_with_attachments.call_args.kwargs
+        assert kwargs["from_account"] == "iCloud"
+
+    async def test_from_account_not_found_returns_typed_error(
+        self, mock_mail: MagicMock, tmp_path: Any
+    ) -> None:
+        from apple_mail_mcp.exceptions import MailAccountNotFoundError
+
+        att = tmp_path / "r.pdf"
+        att.write_bytes(b"x")
+        mock_mail.send_email_with_attachments.side_effect = (
+            MailAccountNotFoundError("Account 'Bogus' not found")
+        )
+
+        result = await send_email_with_attachments(
+            subject="Hi",
+            body="b",
+            to=["a@example.com"],
+            attachments=[str(att)],
+            from_account="Bogus",
+        )
+
+        assert result["success"] is False
+        assert result["error_type"] == "account_not_found"
 
 
 # ---------------------------------------------------------------------------
@@ -1953,7 +2029,7 @@ class TestReplyToMessage:
         assert result["original_message_id"] == "1"
         assert result["reply_all"] is True
         mock_mail.reply_to_message.assert_called_once_with(
-            message_id="1", body="thanks", reply_all=True
+            message_id="1", body="thanks", reply_all=True, from_account=None
         )
 
     def test_message_not_found(self, mock_mail: MagicMock) -> None:
@@ -1972,6 +2048,32 @@ class TestReplyToMessage:
 
         assert result["success"] is False
         assert result["error_type"] == "unknown"
+
+    # ---- from_account (#155) --------------------------------------------
+
+    def test_from_account_passes_through_to_connector(
+        self, mock_mail: MagicMock
+    ) -> None:
+        mock_mail.reply_to_message.return_value = "reply-1"
+
+        reply_to_message("1", "thanks", from_account="iCloud")
+
+        kwargs = mock_mail.reply_to_message.call_args.kwargs
+        assert kwargs["from_account"] == "iCloud"
+
+    def test_from_account_not_found_returns_typed_error(
+        self, mock_mail: MagicMock
+    ) -> None:
+        from apple_mail_mcp.exceptions import MailAccountNotFoundError
+
+        mock_mail.reply_to_message.side_effect = MailAccountNotFoundError(
+            "Account 'Bogus' not found"
+        )
+
+        result = reply_to_message("1", "hi", from_account="Bogus")
+
+        assert result["success"] is False
+        assert result["error_type"] == "account_not_found"
 
 
 # ---------------------------------------------------------------------------
@@ -2035,6 +2137,38 @@ class TestForwardMessage:
 
         assert result["success"] is False
         assert result["error_type"] == "unknown"
+
+    # ---- from_account (#155) --------------------------------------------
+
+    async def test_from_account_passes_through_to_connector(
+        self, mock_mail: MagicMock
+    ) -> None:
+        mock_mail.forward_message.return_value = "fwd-1"
+
+        await forward_message(
+            "1",
+            to=["c@example.com"],
+            from_account="iCloud",
+        )
+
+        kwargs = mock_mail.forward_message.call_args.kwargs
+        assert kwargs["from_account"] == "iCloud"
+
+    async def test_from_account_not_found_returns_typed_error(
+        self, mock_mail: MagicMock
+    ) -> None:
+        from apple_mail_mcp.exceptions import MailAccountNotFoundError
+
+        mock_mail.forward_message.side_effect = MailAccountNotFoundError(
+            "Account 'Bogus' not found"
+        )
+
+        result = await forward_message(
+            "1", to=["c@example.com"], from_account="Bogus"
+        )
+
+        assert result["success"] is False
+        assert result["error_type"] == "account_not_found"
 
 
 # ---------------------------------------------------------------------------

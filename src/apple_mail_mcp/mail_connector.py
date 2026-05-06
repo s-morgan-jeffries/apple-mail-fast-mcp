@@ -397,6 +397,31 @@ class AppleMailConnector:
         result = self._run_applescript(script)
         return cast(list[dict[str, Any]], parse_applescript_json(result))
 
+    def _resolve_account_to_sender(self, account: str) -> str:
+        """Resolve an account name or UUID to its primary email address.
+
+        Used by the send-path methods (#155) to wire up the AppleScript
+        ``sender`` property on outgoing messages. Accepts either form
+        matching the existing ``account`` convention on ``list_mailboxes``,
+        ``search_messages``, etc.
+
+        Raises:
+            MailAccountNotFoundError: No account matches the given name/UUID.
+            ValueError: Account exists but has no email addresses configured.
+        """
+        for acc in self.list_accounts():
+            if acc.get("id") == account or acc.get("name") == account:
+                emails = acc.get("email_addresses") or []
+                if not emails:
+                    raise ValueError(
+                        f"Account {account!r} has no email addresses "
+                        f"configured."
+                    )
+                return cast(str, emails[0])
+        raise MailAccountNotFoundError(
+            f"Account {account!r} not found in Mail.app configured accounts."
+        )
+
     def list_rules(self) -> list[dict[str, Any]]:
         """List all Mail.app rules.
 
@@ -1469,6 +1494,7 @@ class AppleMailConnector:
         to: list[str],
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
+        from_account: str | None = None,
     ) -> bool:
         """
         Send an email.
@@ -1479,11 +1505,16 @@ class AppleMailConnector:
             to: List of To recipients
             cc: List of CC recipients
             bcc: List of BCC recipients
+            from_account: Optional Mail.app account (name or UUID) to send
+                from. None (default) uses Mail.app's default sender. See
+                #155.
 
         Returns:
             True if sent successfully
 
         Raises:
+            MailAccountNotFoundError: If ``from_account`` doesn't match any
+                configured account.
             MailAppleScriptError: If send fails
         """
         subject_safe = escape_applescript_string(sanitize_input(subject))
@@ -1494,9 +1525,18 @@ class AppleMailConnector:
         cc_list = ", ".join(f'"{escape_applescript_string(addr)}"' for addr in (cc or []))
         bcc_list = ", ".join(f'"{escape_applescript_string(addr)}"' for addr in (bcc or []))
 
+        sender_clause = ""
+        if from_account is not None:
+            sender_email = self._resolve_account_to_sender(from_account)
+            sender_safe = escape_applescript_string(sender_email)
+            sender_clause = (
+                f'set sender of theMessage to "{sender_safe}"'
+            )
+
         script = f"""
         tell application "Mail"
             set theMessage to make new outgoing message with properties {{subject:"{subject_safe}", content:"{body_safe}", visible:false}}
+            {sender_clause}
 
             tell theMessage
                 -- Add To recipients
@@ -1590,6 +1630,7 @@ class AppleMailConnector:
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
         max_attachment_size: int = 25 * 1024 * 1024,
+        from_account: str | None = None,
     ) -> bool:
         """
         Send an email with file attachments.
@@ -1602,6 +1643,9 @@ class AppleMailConnector:
             cc: List of CC recipients
             bcc: List of BCC recipients
             max_attachment_size: Maximum size per attachment in bytes
+            from_account: Optional Mail.app account (name or UUID) to send
+                from. None (default) uses Mail.app's default sender. See
+                #155.
 
         Returns:
             True if sent successfully
@@ -1609,6 +1653,8 @@ class AppleMailConnector:
         Raises:
             FileNotFoundError: If attachment file doesn't exist
             ValueError: If attachment exceeds size limit
+            MailAccountNotFoundError: If ``from_account`` doesn't match any
+                configured account.
             MailAppleScriptError: If send fails
         """
         from .security import validate_attachment_size, validate_attachment_type
@@ -1647,9 +1693,18 @@ class AppleMailConnector:
             for path in attachments
         )
 
+        sender_clause = ""
+        if from_account is not None:
+            sender_email = self._resolve_account_to_sender(from_account)
+            sender_safe = escape_applescript_string(sender_email)
+            sender_clause = (
+                f'set sender of theMessage to "{sender_safe}"'
+            )
+
         script = f"""
         tell application "Mail"
             set theMessage to make new outgoing message with properties {{subject:"{subject_safe}", content:"{body_safe}", visible:false}}
+            {sender_clause}
 
             tell theMessage
                 -- Add To recipients
@@ -2440,6 +2495,7 @@ class AppleMailConnector:
         body: str,
         reply_all: bool = False,
         quote_original: bool = True,
+        from_account: str | None = None,
     ) -> str:
         """
         Reply to a message.
@@ -2449,11 +2505,16 @@ class AppleMailConnector:
             body: Reply body text
             reply_all: If True, reply to all recipients; if False, reply only to sender
             quote_original: If True, include original message quoted
+            from_account: Optional Mail.app account (name or UUID) to send
+                the reply from. None (default) uses Mail.app's default
+                sender for the reply. See #155.
 
         Returns:
             Message ID of the reply
 
         Raises:
+            MailAccountNotFoundError: If ``from_account`` doesn't match any
+                configured account.
             MailMessageNotFoundError: If message doesn't exist
         """
         from .utils import sanitize_input
@@ -2461,6 +2522,14 @@ class AppleMailConnector:
         message_id_safe = escape_applescript_string(sanitize_input(message_id))
         body_safe = escape_applescript_string(sanitize_input(body))
         reply_type = "reply to all" if reply_all else "reply"
+
+        sender_clause = ""
+        if from_account is not None:
+            sender_email = self._resolve_account_to_sender(from_account)
+            sender_safe = escape_applescript_string(sender_email)
+            sender_clause = (
+                f'set sender of replyMsg to "{sender_safe}"'
+            )
 
         # Apple Mail's reply command automatically handles quoting if opened in editor
         # We'll create a reply and set its content
@@ -2478,6 +2547,7 @@ class AppleMailConnector:
 
                         -- Set body content
                         set content of replyMsg to "{body_safe}"
+                        {sender_clause}
 
                         -- Get the message ID
                         set replyId to id of replyMsg
@@ -2505,6 +2575,7 @@ class AppleMailConnector:
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
         include_attachments: bool = True,
+        from_account: str | None = None,
     ) -> str:
         """
         Forward a message to recipients.
@@ -2516,12 +2587,17 @@ class AppleMailConnector:
             cc: Optional CC recipients
             bcc: Optional BCC recipients
             include_attachments: If True, include original attachments
+            from_account: Optional Mail.app account (name or UUID) to send
+                the forward from. None (default) uses Mail.app's default
+                sender. See #155.
 
         Returns:
             Message ID of the forwarded message
 
         Raises:
             ValueError: If no recipients or invalid emails
+            MailAccountNotFoundError: If ``from_account`` doesn't match any
+                configured account.
             MailMessageNotFoundError: If message doesn't exist
         """
         from .utils import format_applescript_list, sanitize_input, validate_email
@@ -2550,6 +2626,14 @@ class AppleMailConnector:
         cc_list = format_applescript_list(cc) if cc else '""'
         bcc_list = format_applescript_list(bcc) if bcc else '""'
 
+        sender_clause = ""
+        if from_account is not None:
+            sender_email = self._resolve_account_to_sender(from_account)
+            sender_safe = escape_applescript_string(sender_email)
+            sender_clause = (
+                f'set sender of fwdMsg to "{sender_safe}"'
+            )
+
         script = f"""
         tell application "Mail"
             repeat with acc in accounts
@@ -2559,6 +2643,7 @@ class AppleMailConnector:
 
                         -- Create forward message
                         set fwdMsg to forward origMsg
+                        {sender_clause}
 
                         -- Add body text before forwarded content
                         if "{body_safe}" is not "" then

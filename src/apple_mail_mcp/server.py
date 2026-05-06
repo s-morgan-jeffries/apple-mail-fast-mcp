@@ -1022,6 +1022,7 @@ async def send_email(
     subject: str,
     body: str,
     to: list[str],
+    from_account: str | None = None,
     cc: list[str] | None = None,
     bcc: list[str] | None = None,
     ctx: Context | None = None,
@@ -1035,6 +1036,10 @@ async def send_email(
         subject: Email subject
         body: Email body (plain text)
         to: List of recipient email addresses
+        from_account: Optional Mail.app account name or UUID to send from.
+            None (default) uses Mail.app's default sender. Useful when the
+            user has multiple configured accounts (work + personal + role
+            accounts + Gmail aliases). See #155.
         cc: List of CC recipients (optional)
         bcc: List of BCC recipients (optional)
 
@@ -1046,6 +1051,7 @@ async def send_email(
         ...     subject="Meeting Follow-up",
         ...     body="Thanks for the great meeting!",
         ...     to=["alice@example.com"],
+        ...     from_account="Work",
         ...     cc=["bob@example.com"]
         ... )
         {"success": True, "message": "Email sent successfully"}
@@ -1085,11 +1091,12 @@ async def send_email(
             to=to,
             cc=cc,
             bcc=bcc,
+            from_account=from_account,
         )
 
         operation_logger.log_operation(
             "send_email",
-            {"subject": subject, "to": to, "cc": cc, "bcc": bcc},
+            {"subject": subject, "to": to, "cc": cc, "bcc": bcc, "from_account": from_account},
             "success"
         )
 
@@ -1102,6 +1109,13 @@ async def send_email(
             },
         }
 
+    except MailAccountNotFoundError as e:
+        logger.error(f"Account not found: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "error_type": "account_not_found",
+        }
     except MailAppleScriptError as e:
         logger.error(f"Error sending email: {e}")
         operation_logger.log_operation(
@@ -1203,6 +1217,7 @@ async def send_email_with_attachments(
     body: str,
     to: list[str],
     attachments: list[str],
+    from_account: str | None = None,
     cc: list[str] | None = None,
     bcc: list[str] | None = None,
     ctx: Context | None = None,
@@ -1217,6 +1232,8 @@ async def send_email_with_attachments(
         body: Email body (plain text)
         to: List of recipient email addresses
         attachments: List of file paths to attach
+        from_account: Optional Mail.app account name or UUID to send from.
+            None (default) uses Mail.app's default sender. See #155.
         cc: List of CC recipients (optional)
         bcc: List of BCC recipients (optional)
 
@@ -1282,6 +1299,7 @@ async def send_email_with_attachments(
             attachments=attachment_paths,
             cc=cc,
             bcc=bcc,
+            from_account=from_account,
         )
 
         operation_logger.log_operation(
@@ -1311,6 +1329,13 @@ async def send_email_with_attachments(
             "success": False,
             "error": str(e),
             "error_type": "validation_error",
+        }
+    except MailAccountNotFoundError as e:
+        logger.error(f"Account not found: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "error_type": "account_not_found",
         }
     except MailAppleScriptError as e:
         logger.error(f"Error sending email: {e}")
@@ -1858,6 +1883,7 @@ def reply_to_message(
     message_id: str,
     body: str,
     reply_all: bool = False,
+    from_account: str | None = None,
 ) -> dict[str, Any]:
     """
     Reply to a message.
@@ -1866,6 +1892,9 @@ def reply_to_message(
         message_id: ID of the message to reply to
         body: Reply body text
         reply_all: If True, reply to all recipients; if False, reply only to sender (default: False)
+        from_account: Optional Mail.app account name or UUID to send the
+            reply from. None (default) uses Mail.app's default sender for
+            the reply. See #155.
 
     Returns:
         Dictionary with success status and reply message ID
@@ -1893,6 +1922,7 @@ def reply_to_message(
             message_id=message_id,
             body=body,
             reply_all=reply_all,
+            from_account=from_account,
         )
 
         return {
@@ -1902,6 +1932,13 @@ def reply_to_message(
             "reply_all": reply_all,
         }
 
+    except MailAccountNotFoundError as e:
+        logger.error(f"Account not found: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "error_type": "account_not_found",
+        }
     except MailMessageNotFoundError as e:
         logger.error(f"Message not found: {e}")
         return {
@@ -1923,6 +1960,7 @@ async def forward_message(
     message_id: str,
     to: list[str],
     body: str = "",
+    from_account: str | None = None,
     cc: list[str] | None = None,
     bcc: list[str] | None = None,
     ctx: Context | None = None,
@@ -1936,6 +1974,9 @@ async def forward_message(
         message_id: ID of the message to forward
         to: List of recipient email addresses
         body: Optional body text to add before forwarded content (default: "")
+        from_account: Optional Mail.app account name or UUID to send the
+            forward from. None (default) uses Mail.app's default sender.
+            See #155.
         cc: Optional CC recipients
         bcc: Optional BCC recipients
 
@@ -1986,6 +2027,7 @@ async def forward_message(
             body=body,
             cc=cc,
             bcc=bcc,
+            from_account=from_account,
         )
 
         return {
@@ -2003,6 +2045,13 @@ async def forward_message(
             "success": False,
             "error": str(e),
             "error_type": "validation_error",
+        }
+    except MailAccountNotFoundError as e:
+        logger.error(f"Account not found: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "error_type": "account_not_found",
         }
     except MailMessageNotFoundError as e:
         logger.error(f"Message not found: {e}")

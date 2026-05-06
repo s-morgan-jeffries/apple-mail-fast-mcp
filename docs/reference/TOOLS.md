@@ -251,6 +251,7 @@ Send an email via Apple Mail.
 | `subject` | string | Yes | - | Email subject line |
 | `body` | string | Yes | - | Email body (plain text) |
 | `to` | array[string] | Yes | - | List of recipient email addresses |
+| `from_account` | string | No | None | Mail.app account name or UUID to send from. None = Mail.app default sender. Useful when the user has multiple configured accounts. Returns `error_type: "account_not_found"` if no match. |
 | `cc` | array[string] | No | [] | List of CC recipients |
 | `bcc` | array[string] | No | [] | List of BCC recipients |
 
@@ -571,6 +572,7 @@ Send an email with file attachments via Apple Mail.
 | `body` | string | Yes | - | Email body content |
 | `to` | list[string] | Yes | - | List of recipient email addresses |
 | `attachments` | list[string] | Yes | - | List of file paths to attach |
+| `from_account` | string | No | None | Mail.app account name or UUID to send from. None = Mail.app default sender. Returns `error_type: "account_not_found"` if no match. |
 | `cc` | list[string] | No | None | CC recipients |
 | `bcc` | list[string] | No | None | BCC recipients |
 
@@ -883,6 +885,7 @@ Reply to a message.
 | `message_id` | string | Yes | - | ID of the message to reply to |
 | `body` | string | Yes | - | Reply body text |
 | `reply_all` | boolean | No | False | If True, reply to all recipients; if False, reply only to sender |
+| `from_account` | string | No | None | Mail.app account name or UUID to send the reply from. None = Mail.app default sender. Returns `error_type: "account_not_found"` if no match. |
 
 **Returns:**
 
@@ -937,6 +940,7 @@ Forward a message to recipients.
 | `message_id` | string | Yes | - | ID of the message to forward |
 | `to` | list[string] | Yes | - | List of recipient email addresses |
 | `body` | string | No | "" | Optional body text to add before forwarded content |
+| `from_account` | string | No | None | Mail.app account name or UUID to send the forward from. None = Mail.app default sender. Returns `error_type: "account_not_found"` if no match. |
 | `cc` | list[string] | No | None | Optional CC recipients |
 | `bcc` | list[string] | No | None | Optional BCC recipients |
 
