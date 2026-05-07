@@ -3300,3 +3300,69 @@ class TestDeleteDraft:
         # AppleScript output sometimes carries trailing newlines.
         mock_run.return_value = "OK\n"
         assert connector.delete_draft("160991") is True
+
+
+class TestFindMessageByMessageId:
+    """Tests for AppleMailConnector.find_message_by_message_id."""
+
+    @pytest.fixture
+    def connector(self) -> AppleMailConnector:
+        return AppleMailConnector(timeout=30)
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_returns_internal_id_on_match(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        mock_run.return_value = "160989"
+        result = connector.find_message_by_message_id(
+            "<calendar-abc123@google.com>"
+        )
+        assert result == "160989"
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_returns_none_on_not_found(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        mock_run.return_value = "NOT_FOUND"
+        result = connector.find_message_by_message_id(
+            "<missing@example.com>"
+        )
+        assert result is None
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_returns_none_on_empty_input(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        result = connector.find_message_by_message_id("")
+        assert result is None
+        # No need to call AppleScript for an empty input.
+        mock_run.assert_not_called()
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_strips_trailing_whitespace(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        mock_run.return_value = "160989\n"
+        assert connector.find_message_by_message_id("<x@y>") == "160989"
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_message_id_with_quotes_is_escaped(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """Quotes/backslashes in the Message-ID must be escaped to prevent
+        AppleScript injection. Real Message-IDs almost never contain these
+        but we shouldn't trust the wire."""
+        mock_run.return_value = "NOT_FOUND"
+        connector.find_message_by_message_id('<weird"id@host>')
+        script = mock_run.call_args[0][0]
+        # Escaped quote inside the AppleScript string literal.
+        assert '\\"' in script
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_script_uses_whose_message_id_clause(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        mock_run.return_value = "NOT_FOUND"
+        connector.find_message_by_message_id("<x@y>")
+        script = mock_run.call_args[0][0]
+        assert "whose message id is" in script

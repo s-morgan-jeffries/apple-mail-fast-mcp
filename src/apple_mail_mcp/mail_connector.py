@@ -2944,3 +2944,55 @@ class AppleMailConnector:
         if result == "OK":
             return True
         raise MailDraftNotFoundError(f"no draft with id {draft_id!r}")
+
+    def find_message_by_message_id(
+        self, rfc5322_message_id: str
+    ) -> str | None:
+        """Resolve an RFC 5322 Message-ID header to Mail's internal id.
+
+        Used by ``update_draft`` to recover a reply seed from a saved
+        draft's ``In-Reply-To`` header (which carries the original
+        message's RFC 5322 Message-ID, including the angle brackets).
+
+        Args:
+            rfc5322_message_id: e.g. ``<calendar-abc123@google.com>``.
+                Angle brackets are accepted; AppleScript's ``message id``
+                property stores the value verbatim as it appears on the
+                wire.
+
+        Returns:
+            Mail's internal numeric id (as a string) of the first
+            matching message found, or None if no message with that
+            Message-ID exists in any mailbox.
+        """
+        if not rfc5322_message_id:
+            return None
+        safe = escape_applescript_string(sanitize_input(rfc5322_message_id))
+
+        script = f"""
+        tell application "Mail"
+            set foundId to ""
+            repeat with acc in accounts
+                try
+                    repeat with mb in mailboxes of acc
+                        try
+                            set m to first message of mb whose message id is "{safe}"
+                            set foundId to (id of m as text)
+                            exit repeat
+                        end try
+                    end repeat
+                end try
+                if foundId is not "" then exit repeat
+            end repeat
+            if foundId is "" then
+                return "NOT_FOUND"
+            else
+                return foundId
+            end if
+        end tell
+        """
+
+        result = self._run_applescript(script).strip()
+        if result == "NOT_FOUND" or not result:
+            return None
+        return result
