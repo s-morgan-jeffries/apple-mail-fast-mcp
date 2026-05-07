@@ -95,6 +95,26 @@ class MailUnsupportedRuleActionError(MailError):
     pass
 
 
+class MailDraftError(MailError):
+    """Base class for draft-lifecycle errors."""
+
+    pass
+
+
+class MailDraftInvalidIdError(MailDraftError):
+    """Draft id failed validation (path traversal, invalid chars, too long,
+    or empty). Ids must match ^[a-zA-Z0-9_-]{1,128}$."""
+
+    pass
+
+
+class MailDraftNotFoundError(MailDraftError):
+    """No draft exists with the requested id (lookup across Drafts mailboxes
+    of every account returned nothing)."""
+
+    pass
+
+
 class MailTemplateError(MailError):
     """Base class for email-template errors."""
 
