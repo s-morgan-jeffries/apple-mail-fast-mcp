@@ -15,9 +15,11 @@ from typing import Any, cast
 
 from imapclient.exceptions import IMAPClientError, LoginError
 
+from .drafts import _validate_draft_id
 from .exceptions import (
     MailAccountNotFoundError,
     MailAppleScriptError,
+    MailDraftNotFoundError,
     MailKeychainAccessDeniedError,
     MailKeychainEntryNotFoundError,
     MailMailboxNotFoundError,
@@ -2891,3 +2893,54 @@ class AppleMailConnector:
         script = _wrap_as_json_script(tell_body)
         result = self._run_applescript(script)
         return cast(list[dict[str, Any]], parse_applescript_json(result))
+
+    def delete_draft(self, draft_id: str) -> bool:
+        """Move a draft to Trash (lifecycle endpoint for cancellation).
+
+        Mail.app's ``delete`` moves the message to the Deleted Messages
+        mailbox. Recovery from Trash is technically possible but Mail.app
+        no longer treats a trashed draft as editable, so this is
+        effectively a one-way discard.
+
+        Args:
+            draft_id: Mail.app internal draft id (from ``create_draft``).
+
+        Returns:
+            True if a draft with that id was found and trashed.
+
+        Raises:
+            MailDraftInvalidIdError: ``draft_id`` failed validation.
+            MailDraftNotFoundError: no draft with that id exists.
+        """
+        _validate_draft_id(draft_id)
+
+        script = f"""
+        tell application "Mail"
+            set didDelete to false
+            repeat with acc in accounts
+                try
+                    repeat with mb in mailboxes of acc
+                        if name of mb contains "Drafts" then
+                            try
+                                set m to first message of mb whose id is "{draft_id}"
+                                delete m
+                                set didDelete to true
+                                exit repeat
+                            end try
+                        end if
+                    end repeat
+                end try
+                if didDelete then exit repeat
+            end repeat
+            if didDelete then
+                return "OK"
+            else
+                return "NOT_FOUND"
+            end if
+        end tell
+        """
+
+        result = self._run_applescript(script).strip()
+        if result == "OK":
+            return True
+        raise MailDraftNotFoundError(f"no draft with id {draft_id!r}")

@@ -12,6 +12,8 @@ from imapclient.exceptions import LoginError
 from apple_mail_mcp.exceptions import (
     MailAccountNotFoundError,
     MailAppleScriptError,
+    MailDraftInvalidIdError,
+    MailDraftNotFoundError,
     MailKeychainAccessDeniedError,
     MailKeychainEntryNotFoundError,
     MailMailboxNotFoundError,
@@ -3236,3 +3238,65 @@ class TestAutoTemplateVars:
         # When no display name, recipient_name falls back to the email
         assert result["recipient_name"] == "bob@example.com"
         assert result["recipient_email"] == "bob@example.com"
+
+
+class TestDeleteDraft:
+    """Tests for AppleMailConnector.delete_draft."""
+
+    @pytest.fixture
+    def connector(self) -> AppleMailConnector:
+        return AppleMailConnector(timeout=30)
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_delete_draft_success(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        mock_run.return_value = "OK"
+        assert connector.delete_draft("160991") is True
+        mock_run.assert_called_once()
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_delete_draft_script_embeds_id(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        mock_run.return_value = "OK"
+        connector.delete_draft("160991")
+        script = mock_run.call_args[0][0]
+        assert 'whose id is "160991"' in script
+        # Lookup must be scoped to Drafts mailboxes only (perf + correctness).
+        assert 'name of mb contains "Drafts"' in script
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_delete_draft_not_found_raises(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        mock_run.return_value = "NOT_FOUND"
+        with pytest.raises(MailDraftNotFoundError):
+            connector.delete_draft("999999")
+
+    def test_delete_draft_invalid_id_path_traversal(
+        self, connector: AppleMailConnector
+    ) -> None:
+        with pytest.raises(MailDraftInvalidIdError):
+            connector.delete_draft("../etc/passwd")
+
+    def test_delete_draft_invalid_id_with_quotes(
+        self, connector: AppleMailConnector
+    ) -> None:
+        # Quote injection that could break out of the AppleScript string.
+        with pytest.raises(MailDraftInvalidIdError):
+            connector.delete_draft('1"; do something --')
+
+    def test_delete_draft_empty_id(
+        self, connector: AppleMailConnector
+    ) -> None:
+        with pytest.raises(MailDraftInvalidIdError):
+            connector.delete_draft("")
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_delete_draft_strips_whitespace_from_result(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        # AppleScript output sometimes carries trailing newlines.
+        mock_run.return_value = "OK\n"
+        assert connector.delete_draft("160991") is True
