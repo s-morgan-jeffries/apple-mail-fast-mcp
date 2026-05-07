@@ -3366,3 +3366,107 @@ class TestFindMessageByMessageId:
         connector.find_message_by_message_id("<x@y>")
         script = mock_run.call_args[0][0]
         assert "whose message id is" in script
+
+
+class TestGetDraftState:
+    """Tests for AppleMailConnector.get_draft_state."""
+
+    @pytest.fixture
+    def connector(self) -> AppleMailConnector:
+        return AppleMailConnector(timeout=30)
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_returns_full_draft_state(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        mock_run.return_value = (
+            '{"found":true,"draft_id":"160991",'
+            '"to":["a@example.com","b@example.com"],'
+            '"cc":["c@example.com"],"bcc":[],'
+            '"subject":"Re: hello",'
+            '"body":"hi there\\n\\n-- original --","in_reply_to":"<orig@x>",'
+            '"references":"<orig@x>",'
+            '"attachment_names":["report.pdf"]}'
+        )
+        state = connector.get_draft_state("160991")
+        assert state == {
+            "draft_id": "160991",
+            "to": ["a@example.com", "b@example.com"],
+            "cc": ["c@example.com"],
+            "bcc": [],
+            "subject": "Re: hello",
+            "body": "hi there\n\n-- original --",
+            "in_reply_to": "<orig@x>",
+            "references": "<orig@x>",
+            "attachment_names": ["report.pdf"],
+        }
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_not_found_raises(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        mock_run.return_value = '{"found":false}'
+        with pytest.raises(MailDraftNotFoundError):
+            connector.get_draft_state("999999")
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_strips_internal_found_flag(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        mock_run.return_value = (
+            '{"found":true,"draft_id":"x","to":[],"cc":[],"bcc":[],'
+            '"subject":"","body":"","in_reply_to":"","references":"",'
+            '"attachment_names":[]}'
+        )
+        state = connector.get_draft_state("x")
+        assert "found" not in state
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_handles_empty_recipient_lists(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        mock_run.return_value = (
+            '{"found":true,"draft_id":"x","to":[],"cc":[],"bcc":[],'
+            '"subject":"","body":"","in_reply_to":"","references":"",'
+            '"attachment_names":[]}'
+        )
+        state = connector.get_draft_state("x")
+        assert state["to"] == []
+        assert state["cc"] == []
+        assert state["bcc"] == []
+        assert state["attachment_names"] == []
+
+    def test_invalid_id_raises(
+        self, connector: AppleMailConnector
+    ) -> None:
+        with pytest.raises(MailDraftInvalidIdError):
+            connector.get_draft_state("../escape")
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_script_iterates_drafts_mailboxes(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        mock_run.return_value = '{"found":false}'
+        try:
+            connector.get_draft_state("160991")
+        except MailDraftNotFoundError:
+            pass
+        script = mock_run.call_args[0][0]
+        # Lookup should be scoped to Drafts mailboxes.
+        assert 'name of mb contains "Drafts"' in script
+        # Should use as-text id comparison (probes showed numeric whose
+        # clauses are unreliable on IMAP-backed Drafts).
+        assert "(id of d as text) is targetId" in script
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_script_reads_threading_headers(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        mock_run.return_value = '{"found":false}'
+        try:
+            connector.get_draft_state("160991")
+        except MailDraftNotFoundError:
+            pass
+        script = mock_run.call_args[0][0]
+        assert '"In-Reply-To"' in script
+        assert '"References"' in script

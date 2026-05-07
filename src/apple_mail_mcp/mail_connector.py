@@ -2996,3 +2996,119 @@ class AppleMailConnector:
         if result == "NOT_FOUND" or not result:
             return None
         return result
+
+    def get_draft_state(self, draft_id: str) -> dict[str, Any]:
+        """Read recipients, subject, body, threading headers, and
+        attachment names from a saved draft.
+
+        Used by ``update_draft`` to merge the caller's overrides with
+        the draft's current state before delete-and-recreate.
+
+        Iterates Drafts mailboxes manually (rather than `whose id is`)
+        because newly-created drafts can take a moment to be queryable
+        via whose-clause; iteration is reliable and Drafts mailboxes
+        are typically small.
+
+        Returns:
+            ``{
+                "draft_id": "...",
+                "to":  [...email...],
+                "cc":  [...email...],
+                "bcc": [...email...],
+                "subject": "...",
+                "body": "...",
+                "in_reply_to": "<msg-id>" | "",
+                "references": "<msg-id> ..." | "",
+                "attachment_names": ["foo.pdf", ...],
+            }``
+
+        Raises:
+            MailDraftInvalidIdError: ``draft_id`` failed validation.
+            MailDraftNotFoundError: no draft with that id exists.
+        """
+        _validate_draft_id(draft_id)
+
+        tell_body = f"""
+        tell application "Mail"
+            set targetId to "{draft_id}"
+            set foundDraft to missing value
+            repeat with acc in accounts
+                try
+                    repeat with mb in mailboxes of acc
+                        if name of mb contains "Drafts" then
+                            repeat with d in messages of mb
+                                if (id of d as text) is targetId then
+                                    set foundDraft to d
+                                    exit repeat
+                                end if
+                            end repeat
+                        end if
+                        if foundDraft is not missing value then exit repeat
+                    end repeat
+                end try
+                if foundDraft is not missing value then exit repeat
+            end repeat
+
+            if foundDraft is missing value then
+                set resultData to {{|found|:false}}
+            else
+                set toList to {{}}
+                try
+                    repeat with r in to recipients of foundDraft
+                        set end of toList to (address of r)
+                    end repeat
+                end try
+                set ccList to {{}}
+                try
+                    repeat with r in cc recipients of foundDraft
+                        set end of ccList to (address of r)
+                    end repeat
+                end try
+                set bccList to {{}}
+                try
+                    repeat with r in bcc recipients of foundDraft
+                        set end of bccList to (address of r)
+                    end repeat
+                end try
+
+                set inReplyTo to ""
+                set refs to ""
+                try
+                    repeat with h in headers of foundDraft
+                        set hname to (name of h)
+                        if hname is "In-Reply-To" then set inReplyTo to (content of h)
+                        if hname is "References" then set refs to (content of h)
+                    end repeat
+                end try
+
+                set attNames to {{}}
+                try
+                    repeat with a in mail attachments of foundDraft
+                        try
+                            set end of attNames to (name of a)
+                        end try
+                    end repeat
+                end try
+
+                set draftSubject to ""
+                try
+                    set draftSubject to (subject of foundDraft)
+                end try
+                set draftBody to ""
+                try
+                    set draftBody to (content of foundDraft)
+                end try
+
+                set resultData to {{|found|:true, |draft_id|:targetId, |to|:toList, |cc|:ccList, |bcc|:bccList, |subject|:draftSubject, |body|:draftBody, |in_reply_to|:inReplyTo, |references|:refs, |attachment_names|:attNames}}
+            end if
+        end tell
+        """
+
+        script = _wrap_as_json_script(tell_body)
+        raw = self._run_applescript(script)
+        data = parse_applescript_json(raw)
+        if not isinstance(data, dict) or not data.get("found"):
+            raise MailDraftNotFoundError(f"no draft with id {draft_id!r}")
+        # Drop the internal flag from the user-visible payload.
+        data.pop("found", None)
+        return cast(dict[str, Any], data)
