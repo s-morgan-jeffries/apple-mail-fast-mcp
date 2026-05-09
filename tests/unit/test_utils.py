@@ -10,6 +10,7 @@ from apple_mail_mcp.utils import (
     escape_applescript_string,
     format_applescript_list,
     is_account_uuid,
+    is_gmail_system_label,
     normalize_subject,
     parse_applescript_json,
     parse_applescript_list,
@@ -368,3 +369,39 @@ class TestAppleScriptAccountClause:
             "dc5ac137-2f7a-4299-b3d0-4d3e06c18dd5"
         )
         assert result == 'account id "dc5ac137-2f7a-4299-b3d0-4d3e06c18dd5"'
+
+
+class TestIsGmailSystemLabel:
+    """Tests for is_gmail_system_label — used by update_mailbox /
+    delete_mailbox to refuse operations on Gmail's IMAP-system labels."""
+
+    def test_bare_gmail_parent_is_system_label(self) -> None:
+        assert is_gmail_system_label("[Gmail]") is True
+
+    def test_gmail_drafts_is_system_label(self) -> None:
+        assert is_gmail_system_label("[Gmail]/Drafts") is True
+
+    def test_gmail_sent_mail_is_system_label(self) -> None:
+        assert is_gmail_system_label("[Gmail]/Sent Mail") is True
+
+    def test_gmail_all_mail_is_system_label(self) -> None:
+        assert is_gmail_system_label("[Gmail]/All Mail") is True
+
+    def test_localized_google_mail_prefix_is_not_detected(self) -> None:
+        # Italian Gmail; explicit defer per #164 follow-up notes.
+        assert is_gmail_system_label("[Google Mail]/Tutta la posta") is False
+
+    def test_user_folder_is_not_system_label(self) -> None:
+        assert is_gmail_system_label("Newsletters") is False
+
+    def test_word_gmail_without_brackets_is_not_system_label(self) -> None:
+        assert is_gmail_system_label("Gmail") is False
+
+    def test_empty_string_is_not_system_label(self) -> None:
+        assert is_gmail_system_label("") is False
+
+    def test_gmail_substring_in_middle_of_path_is_not_system_label(
+        self,
+    ) -> None:
+        # Path traversal/spoof attempt: only the exact prefix counts.
+        assert is_gmail_system_label("Archive/[Gmail]/Drafts") is False

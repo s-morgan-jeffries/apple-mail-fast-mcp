@@ -1852,6 +1852,47 @@ class TestUpdateMailboxTool:
         result = update_mailbox(account="Gmail", name="Old", new_name="New")
         assert result["error_type"] == "unknown"
 
+    def test_gmail_system_label_maps_to_typed_error(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        """#164: source path under ``[Gmail]/`` returns
+        ``error_type: "unsupported_gmail_system_label"``."""
+        from apple_mail_mcp.exceptions import (
+            MailUnsupportedGmailSystemLabelError,
+        )
+        from apple_mail_mcp.server import update_mailbox
+
+        mock_mail.update_mailbox.side_effect = (
+            MailUnsupportedGmailSystemLabelError(
+                "cannot update Gmail system label '[Gmail]/Drafts'"
+            )
+        )
+        result = update_mailbox(
+            account="Gmail", name="[Gmail]/Drafts", new_name="MyDrafts",
+        )
+        assert result["success"] is False
+        assert result["error_type"] == "unsupported_gmail_system_label"
+        assert "Gmail" in result["error"]
+
+    def test_gmail_system_label_destination_maps_to_typed_error(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        """#164: destination under ``[Gmail]/`` (via new_parent) maps too."""
+        from apple_mail_mcp.exceptions import (
+            MailUnsupportedGmailSystemLabelError,
+        )
+        from apple_mail_mcp.server import update_mailbox
+
+        mock_mail.update_mailbox.side_effect = (
+            MailUnsupportedGmailSystemLabelError(
+                "destination would land in Gmail's system-label namespace"
+            )
+        )
+        result = update_mailbox(
+            account="Gmail", name="Archive", new_parent="[Gmail]/Backup",
+        )
+        assert result["error_type"] == "unsupported_gmail_system_label"
+
 
 class TestDeleteMailboxTool:
     """Tests for the delete_mailbox MCP tool (#162, IMAP-dispatched)."""
@@ -2005,6 +2046,32 @@ class TestDeleteMailboxTool:
             account="Gmail", name="X", ctx=mock_ctx_accept
         )
         assert result["error_type"] == "unknown"
+
+    @pytest.mark.asyncio
+    async def test_gmail_system_label_maps_to_typed_error(
+        self,
+        mock_mail: MagicMock,
+        mock_logger: MagicMock,
+        mock_ctx_accept: MagicMock,
+    ) -> None:
+        """#164: deleting a ``[Gmail]/`` path returns
+        ``error_type: "unsupported_gmail_system_label"``."""
+        from apple_mail_mcp.exceptions import (
+            MailUnsupportedGmailSystemLabelError,
+        )
+        from apple_mail_mcp.server import delete_mailbox
+
+        mock_mail.delete_mailbox.side_effect = (
+            MailUnsupportedGmailSystemLabelError(
+                "cannot delete Gmail system label '[Gmail]/Trash'"
+            )
+        )
+        result = await delete_mailbox(
+            account="Gmail", name="[Gmail]/Trash", ctx=mock_ctx_accept,
+        )
+        assert result["success"] is False
+        assert result["error_type"] == "unsupported_gmail_system_label"
+        assert "Gmail" in result["error"]
 
 
 # ---------------------------------------------------------------------------

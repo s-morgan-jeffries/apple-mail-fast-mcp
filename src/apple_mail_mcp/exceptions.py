@@ -28,6 +28,19 @@ class MailMailboxNotEmptyError(MailError):
     pass
 
 
+class MailUnsupportedGmailSystemLabelError(MailError):
+    """Operation targets a Gmail system label (the ``[Gmail]`` parent or
+    any ``[Gmail]/...`` child path).
+
+    Gmail's IMAP server does not support normal RENAME/DELETE semantics
+    for these paths — renames may silently revert and deletes are
+    refused. Tracked in #164; future Gmail-label-CRUD tools (sub-feature
+    2 of #164) will provide a proper alternative.
+    """
+
+    pass
+
+
 class MailImapRequiredError(MailError):
     """The requested operation requires IMAP credentials and the user
     hasn't opted in (no Keychain entry, or entry is unreachable). Surfaces

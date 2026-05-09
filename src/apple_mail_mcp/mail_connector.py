@@ -27,6 +27,7 @@ from .exceptions import (
     MailMailboxNotFoundError,
     MailMessageNotFoundError,
     MailRuleNotFoundError,
+    MailUnsupportedGmailSystemLabelError,
     MailUnsupportedRuleActionError,
 )
 from .imap_connector import ImapConnectionPool, ImapConnector
@@ -2357,6 +2358,10 @@ class AppleMailConnector:
         Raises:
             ValueError: If neither ``new_name`` nor ``new_parent`` was
                 provided, or ``new_name`` sanitizes to empty.
+            MailUnsupportedGmailSystemLabelError: If the source ``name``
+                or the resulting destination is a Gmail system label
+                (``[Gmail]`` / ``[Gmail]/...``). Pre-flight refusal —
+                no AppleScript or IMAP traffic. See #164.
             MailAccountNotFoundError: If account doesn't exist.
             MailMailboxNotFoundError: If the source mailbox doesn't exist.
             MailImapRequiredError: If a move was requested but no IMAP
@@ -2365,11 +2370,18 @@ class AppleMailConnector:
             imapclient.exceptions.IMAPClientError: If a move otherwise
                 fails on the IMAP server.
         """
-        from .utils import sanitize_mailbox_name
+        from .utils import is_gmail_system_label, sanitize_mailbox_name
 
         if new_name is None and new_parent is None:
             raise ValueError(
                 "update_mailbox requires at least one of new_name or new_parent"
+            )
+
+        if is_gmail_system_label(name):
+            raise MailUnsupportedGmailSystemLabelError(
+                f"cannot update Gmail system label {name!r}; Gmail's IMAP "
+                f"server does not support normal RENAME for these paths "
+                f"(see #164)"
             )
 
         sanitized_new_name: str | None = None
@@ -2419,6 +2431,13 @@ class AppleMailConnector:
             destination = leaf
         else:
             destination = f"{new_parent}/{leaf}"
+
+        if is_gmail_system_label(destination):
+            raise MailUnsupportedGmailSystemLabelError(
+                f"cannot move mailbox {name!r} to {destination!r}; the "
+                f"destination would land in Gmail's system-label namespace "
+                f"(see #164)"
+            )
 
         try:
             host, port, email = self._resolve_imap_config(account)
@@ -2470,6 +2489,9 @@ class AppleMailConnector:
             mailbox; positive when ``delete_messages=True`` cascaded).
 
         Raises:
+            MailUnsupportedGmailSystemLabelError: If ``name`` is a Gmail
+                system label (``[Gmail]`` / ``[Gmail]/...``). Pre-flight
+                refusal — no IMAP traffic. See #164.
             MailAccountNotFoundError: If account doesn't exist.
             MailMailboxNotFoundError: If the mailbox doesn't exist on
                 the IMAP server.
@@ -2479,6 +2501,14 @@ class AppleMailConnector:
             imapclient.exceptions.IMAPClientError: Other server-side
                 error.
         """
+        from .utils import is_gmail_system_label
+
+        if is_gmail_system_label(name):
+            raise MailUnsupportedGmailSystemLabelError(
+                f"cannot delete Gmail system label {name!r}; Gmail's IMAP "
+                f"server does not support DELETE for these paths (see #164)"
+            )
+
         try:
             host, port, email = self._resolve_imap_config(account)
             password = get_imap_password(account, email)

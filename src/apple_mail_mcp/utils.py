@@ -267,6 +267,20 @@ def sanitize_mailbox_name(name: str) -> str:
     return name
 
 
+def is_gmail_system_label(name: str) -> bool:
+    """Return True if ``name`` is the bare Gmail system parent
+    (``[Gmail]``) or any ``[Gmail]/...`` child path.
+
+    Used by update_mailbox / delete_mailbox to refuse operations on
+    Gmail's IMAP-system labels (Drafts, Sent Mail, Trash, Spam,
+    Important, Starred, etc.). Localized Gmail prefixes such as
+    ``[Google Mail]/`` are not detected — proper localization handling
+    requires an IMAP session for SPECIAL-USE flag enumeration; tracked
+    as a follow-up to #164.
+    """
+    return name == "[Gmail]" or name.startswith("[Gmail]/")
+
+
 def validate_flag_color(color: str) -> bool:
     """
     Validate flag color name.

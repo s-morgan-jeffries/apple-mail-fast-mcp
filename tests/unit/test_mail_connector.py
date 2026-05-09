@@ -3882,6 +3882,36 @@ class TestUpdateMailbox:
         with pytest.raises(ValueError, match="at least one"):
             connector.update_mailbox(account="Gmail", name="Old")
 
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_gmail_system_label_source_refused_before_applescript(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """Pre-flight: source name like ``[Gmail]/Drafts`` raises
+        ``MailUnsupportedGmailSystemLabelError`` before any AppleScript
+        runs (#164). Renames of Gmail system labels don't stick anyway."""
+        from apple_mail_mcp.exceptions import (
+            MailUnsupportedGmailSystemLabelError,
+        )
+        with pytest.raises(MailUnsupportedGmailSystemLabelError):
+            connector.update_mailbox(
+                account="Gmail", name="[Gmail]/Drafts", new_name="MyDrafts",
+            )
+        mock_run.assert_not_called()
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_bare_gmail_parent_source_also_refused(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """The bare ``[Gmail]`` parent (a \\Noselect folder) is also refused."""
+        from apple_mail_mcp.exceptions import (
+            MailUnsupportedGmailSystemLabelError,
+        )
+        with pytest.raises(MailUnsupportedGmailSystemLabelError):
+            connector.update_mailbox(
+                account="Gmail", name="[Gmail]", new_name="Whatever",
+            )
+        mock_run.assert_not_called()
+
 
 class TestUpdateMailboxMove:
     """IMAP-dispatched move path of update_mailbox (#163)."""
@@ -3976,6 +4006,78 @@ class TestUpdateMailboxMove:
             connector.update_mailbox(
                 account="Gmail", name="X", new_parent="Y"
             )
+
+    @patch("apple_mail_mcp.mail_connector.ImapConnector")
+    @patch("apple_mail_mcp.mail_connector.get_imap_password")
+    @patch.object(AppleMailConnector, "_resolve_imap_config")
+    def test_gmail_system_label_source_refused_before_imap_session(
+        self,
+        mock_cfg: MagicMock,
+        mock_pw: MagicMock,
+        mock_imap_cls: MagicMock,
+        connector: AppleMailConnector,
+    ) -> None:
+        """Move source ``[Gmail]/Sent Mail`` raises before the IMAP
+        credential lookup runs (#164)."""
+        from apple_mail_mcp.exceptions import (
+            MailUnsupportedGmailSystemLabelError,
+        )
+        with pytest.raises(MailUnsupportedGmailSystemLabelError):
+            connector.update_mailbox(
+                account="Gmail", name="[Gmail]/Sent Mail", new_parent="Archive",
+            )
+        # No IMAP session opened, no credentials looked up.
+        mock_cfg.assert_not_called()
+        mock_pw.assert_not_called()
+        mock_imap_cls.assert_not_called()
+
+    @patch("apple_mail_mcp.mail_connector.ImapConnector")
+    @patch("apple_mail_mcp.mail_connector.get_imap_password")
+    @patch.object(AppleMailConnector, "_resolve_imap_config")
+    def test_gmail_system_label_destination_parent_refused(
+        self,
+        mock_cfg: MagicMock,
+        mock_pw: MagicMock,
+        mock_imap_cls: MagicMock,
+        connector: AppleMailConnector,
+    ) -> None:
+        """Moving a regular folder INTO ``[Gmail]/Subfolder`` is also
+        refused — the resulting destination would land in Gmail's
+        system-label namespace (#164)."""
+        from apple_mail_mcp.exceptions import (
+            MailUnsupportedGmailSystemLabelError,
+        )
+        with pytest.raises(MailUnsupportedGmailSystemLabelError):
+            connector.update_mailbox(
+                account="Gmail", name="Archive",
+                new_parent="[Gmail]/Subfolder",
+            )
+        mock_cfg.assert_not_called()
+        mock_pw.assert_not_called()
+        mock_imap_cls.assert_not_called()
+
+    @patch("apple_mail_mcp.mail_connector.ImapConnector")
+    @patch("apple_mail_mcp.mail_connector.get_imap_password")
+    @patch.object(AppleMailConnector, "_resolve_imap_config")
+    def test_bare_gmail_parent_destination_refused(
+        self,
+        mock_cfg: MagicMock,
+        mock_pw: MagicMock,
+        mock_imap_cls: MagicMock,
+        connector: AppleMailConnector,
+    ) -> None:
+        """``new_parent="[Gmail]"`` produces a destination of
+        ``[Gmail]/<leaf>`` — also a system-label path; refused (#164)."""
+        from apple_mail_mcp.exceptions import (
+            MailUnsupportedGmailSystemLabelError,
+        )
+        with pytest.raises(MailUnsupportedGmailSystemLabelError):
+            connector.update_mailbox(
+                account="Gmail", name="Archive", new_parent="[Gmail]",
+            )
+        mock_cfg.assert_not_called()
+        mock_pw.assert_not_called()
+        mock_imap_cls.assert_not_called()
 
 
 class TestDeleteMailbox:
@@ -4093,3 +4195,44 @@ class TestDeleteMailbox:
         mock_pw.side_effect = MailKeychainEntryNotFoundError("nope")
         with pytest.raises(MailImapRequiredError):
             connector.delete_mailbox(account="Gmail", name="X")
+
+    @patch("apple_mail_mcp.mail_connector.ImapConnector")
+    @patch("apple_mail_mcp.mail_connector.get_imap_password")
+    @patch.object(AppleMailConnector, "_resolve_imap_config")
+    def test_gmail_system_label_refused_before_credential_lookup(
+        self,
+        mock_cfg: MagicMock,
+        mock_pw: MagicMock,
+        mock_imap_cls: MagicMock,
+        connector: AppleMailConnector,
+    ) -> None:
+        """Pre-flight: deleting ``[Gmail]/Trash`` raises before the IMAP
+        credential lookup runs (#164)."""
+        from apple_mail_mcp.exceptions import (
+            MailUnsupportedGmailSystemLabelError,
+        )
+        with pytest.raises(MailUnsupportedGmailSystemLabelError):
+            connector.delete_mailbox(account="Gmail", name="[Gmail]/Trash")
+        mock_cfg.assert_not_called()
+        mock_pw.assert_not_called()
+        mock_imap_cls.assert_not_called()
+
+    @patch("apple_mail_mcp.mail_connector.ImapConnector")
+    @patch("apple_mail_mcp.mail_connector.get_imap_password")
+    @patch.object(AppleMailConnector, "_resolve_imap_config")
+    def test_bare_gmail_parent_refused(
+        self,
+        mock_cfg: MagicMock,
+        mock_pw: MagicMock,
+        mock_imap_cls: MagicMock,
+        connector: AppleMailConnector,
+    ) -> None:
+        """The bare ``[Gmail]`` parent is also refused (#164)."""
+        from apple_mail_mcp.exceptions import (
+            MailUnsupportedGmailSystemLabelError,
+        )
+        with pytest.raises(MailUnsupportedGmailSystemLabelError):
+            connector.delete_mailbox(account="Gmail", name="[Gmail]")
+        mock_cfg.assert_not_called()
+        mock_pw.assert_not_called()
+        mock_imap_cls.assert_not_called()

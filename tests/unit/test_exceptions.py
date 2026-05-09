@@ -13,6 +13,7 @@ from apple_mail_mcp.exceptions import (
     MailTemplateInvalidNameError,
     MailTemplateMissingVariableError,
     MailTemplateNotFoundError,
+    MailUnsupportedGmailSystemLabelError,
     MailUnsupportedRuleActionError,
 )
 
@@ -75,3 +76,16 @@ class TestTemplateExceptions:
     def test_missing_variable_can_be_raised_and_caught(self):
         with pytest.raises(MailTemplateMissingVariableError):
             raise MailTemplateMissingVariableError("missing: due_date")
+
+
+class TestMailboxExceptions:
+    def test_unsupported_gmail_system_label_is_mail_error(self):
+        assert issubclass(MailUnsupportedGmailSystemLabelError, MailError)
+
+    def test_unsupported_gmail_system_label_can_be_raised_and_caught(self):
+        with pytest.raises(MailUnsupportedGmailSystemLabelError):
+            raise MailUnsupportedGmailSystemLabelError("[Gmail]/Drafts")
+
+    def test_unsupported_gmail_system_label_can_be_caught_as_mail_error(self):
+        with pytest.raises(MailError):
+            raise MailUnsupportedGmailSystemLabelError("[Gmail]/Sent Mail")

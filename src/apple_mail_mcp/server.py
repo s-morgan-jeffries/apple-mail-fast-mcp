@@ -29,6 +29,7 @@ from .exceptions import (
     MailTemplateInvalidNameError,
     MailTemplateMissingVariableError,
     MailTemplateNotFoundError,
+    MailUnsupportedGmailSystemLabelError,
     MailUnsupportedRuleActionError,
 )
 from .imap_connector import ImapConnectionPool
@@ -1432,9 +1433,12 @@ def update_mailbox(
 
     At least one of ``new_name`` / ``new_parent`` must be provided.
 
-    Caveat (#164): renaming Gmail system labels under ``[Gmail]/`` may
-    not stick — Gmail's IMAP server may auto-restore canonical names.
-    User-created Gmail labels behave normally.
+    Refused (#164): operations targeting the bare ``[Gmail]`` parent or
+    any ``[Gmail]/...`` child path return ``error_type:
+    "unsupported_gmail_system_label"``. Applies to both the source
+    ``name`` and the resulting destination (``new_parent`` join). Gmail's
+    IMAP server doesn't support normal RENAME semantics for these paths;
+    user-created Gmail labels (``Newsletters``, etc.) behave normally.
 
     Args:
         account: Mail.app account display name or UUID.
@@ -1539,6 +1543,12 @@ def update_mailbox(
             "error": str(e),
             "error_type": "applescript_error",
         }
+    except MailUnsupportedGmailSystemLabelError as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "error_type": "unsupported_gmail_system_label",
+        }
     except Exception as e:
         logger.exception(f"Unexpected error in update_mailbox: {e}")
         return {
@@ -1565,6 +1575,11 @@ async def delete_mailbox(
     Always elicits user confirmation (destructive). By default refuses
     non-empty mailboxes to prevent accidental data loss; pass
     ``delete_messages=True`` to cascade.
+
+    Refused (#164): targeting the bare ``[Gmail]`` parent or any
+    ``[Gmail]/...`` child path returns ``error_type:
+    "unsupported_gmail_system_label"``. Gmail's IMAP server doesn't
+    support DELETE for these paths.
 
     Args:
         account: Mail.app account display name or UUID.
@@ -1657,6 +1672,12 @@ async def delete_mailbox(
             "success": False,
             "error": f"Account {account!r} not found",
             "error_type": "account_not_found",
+        }
+    except MailUnsupportedGmailSystemLabelError as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "error_type": "unsupported_gmail_system_label",
         }
     except Exception as e:
         logger.exception(f"Unexpected error in delete_mailbox: {e}")
