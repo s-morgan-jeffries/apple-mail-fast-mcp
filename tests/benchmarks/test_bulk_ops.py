@@ -115,3 +115,57 @@ def test_move_messages_50_msgs(
     # 3 runs (not 5) — each run is two moves on 50 messages.
     result: BenchmarkResult = measure_median(run, name=name, runs=3)
     assert_within_baseline(name, result, baselines, capture_mode)
+
+
+def test_move_messages_50_msgs_gmail(
+    connector: AppleMailConnector,
+    test_account_gmail: str,
+    gmail_bench_source: str,
+    gmail_bench_mailbox: str,
+    gmail_bench_messages: list[str],
+    baselines: dict[str, float],
+    capture_mode: bool,
+) -> None:
+    """Gmail variant (#101): bulk-move 50 synthetic messages with
+    ``gmail_mode=True`` (Gmail's IMAP doesn't natively support MOVE for
+    label-backed folders, so the connector falls back to copy+delete in
+    two AppleScript steps — that path is what this baseline measures).
+
+    Same shape as ``test_move_messages_50_msgs`` but the source and
+    destination mailboxes are dedicated synthetic-data fixtures, never
+    the user's real INBOX."""
+    name = "move_messages_50_msgs_gmail"
+
+    current_ids = list(gmail_bench_messages)
+
+    def run() -> None:
+        connector.move_messages(
+            current_ids,
+            destination_mailbox=gmail_bench_source,
+            account=test_account_gmail,
+            source_mailbox=gmail_bench_mailbox,
+            gmail_mode=True,
+        )
+        in_source = connector.search_messages(
+            account=test_account_gmail,
+            mailbox=gmail_bench_source,
+            limit=len(current_ids),
+        )
+        moved_ids = [m["id"] for m in in_source[: len(current_ids)]]
+
+        connector.move_messages(
+            moved_ids,
+            destination_mailbox=gmail_bench_mailbox,
+            account=test_account_gmail,
+            source_mailbox=gmail_bench_source,
+            gmail_mode=True,
+        )
+        in_bench = connector.search_messages(
+            account=test_account_gmail,
+            mailbox=gmail_bench_mailbox,
+            limit=len(current_ids),
+        )
+        current_ids[:] = [m["id"] for m in in_bench[: len(current_ids)]]
+
+    result: BenchmarkResult = measure_median(run, name=name, runs=3)
+    assert_within_baseline(name, result, baselines, capture_mode)

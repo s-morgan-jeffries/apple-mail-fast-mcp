@@ -26,6 +26,15 @@ make benchmark-baseline
 
 Both targets set `MAIL_TEST_MODE=true` automatically. The test account is whatever `MAIL_TEST_ACCOUNT` resolves to — default `iCloud`.
 
+To also run the **Gmail-variant** benchmarks (#101), set `MAIL_TEST_ACCOUNT_GMAIL` to the Mail.app account name of a configured Gmail account:
+
+```bash
+MAIL_TEST_ACCOUNT_GMAIL=Gmail make benchmark
+MAIL_TEST_ACCOUNT_GMAIL=Gmail make benchmark-baseline
+```
+
+When `MAIL_TEST_ACCOUNT_GMAIL` is unset, Gmail variants skip cleanly with a clear message; the standard (iCloud) benchmarks still run.
+
 ## Test data requirements
 
 Benchmarks measure real Mail.app behavior, so they need real data:
@@ -35,8 +44,19 @@ Benchmarks measure real Mail.app behavior, so they need real data:
 | `search_messages_*` | At least 1 message in INBOX, Archive, or Sent Messages |
 | `save_attachments_*` | At least 1 message with an attachment in those mailboxes |
 | `mark_as_read_50_msgs` | At least 50 messages across those mailboxes |
+| `search_messages_*_gmail` | A Gmail account configured in Mail.app + Keychain IMAP credentials (#73 opt-in) |
+| `move_messages_50_msgs_gmail` | Same as above. Exercises the `gmail_mode=True` copy+delete path |
 
 If a precondition isn't met, the benchmark skips with a clear message rather than failing. This is by design — running a smaller bulk benchmark on 5 messages would defeat the point (the scaling signal is what matters).
+
+### Gmail-variant fixtures use synthetic data
+
+Unlike the iCloud benchmarks (which find a real mailbox with ≥50 messages and shuttle real messages), the Gmail variants populate two dedicated mailboxes via IMAP `APPEND`:
+
+- `[apple-mail-mcp-bench-gmail-source]` — holds 50 synthetic RFC 5322 messages (subject `ZZZ-AMM-BENCH Synthetic Message NNN`). Created and populated once per test session; idempotent (re-runs only append what's missing).
+- `[apple-mail-mcp-bench-gmail]` — the move-target. Populated per-test from the source via `move_messages(... gmail_mode=True)`; drained back on teardown.
+
+Your real Gmail INBOX is never touched. Both fixture mailboxes persist across runs (cheaper than re-creating per-run, and easy to spot from the prefix). Use `delete_mailbox` to clean them up if desired.
 
 ## Bulk benchmarks (mark_as_read, move_messages) currently skip
 

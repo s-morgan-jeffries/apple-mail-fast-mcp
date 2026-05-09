@@ -37,6 +37,13 @@ BASELINE_PATH = Path(__file__).parent / "baseline.json"
 BENCH_MAILBOX_NAME = "[apple-mail-mcp-bench]"
 BULK_SIZE = 50
 
+# Gmail variant fixtures (#101): benchmarks against a Gmail account use a
+# pair of dedicated mailboxes populated with synthetic IMAP APPEND data so
+# the user's real INBOX is never touched. Source holds the 50-msg pool;
+# bench is the move-target. Both persist across runs (fixture is idempotent).
+GMAIL_BENCH_MAILBOX_NAME = "[apple-mail-mcp-bench-gmail]"
+GMAIL_BENCH_SOURCE_NAME = "[apple-mail-mcp-bench-gmail-source]"
+
 
 # ---------------------------------------------------------------------------
 # Skip-unless-flag gate
@@ -331,6 +338,170 @@ def bench_messages(
     # IDs change on move (IMAP UID semantics). Re-fetch.
     in_bench = connector.search_messages(
         account=test_account, mailbox=bench_mailbox, limit=BULK_SIZE
+    )
+    bench_ids = [m["id"] for m in in_bench[:BULK_SIZE]]
+
+    try:
+        yield bench_ids
+    finally:
+        _drain_bench_to_source()
+
+
+# ---------------------------------------------------------------------------
+# Gmail-account fixtures (#101)
+#
+# Synthetic-data approach: instead of touching the user's real Gmail INBOX
+# (the iCloud benchmarks do that for iCloud), Gmail benchmarks operate on
+# a dedicated pair of mailboxes populated via IMAP APPEND with 50 synthetic
+# messages. Real INBOX is never touched; mailboxes are clearly prefixed.
+#
+# Skip cleanly when MAIL_TEST_ACCOUNT_GMAIL is unset.
+# ---------------------------------------------------------------------------
+
+
+def _make_synthetic_message(i: int) -> bytes:
+    """RFC 5322 synthetic message for IMAP APPEND. Distinguishable subject
+    so a human inspecting Gmail can see what these are."""
+    return (
+        f"From: bench-sender-{i}@example.com\r\n"
+        f"To: bench@example.com\r\n"
+        f"Subject: ZZZ-AMM-BENCH Synthetic Message {i:03d}\r\n"
+        f"Message-ID: <bench-{i}@example.invalid>\r\n"
+        f"Date: Thu, 01 May 2026 12:00:00 +0000\r\n"
+        f"\r\n"
+        f"Synthetic benchmark message #{i} for issue #101. "
+        f"If you see this in your inbox, the apple-mail-mcp benchmark "
+        f"fixture leaked.\r\n"
+    ).encode()
+
+
+@pytest.fixture(scope="session")
+def test_account_gmail() -> str:
+    """Gmail account name from MAIL_TEST_ACCOUNT_GMAIL. Skip when unset."""
+    name = os.getenv("MAIL_TEST_ACCOUNT_GMAIL")
+    if not name:
+        pytest.skip(
+            "MAIL_TEST_ACCOUNT_GMAIL not set. Configure to enable Gmail "
+            "benchmarks. See docs/guides/BENCHMARKING.md."
+        )
+    return name
+
+
+@pytest.fixture(scope="session")
+def gmail_bench_source(
+    connector: AppleMailConnector, test_account_gmail: str
+) -> str:
+    """Create [apple-mail-mcp-bench-gmail-source] (if missing) and ensure
+    it holds at least BULK_SIZE synthetic messages via IMAP APPEND.
+
+    Idempotent: only appends what's missing if the mailbox already has
+    some messages from a prior run. Session-scoped so the populate cost
+    is paid once per test run."""
+    from imapclient import IMAPClient
+
+    from apple_mail_mcp.keychain import get_imap_password
+
+    mailboxes = connector.list_mailboxes(test_account_gmail)
+    names = {mb["name"] for mb in mailboxes}
+    if GMAIL_BENCH_SOURCE_NAME not in names:
+        connector.create_mailbox(
+            account=test_account_gmail, name=GMAIL_BENCH_SOURCE_NAME
+        )
+
+    host, port, email = connector._resolve_imap_config(test_account_gmail)
+    pw = get_imap_password(test_account_gmail, email)
+    client = IMAPClient(host, port=port, ssl=True, timeout=60)
+    client.login(email, pw)
+    try:
+        info = client.select_folder(GMAIL_BENCH_SOURCE_NAME)
+        existing = int(info.get(b"EXISTS", 0))
+        if existing < BULK_SIZE:
+            client.unselect_folder()
+            for i in range(existing, BULK_SIZE):
+                client.append(
+                    GMAIL_BENCH_SOURCE_NAME, _make_synthetic_message(i)
+                )
+    finally:
+        client.logout()
+
+    return GMAIL_BENCH_SOURCE_NAME
+
+
+@pytest.fixture(scope="session")
+def gmail_bench_mailbox(
+    connector: AppleMailConnector, test_account_gmail: str
+) -> str:
+    """Ensure [apple-mail-mcp-bench-gmail] exists in the Gmail account."""
+    mailboxes = connector.list_mailboxes(test_account_gmail)
+    names = {mb["name"] for mb in mailboxes}
+    if GMAIL_BENCH_MAILBOX_NAME not in names:
+        connector.create_mailbox(
+            account=test_account_gmail, name=GMAIL_BENCH_MAILBOX_NAME
+        )
+    return GMAIL_BENCH_MAILBOX_NAME
+
+
+@pytest.fixture
+def gmail_bench_messages(
+    connector: AppleMailConnector,
+    test_account_gmail: str,
+    gmail_bench_source: str,
+    gmail_bench_mailbox: str,
+) -> Iterator[list[str]]:
+    """Move BULK_SIZE synthetic messages from gmail_bench_source to
+    gmail_bench_mailbox; yield IDs; drain back on teardown.
+
+    Mirror of bench_messages but for the Gmail account with synthetic
+    data — uses ``gmail_mode=True`` for moves to exercise the copy+delete
+    path that the benchmarks here measure."""
+
+    def _drain_bench_to_source() -> None:
+        while True:
+            leftover = connector.search_messages(
+                account=test_account_gmail,
+                mailbox=gmail_bench_mailbox,
+                limit=BULK_SIZE,
+            )
+            if not leftover:
+                break
+            try:
+                connector.move_messages(
+                    [m["id"] for m in leftover],
+                    destination_mailbox=gmail_bench_source,
+                    account=test_account_gmail,
+                    source_mailbox=gmail_bench_mailbox,
+                    gmail_mode=True,
+                )
+            except Exception:
+                break
+
+    _drain_bench_to_source()
+
+    source_msgs = connector.search_messages(
+        account=test_account_gmail,
+        mailbox=gmail_bench_source,
+        limit=BULK_SIZE,
+    )
+    if len(source_msgs) < BULK_SIZE:
+        pytest.skip(
+            f"gmail_bench_source has {len(source_msgs)} messages; need "
+            f"{BULK_SIZE}. The synthetic-data setup may have failed mid-way."
+        )
+    try:
+        connector.move_messages(
+            [m["id"] for m in source_msgs],
+            destination_mailbox=gmail_bench_mailbox,
+            account=test_account_gmail,
+            source_mailbox=gmail_bench_source,
+            gmail_mode=True,
+        )
+    except MailAppleScriptError as e:
+        pytest.skip(f"gmail_bench_messages setup failed: {e}")
+
+    in_bench = connector.search_messages(
+        account=test_account_gmail,
+        mailbox=gmail_bench_mailbox,
+        limit=BULK_SIZE,
     )
     bench_ids = [m["id"] for m in in_bench[:BULK_SIZE]]
 

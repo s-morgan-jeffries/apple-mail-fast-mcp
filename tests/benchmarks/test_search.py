@@ -115,3 +115,76 @@ def test_search_messages_with_zero_matches(
         name=name,
     )
     assert_within_baseline(name, result, baselines, capture_mode)
+
+
+# ---------------------------------------------------------------------------
+# Gmail variants (#101). Search the synthetic-data source mailbox so the
+# user's real Gmail INBOX is untouched. 50 synthetic messages is a smaller
+# corpus than the iCloud INBOX search runs against, but it's a controlled
+# baseline for tracking Gmail-side regressions over time.
+# ---------------------------------------------------------------------------
+
+
+def test_search_messages_no_filter_gmail(
+    connector: AppleMailConnector,
+    test_account_gmail: str,
+    gmail_bench_source: str,
+    baselines: dict[str, float],
+    capture_mode: bool,
+) -> None:
+    """Gmail variant of ``test_search_messages_no_filter``."""
+    name = "search_messages_no_filter_gmail"
+    result: BenchmarkResult = measure_median(
+        lambda: connector.search_messages(
+            account=test_account_gmail,
+            mailbox=gmail_bench_source,
+            limit=10,
+        ),
+        name=name,
+    )
+    assert_within_baseline(name, result, baselines, capture_mode)
+
+
+def test_search_messages_with_sender_filter_gmail(
+    connector: AppleMailConnector,
+    test_account_gmail: str,
+    gmail_bench_source: str,
+    baselines: dict[str, float],
+    capture_mode: bool,
+) -> None:
+    """Gmail variant of ``test_search_messages_with_sender_filter``.
+    Filter is permissive (``@`` in sender), so all 50 synthetic messages
+    match — exercises the per-message AppleScript IF-filter path."""
+    name = "search_messages_with_sender_filter_gmail"
+    result: BenchmarkResult = measure_median(
+        lambda: connector.search_messages(
+            account=test_account_gmail,
+            mailbox=gmail_bench_source,
+            sender_contains="@",
+            limit=10,
+        ),
+        name=name,
+    )
+    assert_within_baseline(name, result, baselines, capture_mode)
+
+
+def test_search_messages_with_zero_matches_gmail(
+    connector: AppleMailConnector,
+    test_account_gmail: str,
+    gmail_bench_source: str,
+    baselines: dict[str, float],
+    capture_mode: bool,
+) -> None:
+    """Gmail variant of ``test_search_messages_with_zero_matches``."""
+    name = "search_messages_with_zero_matches_gmail"
+    sentinel = "zzzz_apple_mail_mcp_no_match_sentinel_qqqq"
+    result: BenchmarkResult = measure_median(
+        lambda: connector.search_messages(
+            account=test_account_gmail,
+            mailbox=gmail_bench_source,
+            subject_contains=sentinel,
+            limit=10,
+        ),
+        name=name,
+    )
+    assert_within_baseline(name, result, baselines, capture_mode)
