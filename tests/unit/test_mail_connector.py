@@ -119,20 +119,36 @@ class TestAppleMailConnector:
         self, mock_run: MagicMock, connector: AppleMailConnector
     ) -> None:
         mock_run.return_value = (
-            '[{"id":"UUID-1","name":"Gmail","email_addresses":["me@gmail.com"],'
+            '[{"id":"UUID-1","name":"Gmail","full_name":"Alice Smith",'
+            '"email_addresses":["me@gmail.com"],'
             '"account_type":"imap","enabled":true},'
-            '{"id":"UUID-2","name":"Work","email_addresses":["me@work.com","alt@work.com"],'
+            '{"id":"UUID-2","name":"Work","full_name":"",'
+            '"email_addresses":["me@work.com","alt@work.com"],'
             '"account_type":"iCloud","enabled":false}]'
         )
         result = connector.list_accounts()
         assert result == [
-            {"id": "UUID-1", "name": "Gmail",
+            {"id": "UUID-1", "name": "Gmail", "full_name": "Alice Smith",
              "email_addresses": ["me@gmail.com"],
              "account_type": "imap", "enabled": True},
-            {"id": "UUID-2", "name": "Work",
+            # Empty-string full_name normalized to None.
+            {"id": "UUID-2", "name": "Work", "full_name": None,
              "email_addresses": ["me@work.com", "alt@work.com"],
              "account_type": "iCloud", "enabled": False},
         ]
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_list_accounts_normalizes_whitespace_only_full_name_to_none(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """Whitespace-only full_name is treated as not-configured."""
+        mock_run.return_value = (
+            '[{"id":"UUID-1","name":"Gmail","full_name":"   ",'
+            '"email_addresses":["me@gmail.com"],'
+            '"account_type":"imap","enabled":true}]'
+        )
+        result = connector.list_accounts()
+        assert result[0]["full_name"] is None
 
     @patch.object(AppleMailConnector, "_run_applescript")
     def test_list_accounts_empty(
@@ -148,12 +164,14 @@ class TestAppleMailConnector:
     ) -> None:
         """An account with no email addresses must return email_addresses as []."""
         mock_run.return_value = (
-            '[{"id":"UUID-3","name":"LocalOnly","email_addresses":[],'
+            '[{"id":"UUID-3","name":"LocalOnly","full_name":"Local User",'
+            '"email_addresses":[],'
             '"account_type":"imap","enabled":true}]'
         )
         result = connector.list_accounts()
         assert result == [{
-            "id": "UUID-3", "name": "LocalOnly", "email_addresses": [],
+            "id": "UUID-3", "name": "LocalOnly", "full_name": "Local User",
+            "email_addresses": [],
             "account_type": "imap", "enabled": True,
         }]
 
@@ -161,13 +179,17 @@ class TestAppleMailConnector:
     def test_list_accounts_script_includes_type_and_enabled(
         self, mock_run: MagicMock, connector: AppleMailConnector
     ) -> None:
-        """Generated AppleScript must extract account_type (as text) and enabled."""
+        """Generated AppleScript must extract account_type (as text), enabled,
+        and the full_name (#158) used for the Display Name <email> sender."""
         mock_run.return_value = "[]"
         connector.list_accounts()
         script = mock_run.call_args[0][0]
         assert "|account_type|:((account type of acc) as text)" in script
         assert "|enabled|:(enabled of acc)" in script
         assert "|id|:(id of acc as text)" in script
+        # #158: full_name read with missing-value coercion.
+        assert "full name of acc" in script
+        assert "|full_name|:accFullName" in script
 
     @patch.object(AppleMailConnector, "_run_applescript")
     def test_list_rules_returns_structured_data(
@@ -2384,13 +2406,33 @@ class TestAppleMailConnector:
 
 
     @patch.object(AppleMailConnector, "list_accounts")
-    def test_resolve_account_to_sender_lookup_by_name(
+    def test_resolve_account_to_sender_with_full_name_emits_display_form(
         self, mock_list: MagicMock, connector: AppleMailConnector
     ) -> None:
+        """#158: account with full_name -> 'Display Name <email>' form."""
         mock_list.return_value = [
             {
                 "id": "UUID-1",
                 "name": "iCloud",
+                "full_name": "Alice Smith",
+                "email_addresses": ["alice@icloud.com"],
+            },
+        ]
+        assert (
+            connector._resolve_account_to_sender("iCloud")
+            == "Alice Smith <alice@icloud.com>"
+        )
+
+    @patch.object(AppleMailConnector, "list_accounts")
+    def test_resolve_account_to_sender_without_full_name_falls_back_to_bare_email(
+        self, mock_list: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """#158: account without full_name -> bare email (graceful fallback)."""
+        mock_list.return_value = [
+            {
+                "id": "UUID-1",
+                "name": "iCloud",
+                "full_name": None,
                 "email_addresses": ["alice@icloud.com"],
             },
         ]
@@ -2399,18 +2441,37 @@ class TestAppleMailConnector:
         )
 
     @patch.object(AppleMailConnector, "list_accounts")
-    def test_resolve_account_to_sender_lookup_by_uuid(
+    def test_resolve_account_to_sender_whitespace_only_full_name_falls_back(
+        self, mock_list: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """#158: whitespace-only full_name treated as not-configured."""
+        mock_list.return_value = [
+            {
+                "id": "UUID-1",
+                "name": "iCloud",
+                "full_name": "   ",
+                "email_addresses": ["alice@icloud.com"],
+            },
+        ]
+        assert (
+            connector._resolve_account_to_sender("iCloud") == "alice@icloud.com"
+        )
+
+    @patch.object(AppleMailConnector, "list_accounts")
+    def test_resolve_account_to_sender_lookup_by_uuid_with_full_name(
         self, mock_list: MagicMock, connector: AppleMailConnector
     ) -> None:
         mock_list.return_value = [
             {
                 "id": "UUID-1",
                 "name": "iCloud",
+                "full_name": "Alice Smith",
                 "email_addresses": ["alice@icloud.com"],
             },
         ]
         assert (
-            connector._resolve_account_to_sender("UUID-1") == "alice@icloud.com"
+            connector._resolve_account_to_sender("UUID-1")
+            == "Alice Smith <alice@icloud.com>"
         )
 
     @patch.object(AppleMailConnector, "list_accounts")
@@ -2423,6 +2484,7 @@ class TestAppleMailConnector:
             {
                 "id": "UUID-1",
                 "name": "iCloud",
+                "full_name": "Alice",
                 "email_addresses": ["alice@icloud.com"],
             },
         ]
@@ -2434,7 +2496,12 @@ class TestAppleMailConnector:
         self, mock_list: MagicMock, connector: AppleMailConnector
     ) -> None:
         mock_list.return_value = [
-            {"id": "UUID-1", "name": "Empty", "email_addresses": []},
+            {
+                "id": "UUID-1",
+                "name": "Empty",
+                "full_name": "Nobody",
+                "email_addresses": [],
+            },
         ]
         with pytest.raises(ValueError, match="email addresses"):
             connector._resolve_account_to_sender("Empty")
@@ -3390,9 +3457,34 @@ class TestCreateDraft:
         assert "set beforeIds to" not in script
 
     @patch.object(AppleMailConnector, "_run_applescript")
-    def test_new_with_from_account_sets_sender(
+    def test_new_with_from_account_sets_display_name_sender(
         self, mock_run: MagicMock, connector: AppleMailConnector
     ) -> None:
+        """#158: when the resolver returns a Display Name <email> string,
+        the AppleScript embeds it verbatim (escaped) on the sender line."""
+        mock_run.return_value = "1"
+        with patch.object(
+            connector, "_resolve_account_to_sender",
+            return_value="Alice Smith <me@x.com>",
+        ):
+            connector.create_draft(
+                seed="new",
+                to=["a@example.com"],
+                subject="hi",
+                body="x",
+                from_account="Gmail",
+            )
+        script = mock_run.call_args[0][0]
+        assert (
+            'set sender of theMessage to "Alice Smith <me@x.com>"' in script
+        )
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_new_with_from_account_bare_email_passthrough(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """#158: when the resolver returns a bare email (no display name
+        configured), the AppleScript embeds the bare form."""
         mock_run.return_value = "1"
         with patch.object(
             connector, "_resolve_account_to_sender", return_value="me@x.com"

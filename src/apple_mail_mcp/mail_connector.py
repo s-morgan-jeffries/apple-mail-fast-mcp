@@ -378,7 +378,10 @@ class AppleMailConnector:
         Returns:
             List of account dicts with keys:
               - id: account UUID (stable across name changes)
-              - name: account display name
+              - name: account preferences-sidebar label (e.g. "Gmail")
+              - full_name: per-message display name used in outgoing
+                "From" headers (e.g. "Alice Smith"), or None if no
+                full name is configured for the account
               - email_addresses: list of associated email addresses
               - account_type: lowercase Mail type (e.g., "imap", "pop", "iCloud")
               - enabled: whether the account is currently enabled in Mail.app
@@ -389,7 +392,9 @@ class AppleMailConnector:
             repeat with acc in accounts
                 set accEmails to email addresses of acc
                 if accEmails is missing value then set accEmails to {}
-                set accRecord to {|id|:(id of acc as text), |name|:(name of acc), |email_addresses|:accEmails, |account_type|:((account type of acc) as text), |enabled|:(enabled of acc)}
+                set accFullName to full name of acc
+                if accFullName is missing value then set accFullName to ""
+                set accRecord to {|id|:(id of acc as text), |name|:(name of acc), |full_name|:accFullName, |email_addresses|:accEmails, |account_type|:((account type of acc) as text), |enabled|:(enabled of acc)}
                 set end of resultData to accRecord
             end repeat
         end tell
@@ -397,15 +402,26 @@ class AppleMailConnector:
 
         script = _wrap_as_json_script(tell_body)
         result = self._run_applescript(script)
-        return cast(list[dict[str, Any]], parse_applescript_json(result))
+        accounts = cast(list[dict[str, Any]], parse_applescript_json(result))
+        # Normalize empty-string full_name to None so callers don't have
+        # to distinguish two "no display name" representations.
+        for acc in accounts:
+            if not (acc.get("full_name") or "").strip():
+                acc["full_name"] = None
+        return accounts
 
     def _resolve_account_to_sender(self, account: str) -> str:
-        """Resolve an account name or UUID to its primary email address.
+        """Resolve an account name or UUID to a sender string for the
+        AppleScript ``sender`` property.
 
-        Used by the send-path methods (#155) to wire up the AppleScript
-        ``sender`` property on outgoing messages. Accepts either form
-        matching the existing ``account`` convention on ``list_mailboxes``,
-        ``search_messages``, etc.
+        Returns ``"Display Name <email>"`` when the account has a
+        ``full_name`` configured (#158), or bare ``email`` as a graceful
+        fallback when no full name is set. The Display-Name form is what
+        recipients see in their inbox's From column.
+
+        Used by the draft lifecycle (``create_draft`` / ``update_draft``)
+        per #155. Accepts either name or UUID, matching the convention on
+        ``list_mailboxes``, ``search_messages``, etc.
 
         Raises:
             MailAccountNotFoundError: No account matches the given name/UUID.
@@ -419,7 +435,11 @@ class AppleMailConnector:
                         f"Account {account!r} has no email addresses "
                         f"configured."
                     )
-                return cast(str, emails[0])
+                email = cast(str, emails[0])
+                full_name = (acc.get("full_name") or "").strip()
+                if full_name:
+                    return f"{full_name} <{email}>"
+                return email
         raise MailAccountNotFoundError(
             f"Account {account!r} not found in Mail.app configured accounts."
         )

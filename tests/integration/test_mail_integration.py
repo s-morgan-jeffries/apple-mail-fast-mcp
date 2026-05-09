@@ -547,6 +547,81 @@ class TestDraftsLifecycleIntegration:
                 return  # success
         pytest.fail("draft still queryable 10s after delete")
 
+    def test_from_account_emits_display_name_sender(
+        self,
+        connector: AppleMailConnector,
+        test_account: str,
+    ) -> None:
+        """#158: when the test account has a full_name configured, a draft
+        created with from_account=<account> should land with a 'From'
+        header in `Display Name <email>` form.
+
+        Skips when the account has no full_name set (graceful fallback to
+        bare email is exercised by unit tests; integration covers the
+        happy path)."""
+        accounts = connector.list_accounts()
+        match = next(
+            (a for a in accounts if a["name"] == test_account), None
+        )
+        if not match:
+            pytest.skip(f"test account {test_account!r} not found")
+        full_name = (match.get("full_name") or "").strip()
+        if not full_name:
+            pytest.skip(
+                f"test account {test_account!r} has no full_name "
+                f"configured — display-name path is unverifiable here"
+            )
+        emails = match.get("email_addresses") or []
+        if not emails:
+            pytest.skip(f"test account {test_account!r} has no email addresses")
+
+        result = connector.create_draft(
+            seed="new",
+            to=["target@example.com"],
+            subject="ZZZ-AMM-INTEG-DISPLAY-NAME",
+            body="checking display-name sender",
+            from_account=test_account,
+        )
+        draft_id = result["draft_id"]
+
+        try:
+            # Read the draft's headers via osascript and confirm the
+            # From header includes both the display name and email.
+            import subprocess as _subprocess
+            script = f'''
+            tell application "Mail"
+                repeat with acc in accounts
+                    try
+                        repeat with mb in mailboxes of acc
+                            if name of mb contains "Drafts" then
+                                repeat with d in messages of mb
+                                    if (id of d as text) is "{draft_id}" then
+                                        return sender of d
+                                    end if
+                                end repeat
+                            end if
+                        end repeat
+                    end try
+                end repeat
+                return ""
+            end tell
+            '''
+            r = _subprocess.run(
+                ["/usr/bin/osascript", "-e", script],
+                capture_output=True, text=True, timeout=30,
+            )
+            sender_value = r.stdout.strip()
+            assert full_name in sender_value, (
+                f"sender {sender_value!r} should contain full_name "
+                f"{full_name!r}"
+            )
+            assert emails[0] in sender_value, (
+                f"sender {sender_value!r} should contain email "
+                f"{emails[0]!r}"
+            )
+        finally:
+            connector.delete_draft(draft_id)
+
 
 class TestErrorHandling:
     """Test error handling with real Mail.app."""
