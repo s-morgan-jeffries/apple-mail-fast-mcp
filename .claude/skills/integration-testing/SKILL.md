@@ -80,8 +80,8 @@ class TestMailIntegration:
         assert any("INBOX" in mb for mb in result)
 
     @pytest.mark.skip(reason="Sends real email - enable manually")
-    def test_send_email(self, connector):
-        """Test sending real email - enable manually only."""
+    def test_draft_send_now(self, connector):
+        """Test sending a draft - enable manually only."""
         ...
 ```
 

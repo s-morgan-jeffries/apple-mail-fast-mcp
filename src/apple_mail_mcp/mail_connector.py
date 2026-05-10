@@ -3082,8 +3082,7 @@ class AppleMailConnector:
         #   from `content of d` until AFTER save (where the draft becomes
         #   immutable), so true prepending is impossible. Tradeoff:
         #     * non-empty body  -> override Mail's auto-content with user
-        #       body (matches existing reply_to_message behavior; loses
-        #       inline quote but preserves threading headers).
+        #       body (loses inline quote but preserves threading headers).
         #     * empty body      -> leave Mail's auto-content alone (the
         #       quoted-reply default the user gets in Mail.app).
         if seed == "new":

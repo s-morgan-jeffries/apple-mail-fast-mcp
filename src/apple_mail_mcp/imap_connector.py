@@ -1184,7 +1184,11 @@ class ImapConnector:
                     folder_name, exc,
                 )
                 # Mid-flight rejection — server lied about advertised cap.
-                # Surface as None so the dispatcher falls through.
+                # Surface as None so the dispatcher falls through to BFS,
+                # which produces a *complete* thread by re-walking. We
+                # intentionally discard any partial `collected` from
+                # earlier mailboxes here: incomplete data would be worse
+                # than the BFS round-trip cost.
                 return None
             cluster_uids: set[int] = set()
             for cluster in _flatten_thread_clusters(tree):

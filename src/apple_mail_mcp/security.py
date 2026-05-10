@@ -135,10 +135,13 @@ OPERATION_TIERS: dict[str, str] = {
     "delete_rule": "expensive_ops",
     "create_rule": "expensive_ops",
     "update_rule": "expensive_ops",
-    "reply_to_message": "expensive_ops",
-    "send_email": "sends",
-    "send_email_with_attachments": "sends",
-    "forward_message": "sends",
+    # Drafts lifecycle (#134) — create_draft / update_draft tier under
+    # "sends" because their gate chain only fires on send_now=True
+    # (which is the actual send action). delete_draft tiers under
+    # expensive_ops for parity with the other CRUD-style mutations.
+    "create_draft": "sends",
+    "update_draft": "sends",
+    "delete_draft": "expensive_ops",
     # Email templates (#30) — local file I/O only, never touches Mail.app.
     "list_templates": "cheap_reads",
     "get_template": "cheap_reads",
@@ -264,10 +267,12 @@ ACCOUNT_GATED_OPERATIONS = {
 }
 
 SEND_OPERATIONS = {
-    "send_email",
-    "send_email_with_attachments",
-    "reply_to_message",
-    "forward_message",
+    # Drafts lifecycle (#134): create_draft / update_draft trigger the
+    # send-safety gate only when send_now=True. The server-tool wrappers
+    # are responsible for calling check_test_mode_safety with the full
+    # recipient list when send_now is in play.
+    "create_draft",
+    "update_draft",
 }
 
 # Rule-mutation operations: in test mode, may only target rules whose
@@ -376,23 +381,14 @@ def check_test_mode_safety(
 
     In test mode (MAIL_TEST_MODE=true):
     - Account-gated operations must target MAIL_TEST_ACCOUNT.
-    - Send operations must send only to RFC 2606 reserved domains.
-    - reply_to_message is blocked (can't inspect original recipients here).
+    - Send operations must send only to RFC 2606 reserved domains
+      (when explicit recipients are supplied).
     - Rule-mutation operations must target rules whose names start with
       RULE_TEST_PREFIX (protects the user's real rules during integration
       testing).
     """
     if not _is_test_mode_enabled():
         return None
-
-    # reply_to_message has no recipient visibility at this layer; block it
-    if operation == "reply_to_message":
-        return _safety_error(
-            operation,
-            "Test mode: reply_to_message is blocked because recipients cannot "
-            "be verified without fetching the original message. Use forward_message "
-            "with explicit recipients instead.",
-        )
 
     # Account-gated operations: verify target account matches MAIL_TEST_ACCOUNT
     # by either name or UUID (per #61, account-gated tools accept both forms).

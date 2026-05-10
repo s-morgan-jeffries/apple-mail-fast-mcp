@@ -186,9 +186,9 @@ class TestCheckRateLimit:
     def test_returns_error_dict_when_over_limit(self) -> None:
         max_calls = TIER_LIMITS["sends"][0]
         for _ in range(max_calls):
-            check_rate_limit("send_email", {"subject": "x"})
+            check_rate_limit("create_draft", {"subject": "x"})
 
-        result = check_rate_limit("send_email", {"subject": "x"})
+        result = check_rate_limit("create_draft", {"subject": "x"})
         assert result is not None
         assert result["success"] is False
         assert result["error_type"] == "rate_limited"
@@ -197,24 +197,24 @@ class TestCheckRateLimit:
     def test_logs_rate_limited_to_operation_logger(self) -> None:
         max_calls = TIER_LIMITS["sends"][0]
         for _ in range(max_calls):
-            check_rate_limit("send_email", {"subject": "x"})
+            check_rate_limit("create_draft", {"subject": "x"})
 
-        check_rate_limit("send_email", {"subject": "blocked"})
+        check_rate_limit("create_draft", {"subject": "blocked"})
 
         recent = operation_logger.get_recent_operations(limit=10)
         rate_limited_entries = [
             op for op in recent if op["result"] == "rate_limited"
         ]
         assert len(rate_limited_entries) == 1
-        assert rate_limited_entries[0]["operation"] == "send_email"
+        assert rate_limited_entries[0]["operation"] == "create_draft"
         assert rate_limited_entries[0]["parameters"] == {"subject": "blocked"}
 
     def test_error_message_includes_limit_and_window(self) -> None:
         max_calls, window = TIER_LIMITS["sends"]
         for _ in range(max_calls):
-            check_rate_limit("send_email", {"subject": "x"})
+            check_rate_limit("create_draft", {"subject": "x"})
 
-        result = check_rate_limit("send_email", {"subject": "x"})
+        result = check_rate_limit("create_draft", {"subject": "x"})
         assert result is not None
         assert str(max_calls) in result["error"]
         assert str(int(window)) in result["error"]
@@ -224,9 +224,8 @@ class TestCheckRateLimit:
             "list_accounts", "list_rules", "list_mailboxes", "get_messages",
             "get_thread", "save_attachments", "search_messages",
             "update_message", "create_mailbox", "update_mailbox",
-            "delete_mailbox",
-            "delete_messages", "reply_to_message", "send_email",
-            "send_email_with_attachments", "forward_message",
+            "delete_mailbox", "delete_messages",
+            "create_draft", "update_draft", "delete_draft",
             "delete_rule", "create_rule", "update_rule",
             "list_templates", "get_template", "save_template",
             "delete_template", "render_template",
@@ -294,7 +293,7 @@ class TestCheckTestModeSafety:
         monkeypatch.delenv("MAIL_TEST_MODE", raising=False)
         assert check_test_mode_safety("search_messages", account="Gmail") is None
         assert (
-            check_test_mode_safety("send_email", recipients=["real@person.com"])
+            check_test_mode_safety("create_draft", recipients=["real@person.com"])
             is None
         )
 
@@ -435,11 +434,11 @@ class TestCheckTestModeSafety:
         monkeypatch.setenv("MAIL_TEST_MODE", "true")
 
         assert (
-            check_test_mode_safety("send_email", recipients=["a@example.com"]) is None
+            check_test_mode_safety("create_draft", recipients=["a@example.com"]) is None
         )
         assert (
             check_test_mode_safety(
-                "send_email", recipients=["a@example.com", "b@foo.test"]
+                "create_draft", recipients=["a@example.com", "b@foo.test"]
             )
             is None
         )
@@ -448,7 +447,7 @@ class TestCheckTestModeSafety:
         monkeypatch.setenv("MAIL_TEST_MODE", "true")
 
         result = check_test_mode_safety(
-            "send_email", recipients=["a@example.com", "real@person.com"]
+            "create_draft", recipients=["a@example.com", "real@person.com"]
         )
         assert result is not None
         assert result["error_type"] == "safety_violation"
@@ -458,8 +457,8 @@ class TestCheckTestModeSafety:
         monkeypatch.setenv("MAIL_TEST_MODE", "true")
         monkeypatch.setenv("MAIL_TEST_ACCOUNT", "TestAccount")
 
-        # get_message is not gated (no account param, not a send)
-        assert check_test_mode_safety("get_message") is None
+        # get_messages is not gated (no account param, not a send)
+        assert check_test_mode_safety("get_messages") is None
 
     def test_violation_logged_to_operation_logger(self, monkeypatch: Any) -> None:
         monkeypatch.setenv("MAIL_TEST_MODE", "true")
@@ -471,11 +470,3 @@ class TestCheckTestModeSafety:
         violations = [op for op in recent if op["result"] == "safety_violation"]
         assert len(violations) == 1
         assert violations[0]["operation"] == "search_messages"
-
-    def test_reply_to_message_in_test_mode_blocked(self, monkeypatch: Any) -> None:
-        """reply_to_message can't inspect recipients; blocked in test mode."""
-        monkeypatch.setenv("MAIL_TEST_MODE", "true")
-
-        result = check_test_mode_safety("reply_to_message")
-        assert result is not None
-        assert result["error_type"] == "safety_violation"

@@ -161,14 +161,15 @@ if not is_valid:
     return {"success": False, "error": error}
 
 # Confirmation requirement (logged)
-require_confirmation("send_email", {
+require_confirmation("create_draft", {
     "subject": subject,
     "to": to,
-    "recipient_count": len(to) + len(cc or []) + len(bcc or [])
+    "recipient_count": len(to) + len(cc or []) + len(bcc or []),
+    "send_now": send_now,
 })
 
 # Operation logging
-operation_logger.log_operation("send_email", params, "success")
+operation_logger.log_operation("create_draft", params, "success")
 ```
 
 ### Bulk Operation Limits
@@ -280,7 +281,7 @@ script = f"tell application 'Mail' to {user_command}"  # NEVER DO THIS
 
 ```python
 # Prevent abuse
-if not rate_limit_check("send_email", window_seconds=60, max_operations=10):
+if not rate_limit_check("create_draft", window_seconds=60, max_operations=10):
     return {"success": False, "error": "Rate limit exceeded"}
 ```
 

@@ -3,7 +3,7 @@
 An MCP server bridging Claude and Apple Mail via AppleScript on macOS.
 
 **Stack:** Python 3.10+, FastMCP, AppleScript (via `osascript`)
-**Version:** v0.6.0 | **Tests:** 712 unit / 23 e2e | **Coverage:** 92%
+**Version:** v0.7.0 | **Tests:** 889 unit / 19 e2e / 32 integration | **Coverage:** 90%
 
 ## Commands
 

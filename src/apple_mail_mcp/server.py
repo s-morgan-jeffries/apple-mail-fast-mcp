@@ -1966,7 +1966,8 @@ def render_template(
     """Render a template into ready-to-send subject and body text.
 
     No side effects — caller is responsible for passing the rendered
-    text to reply_to_message, forward_message, or send_email.
+    text to ``create_draft`` or ``update_draft`` (with ``send_now=True``
+    when ready to send).
 
     With ``message_id``, the original sender's display name and email,
     the original subject, and today's date are auto-populated as

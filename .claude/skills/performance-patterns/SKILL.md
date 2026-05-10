@@ -16,7 +16,7 @@ description: Use when optimizing Apple Mail MCP operations, diagnosing slow quer
 | Single `osascript` call overhead | 100-300ms | Minimum cost per subprocess |
 | `search_messages` (typical INBOX) | ~1-5s | Depends on mailbox size and filter count |
 | `get_message` (single) | <1s | Direct ID lookup |
-| `send_email` | ~1-2s | Includes Mail.app compose + send |
+| `create_draft` (with `send_now=True`) | ~1-2s | Includes Mail.app compose + send |
 | `update_message` (bulk read/flag) | ~1-2s | Single script for N messages via `_bulk_repeat_block` |
 | `update_message` (move) | ~1-3s | Varies by account type (Gmail slower) |
 | `save_attachments` | ~2-5s | Depends on attachment count/size |

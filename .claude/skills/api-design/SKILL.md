@@ -12,8 +12,8 @@ The current API has 17 tools organized into 4 phases. Tool count should grow slo
 ```
 Can an existing tool handle this with current parameters?  (70% of cases: YES)
   |-- Searching with a new filter? -> Add parameter to search_messages()
-  |-- Reading with different format? -> Add parameter to get_message()
-  |-- Sending with new options? -> Extend send_email() or send_email_with_attachments()
+  |-- Reading with different format? -> Add parameter to get_messages()
+  |-- Sending/composing with new options? -> Extend create_draft() or update_draft()
   |
 Can an existing tool handle this with a NEW parameter?  (20% of cases: YES)
   |-- Example: search by date range -> add date_from, date_to to search_messages()
@@ -74,7 +74,7 @@ def list_mailboxes():
 
 ## Tool Naming Convention
 
-- Verb + noun: `search_messages`, `send_email`, `delete_messages`
+- Verb + noun: `search_messages`, `create_draft`, `delete_messages`
 - Plural when accepting lists: `delete_messages`, `get_messages`
 - CRUD-style for multi-field mutation: `update_message(read_status, flag_color, destination_mailbox, ...)` over per-field verbs (`mark_as_read`, `flag_message`, `move_messages`). Patch semantics — unset fields are unchanged.
 
