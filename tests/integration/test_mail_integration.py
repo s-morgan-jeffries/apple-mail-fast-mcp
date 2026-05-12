@@ -673,6 +673,121 @@ class TestDraftsLifecycleIntegration:
                 except Exception:
                     pass
 
+    def test_delete_messages_via_imap_round_trip(
+        self,
+        connector: AppleMailConnector,
+        test_account: str,
+    ) -> None:
+        """#150: delete_messages with account+source_mailbox → IMAP MOVE
+        to Trash → verify via direct IMAP that the source is empty and
+        the message landed in the account's Trash folder.
+
+        Mail.app's mailbox view lags IMAP server changes; the truth
+        lives on the server, so verification uses a direct IMAPClient."""
+        import uuid as _uuid
+        from datetime import datetime, timezone
+        from email.utils import format_datetime
+
+        from imapclient import IMAPClient
+
+        from apple_mail_mcp.keychain import get_imap_password
+
+        suffix = _uuid.uuid4().hex[:8]
+        src = f"ZZZ-AMM-DEL-SRC-{suffix}"
+        msg_id_local = f"{_uuid.uuid4().hex}@apple-mail-mcp-test.invalid"
+        bracketed = f"<{msg_id_local}>"
+
+        host, port, email = connector._resolve_imap_config(test_account)
+        pw = get_imap_password(test_account, email)
+
+        assert connector.create_mailbox(account=test_account, name=src)
+
+        try:
+            # APPEND a synthetic message into source via direct IMAP so
+            # we have a known Message-ID without going through Mail.app.
+            now = format_datetime(datetime.now(tz=timezone.utc))
+            raw = (
+                f"From: sender@apple-mail-mcp-test.invalid\r\n"
+                f"To: rcpt@apple-mail-mcp-test.invalid\r\n"
+                f"Subject: AMM #150 IMAP delete test\r\n"
+                f"Date: {now}\r\n"
+                f"Message-ID: {bracketed}\r\n"
+                f"\r\n"
+                f"body\r\n"
+            ).encode()
+
+            append_client = IMAPClient(host, port=port, ssl=True, timeout=30)
+            append_client.login(email, pw)
+            try:
+                append_client.append(src, raw)
+            finally:
+                append_client.logout()
+
+            # Drive the IMAP delete via delete_messages.
+            deleted = connector.delete_messages(
+                [msg_id_local],
+                account=test_account,
+                source_mailbox=src,
+            )
+            assert deleted == 1
+
+            # Verify via direct IMAP. Discover the Trash folder the same
+            # way the connector did (SPECIAL-USE first, conventional
+            # fallback) so this test works on Gmail / iCloud / Fastmail.
+            verify = IMAPClient(host, port=port, ssl=True, timeout=30)
+            verify.login(email, pw)
+            try:
+                trash_name = None
+                conventional = (
+                    "Trash", "[Gmail]/Trash",
+                    "Deleted Messages", "Deleted Items",
+                )
+                listing = verify.list_folders()
+                for flags, _delim, name in listing:
+                    if b"\\Trash" in flags:
+                        trash_name = (
+                            name.decode("utf-8", errors="replace")
+                            if isinstance(name, (bytes, bytearray))
+                            else name
+                        )
+                        break
+                if trash_name is None:
+                    present = {
+                        n.decode("utf-8", errors="replace")
+                        if isinstance(n, (bytes, bytearray)) else n
+                        for _f, _d, n in listing
+                    }
+                    for candidate in conventional:
+                        if candidate in present:
+                            trash_name = candidate
+                            break
+                assert trash_name is not None, (
+                    "Test account has no discoverable Trash folder"
+                )
+
+                verify.select_folder(src, readonly=True)
+                src_uids = verify.search(["HEADER", "Message-ID", bracketed])
+                verify.select_folder(trash_name, readonly=True)
+                trash_uids = verify.search(["HEADER", "Message-ID", bracketed])
+            finally:
+                verify.logout()
+
+            assert src_uids == [], (
+                f"message still in source after delete: {src_uids}"
+            )
+            assert len(trash_uids) >= 1, (
+                f"message not in Trash after delete: {trash_uids}"
+            )
+        finally:
+            # Best-effort cleanup of the source fixture mailbox. Don't
+            # touch Trash — that's the user's domain.
+            try:
+                connector.delete_mailbox(
+                    account=test_account, name=src, delete_messages=True
+                )
+            except Exception:
+                pass
+
     def test_update_mailbox_renames_in_place(
         self,
         connector: AppleMailConnector,

@@ -755,6 +755,8 @@ Delete messages — always moves them to the account's Trash mailbox.
 |-----------|------|----------|---------|-------------|
 | `message_ids` | list[string] | Yes | - | List of message IDs to delete |
 | `permanent` | boolean | No | False | Reserved; currently a no-op. Passing `True` emits a `DeprecationWarning`. See [issue #111](https://github.com/s-morgan-jeffries/apple-mail-mcp/issues/111). |
+| `account` | string \| null | No | null | Account name (or UUID). Pair with `source_mailbox` to narrow the scan and unlock the IMAP fast path (#150). |
+| `source_mailbox` | string \| null | No | null | Mailbox the messages live in. Required to unlock the IMAP fast path (#150) — without it, the delete runs via AppleScript even when IMAP is configured. Either alone (without `account`) raises `validation_error`. |
 
 **Returns:**
 
@@ -769,11 +771,20 @@ Delete messages — always moves them to the account's Trash mailbox.
 **Examples:**
 
 ```python
-# Move messages to trash
+# Move messages to trash (cross-scan; finds them across all mailboxes)
 delete_messages(
     message_ids=["12345", "12346"],
 )
+
+# Faster: narrow-scan or IMAP fast path when source is known
+delete_messages(
+    message_ids=["12345", "12346"],
+    account="iCloud",
+    source_mailbox="INBOX",
+)
 ```
+
+**Performance — IMAP fast path (#150):** When invoked with `account` and `source_mailbox`, the delete runs server-side via IMAP `UID MOVE` to the account's Trash folder. On a 47k-message Gmail INBOX this drops the operation from ~57s to <1s — the AppleScript path uses `whose message id is`, which is a linear scan against RFC 5322 Message-IDs. Trash folder is resolved via RFC 6154 SPECIAL-USE `\Trash`; falls back to conventional names (`Trash`, `[Gmail]/Trash`, `Deleted Messages`, `Deleted Items`). Capability fallback chain: `MOVE` → `UID COPY` + `UID STORE +FLAGS \Deleted` + `UID EXPUNGE` (UIDPLUS only) → AppleScript. Requires Keychain credentials per the IMAP setup flow (`apple-mail-mcp setup-imap --account <name>`); falls back to AppleScript transparently when IMAP isn't configured or the server lacks both `MOVE` and `UIDPLUS`.
 
 **Note on `permanent`:**
 

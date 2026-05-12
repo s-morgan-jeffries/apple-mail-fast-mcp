@@ -15,6 +15,7 @@ from apple_mail_mcp.exceptions import (
     MailDraftInvalidIdError,
     MailDraftNotFoundError,
     MailImapMoveUnsupportedError,
+    MailImapTrashNotFoundError,
     MailKeychainAccessDeniedError,
     MailKeychainEntryNotFoundError,
     MailMailboxNotFoundError,
@@ -1879,6 +1880,355 @@ class TestAppleMailConnector:
         assert "iCloud" not in connector._imap_failure_until
         mock_run_as.assert_not_called()
 
+    # --- _imap_delete_messages helper (#150) -----------------------------
+
+    @patch("apple_mail_mcp.mail_connector.ImapConnector")
+    @patch("apple_mail_mcp.mail_connector.get_imap_password")
+    @patch.object(AppleMailConnector, "_resolve_imap_config")
+    def test_imap_delete_messages_happy_path(
+        self,
+        mock_resolve: MagicMock,
+        mock_keychain: MagicMock,
+        mock_imap_cls: MagicMock,
+        connector: AppleMailConnector,
+    ) -> None:
+        mock_resolve.return_value = ("imap.mail.me.com", 993, "user@icloud.com")
+        mock_keychain.return_value = "app-password"
+        mock_imap = MagicMock()
+        mock_imap_cls.return_value = mock_imap
+        mock_imap.delete_messages.return_value = 3
+
+        result = connector._imap_delete_messages(
+            account="iCloud",
+            message_ids=["a@x", "b@x", "c@x"],
+            source_mailbox="INBOX",
+        )
+
+        mock_resolve.assert_called_once_with("iCloud")
+        mock_keychain.assert_called_once_with("iCloud", "user@icloud.com")
+        mock_imap_cls.assert_called_once_with(
+            "imap.mail.me.com", 993, "user@icloud.com", "app-password",
+            pool=None,
+        )
+        mock_imap.delete_messages.assert_called_once_with(
+            message_ids=["a@x", "b@x", "c@x"],
+            source_mailbox="INBOX",
+        )
+        assert result == 3
+
+    @patch("apple_mail_mcp.mail_connector.get_imap_password")
+    @patch.object(AppleMailConnector, "_resolve_imap_config")
+    def test_imap_delete_messages_keychain_missing_propagates(
+        self,
+        mock_resolve: MagicMock,
+        mock_keychain: MagicMock,
+        connector: AppleMailConnector,
+    ) -> None:
+        mock_resolve.return_value = ("imap.mail.me.com", 993, "user@icloud.com")
+        mock_keychain.side_effect = MailKeychainEntryNotFoundError("no entry")
+        with pytest.raises(MailKeychainEntryNotFoundError):
+            connector._imap_delete_messages(
+                account="iCloud",
+                message_ids=["a@x"],
+                source_mailbox="INBOX",
+            )
+
+    @patch("apple_mail_mcp.mail_connector.ImapConnector")
+    @patch("apple_mail_mcp.mail_connector.get_imap_password")
+    @patch.object(AppleMailConnector, "_resolve_imap_config")
+    def test_imap_delete_messages_login_error_propagates(
+        self,
+        mock_resolve: MagicMock,
+        mock_keychain: MagicMock,
+        mock_imap_cls: MagicMock,
+        connector: AppleMailConnector,
+    ) -> None:
+        mock_resolve.return_value = ("imap.mail.me.com", 993, "user@icloud.com")
+        mock_keychain.return_value = "wrong-password"
+        mock_imap = MagicMock()
+        mock_imap_cls.return_value = mock_imap
+        mock_imap.delete_messages.side_effect = LoginError("rejected")
+
+        with pytest.raises(LoginError):
+            connector._imap_delete_messages(
+                account="iCloud",
+                message_ids=["a@x"],
+                source_mailbox="INBOX",
+            )
+
+    @patch("apple_mail_mcp.mail_connector.ImapConnector")
+    @patch("apple_mail_mcp.mail_connector.get_imap_password")
+    @patch.object(AppleMailConnector, "_resolve_imap_config")
+    def test_imap_delete_messages_oserror_propagates(
+        self,
+        mock_resolve: MagicMock,
+        mock_keychain: MagicMock,
+        mock_imap_cls: MagicMock,
+        connector: AppleMailConnector,
+    ) -> None:
+        mock_resolve.return_value = ("imap.mail.me.com", 993, "user@icloud.com")
+        mock_keychain.return_value = "pw"
+        mock_imap = MagicMock()
+        mock_imap_cls.return_value = mock_imap
+        mock_imap.delete_messages.side_effect = OSError("unreachable")
+
+        with pytest.raises(OSError, match="unreachable"):
+            connector._imap_delete_messages(
+                account="iCloud",
+                message_ids=["a@x"],
+                source_mailbox="INBOX",
+            )
+
+    @patch("apple_mail_mcp.mail_connector.ImapConnector")
+    @patch("apple_mail_mcp.mail_connector.get_imap_password")
+    @patch.object(AppleMailConnector, "_resolve_imap_config")
+    def test_imap_delete_messages_unsupported_move_propagates(
+        self,
+        mock_resolve: MagicMock,
+        mock_keychain: MagicMock,
+        mock_imap_cls: MagicMock,
+        connector: AppleMailConnector,
+    ) -> None:
+        mock_resolve.return_value = ("imap.mail.me.com", 993, "user@icloud.com")
+        mock_keychain.return_value = "pw"
+        mock_imap = MagicMock()
+        mock_imap_cls.return_value = mock_imap
+        mock_imap.delete_messages.side_effect = MailImapMoveUnsupportedError(
+            "no MOVE / UIDPLUS"
+        )
+
+        with pytest.raises(MailImapMoveUnsupportedError):
+            connector._imap_delete_messages(
+                account="iCloud",
+                message_ids=["a@x"],
+                source_mailbox="INBOX",
+            )
+
+    @patch("apple_mail_mcp.mail_connector.ImapConnector")
+    @patch("apple_mail_mcp.mail_connector.get_imap_password")
+    @patch.object(AppleMailConnector, "_resolve_imap_config")
+    def test_imap_delete_messages_trash_not_found_propagates(
+        self,
+        mock_resolve: MagicMock,
+        mock_keychain: MagicMock,
+        mock_imap_cls: MagicMock,
+        connector: AppleMailConnector,
+    ) -> None:
+        mock_resolve.return_value = ("imap.mail.me.com", 993, "user@icloud.com")
+        mock_keychain.return_value = "pw"
+        mock_imap = MagicMock()
+        mock_imap_cls.return_value = mock_imap
+        mock_imap.delete_messages.side_effect = MailImapTrashNotFoundError(
+            "no Trash"
+        )
+
+        with pytest.raises(MailImapTrashNotFoundError):
+            connector._imap_delete_messages(
+                account="iCloud",
+                message_ids=["a@x"],
+                source_mailbox="INBOX",
+            )
+
+    # --- delete_messages delegation (#150) -------------------------------
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    @patch.object(AppleMailConnector, "_imap_delete_messages")
+    def test_delete_messages_uses_imap_when_account_and_source_provided(
+        self,
+        mock_imap: MagicMock,
+        mock_run_as: MagicMock,
+        connector: AppleMailConnector,
+    ) -> None:
+        """account + source_mailbox provided: IMAP runs, AppleScript skipped."""
+        mock_imap.return_value = 4
+        result = connector.delete_messages(
+            ["a@x", "b@x"],
+            account="iCloud",
+            source_mailbox="INBOX",
+        )
+        assert result == 4
+        mock_imap.assert_called_once_with(
+            account="iCloud",
+            message_ids=["a@x", "b@x"],
+            source_mailbox="INBOX",
+        )
+        mock_run_as.assert_not_called()
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    @patch.object(AppleMailConnector, "_imap_delete_messages")
+    def test_delete_messages_skips_imap_without_account_and_source(
+        self,
+        mock_imap: MagicMock,
+        mock_run_as: MagicMock,
+        connector: AppleMailConnector,
+    ) -> None:
+        """Neither hint provided: IMAP would have to SEARCH every
+        mailbox per Message-ID, defeating the speed win. Stay on
+        AppleScript cross-scan."""
+        mock_run_as.return_value = "1"
+        connector.delete_messages(["a@x"])
+        mock_imap.assert_not_called()
+        mock_run_as.assert_called_once()
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    @patch.object(AppleMailConnector, "_imap_delete_messages")
+    def test_delete_messages_falls_back_when_breaker_open(
+        self,
+        mock_imap: MagicMock,
+        mock_run_as: MagicMock,
+        connector: AppleMailConnector,
+    ) -> None:
+        """Open breaker: IMAP path is bypassed entirely; AppleScript runs."""
+        connector._imap_failure_until["iCloud"] = time.monotonic() + 60
+        mock_run_as.return_value = "1"
+        connector.delete_messages(
+            ["a@x"],
+            account="iCloud",
+            source_mailbox="INBOX",
+        )
+        mock_imap.assert_not_called()
+        mock_run_as.assert_called_once()
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    @patch.object(AppleMailConnector, "_imap_delete_messages")
+    def test_delete_messages_falls_back_on_keychain_missing_silent(
+        self,
+        mock_imap: MagicMock,
+        mock_run_as: MagicMock,
+        connector: AppleMailConnector,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Missing-Keychain-entry = benign opt-out: silent DEBUG, no
+        WARNING, breaker NOT opened."""
+        mock_imap.side_effect = MailKeychainEntryNotFoundError("no entry")
+        mock_run_as.return_value = "1"
+        with caplog.at_level(logging.DEBUG, logger="apple_mail_mcp.mail_connector"):
+            connector.delete_messages(
+                ["a@x"],
+                account="iCloud",
+                source_mailbox="INBOX",
+            )
+        mock_run_as.assert_called_once()
+        warnings_emitted = [
+            r for r in caplog.records if r.levelno >= logging.WARNING
+        ]
+        assert warnings_emitted == []
+        assert "iCloud" not in connector._imap_failure_until
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    @patch.object(AppleMailConnector, "_imap_delete_messages")
+    def test_delete_messages_falls_back_on_oserror_with_warning(
+        self,
+        mock_imap: MagicMock,
+        mock_run_as: MagicMock,
+        connector: AppleMailConnector,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Network failure: AppleScript runs, breaker opens, one WARNING."""
+        mock_imap.side_effect = OSError("unreachable")
+        mock_run_as.return_value = "1"
+        with caplog.at_level(logging.DEBUG, logger="apple_mail_mcp.mail_connector"):
+            connector.delete_messages(
+                ["a@x"],
+                account="iCloud",
+                source_mailbox="INBOX",
+            )
+        mock_run_as.assert_called_once()
+        warnings_emitted = [
+            r for r in caplog.records if r.levelno == logging.WARNING
+        ]
+        assert len(warnings_emitted) == 1
+        assert "iCloud" in connector._imap_failure_until
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    @patch.object(AppleMailConnector, "_imap_delete_messages")
+    def test_delete_messages_falls_back_on_login_error(
+        self,
+        mock_imap: MagicMock,
+        mock_run_as: MagicMock,
+        connector: AppleMailConnector,
+    ) -> None:
+        mock_imap.side_effect = LoginError("rejected")
+        mock_run_as.return_value = "1"
+        connector.delete_messages(
+            ["a@x"],
+            account="iCloud",
+            source_mailbox="INBOX",
+        )
+        mock_run_as.assert_called_once()
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    @patch.object(AppleMailConnector, "_imap_delete_messages")
+    def test_delete_messages_falls_back_on_unsupported_capability(
+        self,
+        mock_imap: MagicMock,
+        mock_run_as: MagicMock,
+        connector: AppleMailConnector,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """No MOVE / UIDPLUS: capability gap is permanent, DEBUG-only
+        log, breaker NOT opened."""
+        mock_imap.side_effect = MailImapMoveUnsupportedError("no caps")
+        mock_run_as.return_value = "1"
+        with caplog.at_level(logging.DEBUG, logger="apple_mail_mcp.mail_connector"):
+            connector.delete_messages(
+                ["a@x"],
+                account="iCloud",
+                source_mailbox="INBOX",
+            )
+        mock_run_as.assert_called_once()
+        warnings_emitted = [
+            r for r in caplog.records if r.levelno >= logging.WARNING
+        ]
+        assert warnings_emitted == []
+        assert "iCloud" not in connector._imap_failure_until
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    @patch.object(AppleMailConnector, "_imap_delete_messages")
+    def test_delete_messages_falls_back_on_trash_not_found(
+        self,
+        mock_imap: MagicMock,
+        mock_run_as: MagicMock,
+        connector: AppleMailConnector,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Trash discovery failed: same benign treatment as
+        unsupported-capability — DEBUG-only, no breaker."""
+        mock_imap.side_effect = MailImapTrashNotFoundError("no trash")
+        mock_run_as.return_value = "1"
+        with caplog.at_level(logging.DEBUG, logger="apple_mail_mcp.mail_connector"):
+            connector.delete_messages(
+                ["a@x"],
+                account="iCloud",
+                source_mailbox="INBOX",
+            )
+        mock_run_as.assert_called_once()
+        warnings_emitted = [
+            r for r in caplog.records if r.levelno >= logging.WARNING
+        ]
+        assert warnings_emitted == []
+        assert "iCloud" not in connector._imap_failure_until
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    @patch.object(AppleMailConnector, "_imap_delete_messages")
+    def test_delete_messages_clears_breaker_on_success(
+        self,
+        mock_imap: MagicMock,
+        mock_run_as: MagicMock,
+        connector: AppleMailConnector,
+    ) -> None:
+        """Successful IMAP call clears any prior breaker entry."""
+        connector._imap_failure_until["iCloud"] = time.monotonic() + 60
+        connector._imap_clear_breaker("iCloud")
+        mock_imap.return_value = 1
+        connector.delete_messages(
+            ["a@x"],
+            account="iCloud",
+            source_mailbox="INBOX",
+        )
+        assert "iCloud" not in connector._imap_failure_until
+        mock_run_as.assert_not_called()
+
     # --- search_messages delegation --------------------------------------
 
     @patch.object(AppleMailConnector, "_search_messages_applescript")
@@ -3279,6 +3629,8 @@ class TestBulkOpsSourceMailbox:
     def test_delete_messages_narrow_path_uses_single_loop(
         self, mock_run: MagicMock, connector: AppleMailConnector
     ) -> None:
+        # Skip the #150 IMAP fast path so the AppleScript narrow path runs.
+        connector._imap_failure_until["iCloud"] = time.monotonic() + 60
         mock_run.return_value = "1"
         connector.delete_messages(
             ["abc"], account="iCloud", source_mailbox="Trash"
@@ -3295,6 +3647,8 @@ class TestBulkOpsSourceMailbox:
         """Issue #111: Mail.app exposes no AppleScript path to bypass Trash.
         `permanent=True` is a no-op; warn so callers don't silently rely on
         absent behavior."""
+        # Skip the #150 IMAP fast path so the AppleScript narrow path runs.
+        connector._imap_failure_until["iCloud"] = time.monotonic() + 60
         mock_run.return_value = "1"
         with pytest.warns(DeprecationWarning, match="#111"):
             connector.delete_messages(
@@ -3315,6 +3669,8 @@ class TestBulkOpsSourceMailbox:
         self, mock_run: MagicMock, connector: AppleMailConnector
     ) -> None:
         """The default path (permanent=False) must not emit DeprecationWarning."""
+        # Skip the #150 IMAP fast path so the AppleScript narrow path runs.
+        connector._imap_failure_until["iCloud"] = time.monotonic() + 60
         mock_run.return_value = "1"
         with warnings.catch_warnings():
             warnings.simplefilter("error", DeprecationWarning)

@@ -1478,6 +1478,222 @@ def _generic_folder_listing_no_all() -> list:
     ]
 
 
+class TestImapDeleteMessages:
+    """Issue #150: server-side delete via UID MOVE to the account's
+    Trash folder (RFC 6851), or UID COPY + STORE \\Deleted + UID
+    EXPUNGE (RFC 4315 UIDPLUS). Trash folder is resolved via RFC 6154
+    SPECIAL-USE \\Trash flag with conventional-name fallback."""
+
+    @staticmethod
+    def _trash_listing(special_use: bool = True, trash_name: str = "Trash") -> list:
+        """A folder listing with (or without) a SPECIAL-USE \\Trash."""
+        if special_use:
+            return [
+                ((b"\\HasNoChildren",), b"/", "INBOX"),
+                ((b"\\HasNoChildren", b"\\Trash"), b"/", trash_name),
+            ]
+        return [
+            ((b"\\HasNoChildren",), b"/", "INBOX"),
+            ((b"\\HasNoChildren",), b"/", trash_name),
+        ]
+
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_delete_uses_uid_move_to_trash_when_capability_present(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """Headline path: MOVE advertised, SPECIAL-USE \\Trash present →
+        one round-trip after UID resolution."""
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.capabilities.return_value = {b"IMAP4REV1", b"MOVE", b"UIDPLUS"}
+        client.list_folders.return_value = self._trash_listing()
+        client.search.side_effect = [[101], [102]]
+
+        deleted = ImapConnector("h", 993, "u@e.com", "pw").delete_messages(
+            ["a@example.com", "<b@example.com>"],
+            source_mailbox="INBOX",
+        )
+
+        assert deleted == 2
+        client.select_folder.assert_called_once_with("INBOX", readonly=False)
+        client.move.assert_called_once_with([101, 102], "Trash")
+        client.copy.assert_not_called()
+        client.uid_expunge.assert_not_called()
+
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_delete_falls_back_to_copy_store_expunge_when_only_uidplus(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """No MOVE, UIDPLUS present: COPY + STORE \\Deleted + scoped
+        UID EXPUNGE."""
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.capabilities.return_value = {b"IMAP4REV1", b"UIDPLUS"}
+        client.list_folders.return_value = self._trash_listing()
+        client.search.side_effect = [[201], [202]]
+
+        deleted = ImapConnector("h", 993, "u@e.com", "pw").delete_messages(
+            ["a@x", "b@x"],
+            source_mailbox="INBOX",
+        )
+
+        assert deleted == 2
+        client.move.assert_not_called()
+        client.copy.assert_called_once_with([201, 202], "Trash")
+        client.add_flags.assert_called_once_with(
+            [201, 202], [b"\\Deleted"], silent=True
+        )
+        client.uid_expunge.assert_called_once_with([201, 202])
+
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_delete_raises_when_neither_move_nor_uidplus(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """Without MOVE or UIDPLUS we'd need an unscoped EXPUNGE that
+        would clobber other \\Deleted-flagged messages. Refuse."""
+        from apple_mail_mcp.exceptions import MailImapMoveUnsupportedError
+
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.capabilities.return_value = {b"IMAP4REV1"}
+        client.list_folders.return_value = self._trash_listing()
+
+        with pytest.raises(MailImapMoveUnsupportedError, match="MOVE"):
+            ImapConnector("h", 993, "u@e.com", "pw").delete_messages(
+                ["a@x"],
+                source_mailbox="INBOX",
+            )
+        client.move.assert_not_called()
+        client.copy.assert_not_called()
+
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_delete_uses_special_use_trash_when_available(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """Localized Trash discovery via \\Trash flag — works even if the
+        folder isn't named 'Trash' (e.g. Gmail's [Gmail]/Trash, or
+        localized names)."""
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.capabilities.return_value = {b"MOVE"}
+        client.list_folders.return_value = [
+            ((b"\\HasNoChildren",), b"/", "INBOX"),
+            ((b"\\HasNoChildren", b"\\Trash"), b"/", "[Gmail]/Trash"),
+        ]
+        client.search.return_value = [42]
+
+        ImapConnector("h", 993, "u@e.com", "pw").delete_messages(
+            ["a@x"],
+            source_mailbox="INBOX",
+        )
+        client.move.assert_called_once_with([42], "[Gmail]/Trash")
+
+    @pytest.mark.parametrize(
+        "trash_name", ["Trash", "[Gmail]/Trash", "Deleted Messages", "Deleted Items"]
+    )
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_delete_falls_back_to_conventional_trash_name_when_special_use_missing(
+        self, mock_cls: MagicMock, trash_name: str
+    ) -> None:
+        """Servers that don't advertise \\Trash via SPECIAL-USE: scan
+        conventional names in folder listing."""
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.capabilities.return_value = {b"MOVE"}
+        client.list_folders.return_value = [
+            ((b"\\HasNoChildren",), b"/", "INBOX"),
+            ((b"\\HasNoChildren",), b"/", trash_name),
+        ]
+        client.search.return_value = [7]
+
+        ImapConnector("h", 993, "u@e.com", "pw").delete_messages(
+            ["a@x"],
+            source_mailbox="INBOX",
+        )
+        client.move.assert_called_once_with([7], trash_name)
+
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_delete_raises_trash_not_found_when_no_trash_anywhere(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """Neither SPECIAL-USE \\Trash nor any conventional name found.
+        Orchestrator falls back to AppleScript."""
+        from apple_mail_mcp.exceptions import MailImapTrashNotFoundError
+
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.capabilities.return_value = {b"MOVE"}
+        client.list_folders.return_value = [
+            ((b"\\HasNoChildren",), b"/", "INBOX"),
+            ((b"\\HasNoChildren", b"\\Sent"), b"/", "Sent"),
+        ]
+
+        with pytest.raises(MailImapTrashNotFoundError, match="Trash"):
+            ImapConnector("h", 993, "u@e.com", "pw").delete_messages(
+                ["a@x"],
+                source_mailbox="INBOX",
+            )
+        client.move.assert_not_called()
+
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_delete_returns_zero_when_no_uids_resolve(
+        self, mock_cls: MagicMock
+    ) -> None:
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.capabilities.return_value = {b"MOVE"}
+        client.list_folders.return_value = self._trash_listing()
+        client.search.return_value = []
+
+        deleted = ImapConnector("h", 993, "u@e.com", "pw").delete_messages(
+            ["missing@x"],
+            source_mailbox="INBOX",
+        )
+        assert deleted == 0
+        client.move.assert_not_called()
+
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_delete_strips_and_re_adds_brackets_for_search(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """Mix of bracketless and bracketed Message-IDs as input. Both
+        arrive at SEARCH HEADER as the bracketed RFC 5322 form."""
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.capabilities.return_value = {b"MOVE"}
+        client.list_folders.return_value = self._trash_listing()
+        client.search.side_effect = [[1], [2]]
+
+        ImapConnector("h", 993, "u@e.com", "pw").delete_messages(
+            ["bare@example.com", "<wrapped@example.com>"],
+            source_mailbox="INBOX",
+        )
+        searches = [c[0][0] for c in client.search.call_args_list]
+        assert searches == [
+            ["HEADER", "Message-ID", "<bare@example.com>"],
+            ["HEADER", "Message-ID", "<wrapped@example.com>"],
+        ]
+
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_delete_skips_message_ids_that_dont_resolve(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """Best-effort partial-success: 3 ids in, 2 resolve → MOVE on
+        the 2; return 2."""
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.capabilities.return_value = {b"MOVE"}
+        client.list_folders.return_value = self._trash_listing()
+        client.search.side_effect = [[10], [], [11]]
+
+        deleted = ImapConnector("h", 993, "u@e.com", "pw").delete_messages(
+            ["a@x", "b@x", "c@x"],
+            source_mailbox="INBOX",
+        )
+        assert deleted == 2
+        client.move.assert_called_once_with([10, 11], "Trash")
+
+
 class TestFindThreadMembersGmail:
     """Tier 1 (Gmail X-GM-THRID) dispatch in find_thread_members.
 

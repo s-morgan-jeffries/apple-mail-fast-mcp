@@ -60,6 +60,16 @@ class MailImapMoveUnsupportedError(MailError):
     pass
 
 
+class MailImapTrashNotFoundError(MailError):
+    """The IMAP server doesn't advertise a \\Trash SPECIAL-USE folder
+    (RFC 6154) and no folder matching the conventional names (Trash,
+    [Gmail]/Trash, Deleted Messages, Deleted Items) was found. Without
+    a Trash folder we can't preserve the move-to-Trash semantic of
+    delete_messages — fall back to AppleScript."""
+
+    pass
+
+
 class MailMessageNotFoundError(MailError):
     """Message does not exist."""
 

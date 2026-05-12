@@ -22,6 +22,7 @@ from .exceptions import (
     MailDraftNotFoundError,
     MailImapMoveUnsupportedError,
     MailImapRequiredError,
+    MailImapTrashNotFoundError,
     MailKeychainAccessDeniedError,
     MailKeychainEntryNotFoundError,
     MailMailboxNotEmptyError,
@@ -54,6 +55,7 @@ _IMAP_FALLBACK_EXCS: tuple[type[Exception], ...] = (
     LoginError,
     IMAPClientError,
     MailImapMoveUnsupportedError,
+    MailImapTrashNotFoundError,
 )
 
 logger = logging.getLogger(__name__)
@@ -292,6 +294,17 @@ class AppleMailConnector:
             logger.debug(
                 "IMAP server for %s lacks MOVE/UIDPLUS; using AppleScript "
                 "for the move-only patch",
+                account,
+            )
+            return
+
+        if isinstance(exc, MailImapTrashNotFoundError):
+            # Same reasoning as above — Trash discovery failing once
+            # means it'll fail every time for this server, so opening
+            # the breaker would only hurt unrelated read paths.
+            logger.debug(
+                "IMAP server for %s has no discoverable Trash folder; "
+                "using AppleScript for delete_messages",
                 account,
             )
             return
@@ -1827,6 +1840,59 @@ class AppleMailConnector:
             self._log_imap_fallback(account, exc)
             return None
 
+    def _imap_delete_messages(
+        self,
+        *,
+        account: str,
+        message_ids: list[str],
+        source_mailbox: str,
+    ) -> int:
+        """IMAP path for delete_messages (#150).
+
+        Resolves config and Keychain credentials, then delegates to
+        ImapConnector.delete_messages (which discovers the Trash folder
+        via SPECIAL-USE \\Trash with conventional-name fallback, then
+        does UID MOVE / UID COPY+STORE+EXPUNGE). Propagates all
+        fallback-triggering exceptions unchanged — the caller
+        (_try_imap_delete) catches and falls back via _IMAP_FALLBACK_EXCS.
+        """
+        host, port, email = self._resolve_imap_config(account)
+        password = get_imap_password(account, email)
+        imap = ImapConnector(host, port, email, password, pool=self._imap_pool)
+        return imap.delete_messages(
+            message_ids=message_ids,
+            source_mailbox=source_mailbox,
+        )
+
+    def _try_imap_delete(
+        self,
+        message_ids: list[str],
+        *,
+        account: str,
+        source_mailbox: str,
+    ) -> int | None:
+        """Attempt the IMAP fast path for delete_messages. Returns the
+        moved-to-Trash count on success, or None when the caller should
+        fall through to the AppleScript pass.
+
+        Caller must already have verified that account + source_mailbox
+        are both provided (without source_mailbox, IMAP would have to
+        SEARCH every mailbox per Message-ID).
+        """
+        if self._imap_breaker_open(account):
+            return None
+        try:
+            result = self._imap_delete_messages(
+                account=account,
+                message_ids=message_ids,
+                source_mailbox=source_mailbox,
+            )
+            self._imap_clear_breaker(account)
+            return result
+        except _IMAP_FALLBACK_EXCS as exc:
+            self._log_imap_fallback(account, exc)
+            return None
+
     def _maybe_imap_move_only(
         self,
         message_ids: list[str],
@@ -2774,6 +2840,20 @@ class AppleMailConnector:
                 f"Too many messages for bulk delete ({len(message_ids)}). "
                 "Maximum is 100 without skip_bulk_check=True"
             )
+
+        # IMAP fast path (#150). Requires account + source_mailbox —
+        # without source_mailbox, IMAP would have to SEARCH every
+        # mailbox per Message-ID, defeating the speed win. Falls
+        # through to the AppleScript pass on any _IMAP_FALLBACK_EXCS
+        # exception (incl. capability gaps and trash-not-found).
+        if account is not None and source_mailbox is not None:
+            imap_count = self._try_imap_delete(
+                message_ids,
+                account=account,
+                source_mailbox=source_mailbox,
+            )
+            if imap_count is not None:
+                return imap_count
 
         id_list = ", ".join(
             f'"{escape_applescript_string(sanitize_input(mid))}"'

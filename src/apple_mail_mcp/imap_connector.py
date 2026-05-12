@@ -38,7 +38,11 @@ from imapclient import IMAPClient
 from imapclient.exceptions import IMAPClientError, LoginError
 from imapclient.response_types import Envelope
 
-from .exceptions import MailImapMoveUnsupportedError, MailMessageNotFoundError
+from .exceptions import (
+    MailImapMoveUnsupportedError,
+    MailImapTrashNotFoundError,
+    MailMessageNotFoundError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -977,6 +981,95 @@ class ImapConnector:
                 client.uid_expunge(uids)
             return len(uids)
 
+    # Conventional Trash folder names to fall back on when the IMAP
+    # server doesn't advertise \\Trash via SPECIAL-USE (RFC 6154).
+    # Order is informative — first match wins per `client.list_folders`.
+    _CONVENTIONAL_TRASH_NAMES: tuple[str, ...] = (
+        "Trash",
+        "[Gmail]/Trash",
+        "Deleted Messages",
+        "Deleted Items",
+    )
+
+    def delete_messages(
+        self,
+        message_ids: list[str],
+        source_mailbox: str,
+    ) -> int:
+        """Move messages to the account's Trash folder via IMAP. Issue #150.
+
+        Mirrors :meth:`move_messages`'s capability dispatch but resolves
+        the destination by discovering the server's Trash folder:
+
+        - Prefer RFC 6154 SPECIAL-USE ``\\Trash``.
+        - Fall back to a hard-coded list of conventional names
+          (``Trash``, ``[Gmail]/Trash``, ``Deleted Messages``,
+          ``Deleted Items``) by scanning the folder list.
+        - Raise :class:`MailImapTrashNotFoundError` when neither finds
+          anything; the orchestrator falls back to AppleScript.
+
+        Same MOVE / UIDPLUS dispatch and partial-success semantics as
+        :meth:`move_messages` (Message-IDs that don't resolve to a UID
+        are silently skipped).
+
+        Args:
+            message_ids: RFC 5322 Message-IDs, with or without surrounding
+                ``<>``.
+            source_mailbox: Mailbox the messages currently live in.
+
+        Returns:
+            Count of resolved + moved messages.
+
+        Raises:
+            MailImapMoveUnsupportedError: Server advertises neither MOVE
+                nor UIDPLUS.
+            MailImapTrashNotFoundError: No Trash folder discoverable via
+                SPECIAL-USE or conventional names.
+            IMAPClientError: Protocol-level failure.
+        """
+        bracketed_ids = [
+            mid if mid.startswith("<") and mid.endswith(">") else f"<{mid}>"
+            for mid in message_ids
+        ]
+
+        with self._session() as client:
+            client.select_folder(source_mailbox, readonly=False)
+
+            has_move = self._has_capability(client, b"MOVE")
+            has_uidplus = self._has_capability(client, b"UIDPLUS")
+            if not has_move and not has_uidplus:
+                raise MailImapMoveUnsupportedError(
+                    f"IMAP server at {self._host} advertises neither MOVE "
+                    f"(RFC 6851) nor UIDPLUS (RFC 4315); cannot perform a "
+                    f"safe scoped move to Trash"
+                )
+
+            trash = self._find_trash_folder(client)
+            if trash is None:
+                trash = self._find_trash_by_convention(client)
+            if trash is None:
+                raise MailImapTrashNotFoundError(
+                    f"IMAP server at {self._host} has no \\Trash "
+                    f"SPECIAL-USE folder and none of "
+                    f"{list(self._CONVENTIONAL_TRASH_NAMES)} were "
+                    f"present in the folder listing"
+                )
+
+            uids: list[int] = []
+            for bracketed in bracketed_ids:
+                found = client.search(["HEADER", "Message-ID", bracketed])
+                uids.extend(found)
+            if not uids:
+                return 0
+
+            if has_move:
+                client.move(uids, trash)
+            else:
+                client.copy(uids, trash)
+                client.add_flags(uids, [b"\\Deleted"], silent=True)
+                client.uid_expunge(uids)
+            return len(uids)
+
     @staticmethod
     def _has_capability(client: IMAPClient, name: bytes) -> bool:
         """True if ``name`` (e.g. ``b"X-GM-EXT-1"``) is in the post-login
@@ -1010,6 +1103,37 @@ class ImapConnector:
                 if isinstance(name, (bytes, bytearray)):
                     return name.decode("utf-8", errors="replace")
                 return cast(str, name)
+        return None
+
+    @staticmethod
+    def _find_trash_folder(client: IMAPClient) -> str | None:
+        """Return the Trash folder name via the ``\\Trash`` SPECIAL-USE
+        flag (RFC 6154), or None if the server doesn't advertise it.
+        Used by ``delete_messages`` (#150); falls back to
+        :meth:`_find_trash_by_convention` when this returns None."""
+        for flags, _delim, name in client.list_folders():
+            if b"\\Trash" in flags:
+                if isinstance(name, (bytes, bytearray)):
+                    return name.decode("utf-8", errors="replace")
+                return cast(str, name)
+        return None
+
+    def _find_trash_by_convention(
+        self, client: IMAPClient
+    ) -> str | None:
+        """Fall back to a hard-coded list of conventional Trash names
+        for servers that don't advertise SPECIAL-USE ``\\Trash`` (#150).
+        Scans the folder listing once and returns the first conventional
+        name present, in :attr:`_CONVENTIONAL_TRASH_NAMES` order."""
+        present: set[str] = set()
+        for _flags, _delim, name in client.list_folders():
+            if isinstance(name, (bytes, bytearray)):
+                present.add(name.decode("utf-8", errors="replace"))
+            else:
+                present.add(name)
+        for candidate in self._CONVENTIONAL_TRASH_NAMES:
+            if candidate in present:
+                return candidate
         return None
 
     def _thread_via_xgm_thrid(
