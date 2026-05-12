@@ -1893,6 +1893,60 @@ class AppleMailConnector:
             self._log_imap_fallback(account, exc)
             return None
 
+    def _imap_set_read_status(
+        self,
+        *,
+        account: str,
+        message_ids: list[str],
+        source_mailbox: str,
+        read: bool,
+    ) -> int:
+        """IMAP path for the read-status-only branch of update_message (#151).
+
+        Resolves config and Keychain credentials, then delegates to
+        ImapConnector.set_read_status (\\Seen STORE — base IMAP, no
+        capability check). Propagates all fallback-triggering exceptions
+        unchanged.
+        """
+        host, port, email = self._resolve_imap_config(account)
+        password = get_imap_password(account, email)
+        imap = ImapConnector(host, port, email, password, pool=self._imap_pool)
+        return imap.set_read_status(
+            message_ids=message_ids,
+            source_mailbox=source_mailbox,
+            read=read,
+        )
+
+    def _try_imap_read_only(
+        self,
+        message_ids: list[str],
+        *,
+        account: str,
+        source_mailbox: str,
+        read: bool,
+    ) -> int | None:
+        """Attempt the IMAP fast path for the read-status-only branch.
+        Returns updated count on success, or None to signal the caller
+        should fall through to the AppleScript pass.
+
+        Caller must already have verified this is a read-only patch
+        and that account + source_mailbox are both provided.
+        """
+        if self._imap_breaker_open(account):
+            return None
+        try:
+            result = self._imap_set_read_status(
+                account=account,
+                message_ids=message_ids,
+                source_mailbox=source_mailbox,
+                read=read,
+            )
+            self._imap_clear_breaker(account)
+            return result
+        except _IMAP_FALLBACK_EXCS as exc:
+            self._log_imap_fallback(account, exc)
+            return None
+
     def _maybe_imap_move_only(
         self,
         message_ids: list[str],
@@ -1926,6 +1980,41 @@ class AppleMailConnector:
             account=cast(str, account),
             source_mailbox=source_mailbox,
             destination_mailbox=cast(str, destination_mailbox),
+        )
+
+    def _maybe_imap_read_only(
+        self,
+        message_ids: list[str],
+        *,
+        read_status: bool | None,
+        flagged: bool | None,
+        flag_color: str | None,
+        destination_mailbox: str | None,
+        source_mailbox: str | None,
+        account: str | None,
+    ) -> int | None:
+        """Branch out to the IMAP fast path (#151) when this update_message
+        call is a read-status-only patch with account + source_mailbox.
+        Returns the updated count on success, or None when the caller
+        should fall through to the AppleScript pass.
+
+        Combined patches (read + move / read + flag) and patches without
+        source_mailbox or account return None unconditionally — those
+        stay on AppleScript pending #152.
+        """
+        read_only = (
+            read_status is not None
+            and destination_mailbox is None
+            and flagged is None
+            and flag_color is None
+        )
+        if not read_only or source_mailbox is None or account is None:
+            return None
+        return self._try_imap_read_only(
+            message_ids,
+            account=account,
+            source_mailbox=source_mailbox,
+            read=cast(bool, read_status),
         )
 
     def _get_thread_applescript(self, message_id: str) -> list[dict[str, Any]]:
@@ -2430,6 +2519,18 @@ class AppleMailConnector:
             )
 
         imap_count = self._maybe_imap_move_only(
+            message_ids,
+            read_status=read_status,
+            flagged=flagged,
+            flag_color=flag_color,
+            destination_mailbox=destination_mailbox,
+            source_mailbox=source_mailbox,
+            account=account,
+        )
+        if imap_count is not None:
+            return imap_count
+
+        imap_count = self._maybe_imap_read_only(
             message_ids,
             read_status=read_status,
             flagged=flagged,

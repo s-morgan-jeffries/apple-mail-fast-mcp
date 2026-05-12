@@ -312,7 +312,12 @@ Patch one or more messages: change read state, flag color, and/or move to anothe
 
 **Order of operations:** read-state and flag changes apply first (in the source mailbox), then the move. IMAP requires the message to exist in the source folder for STORE before MOVE.
 
-**Performance — IMAP fast path (#149):** When the patch is move-only (`destination_mailbox` is the only field set) and `source_mailbox` is provided, the move runs server-side via IMAP `UID MOVE`. On a 47k-message Gmail INBOX this drops the move from ~57s to <1s — the AppleScript path uses `whose message id is`, which is a linear scan against RFC 5322 Message-IDs. Combined patches (move + read/flag in one call) currently run via AppleScript regardless. Requires Keychain credentials per the IMAP setup flow (`apple-mail-mcp setup-imap --account <name>`); falls back to AppleScript transparently when IMAP isn't configured or the server lacks `MOVE` / `UIDPLUS`.
+**Performance — IMAP fast paths:**
+
+- **Move-only patches (#149):** When `destination_mailbox` is the only field set and `source_mailbox` is provided, the move runs server-side via IMAP `UID MOVE`. On a 47k-message Gmail INBOX this drops the move from ~57s to <1s. Falls back to AppleScript when the server lacks `MOVE` / `UIDPLUS`.
+- **Read-status-only patches (#151):** When `read_status` is the only field set and `account` + `source_mailbox` are provided, the read/unread mutation runs server-side via IMAP `UID STORE +/-FLAGS (\Seen)`. `\Seen` is base IMAP (RFC 3501), universal across all servers — no capability check needed.
+
+Combined patches (move + read, read + flag, etc.) currently run via AppleScript regardless. Both fast paths require Keychain credentials per the IMAP setup flow (`apple-mail-mcp setup-imap --account <name>`); they fall back to AppleScript transparently when IMAP isn't configured.
 
 **Returns:**
 

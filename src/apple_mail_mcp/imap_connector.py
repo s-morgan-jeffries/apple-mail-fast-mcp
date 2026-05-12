@@ -1070,6 +1070,57 @@ class ImapConnector:
                 client.uid_expunge(uids)
             return len(uids)
 
+    def set_read_status(
+        self,
+        message_ids: list[str],
+        source_mailbox: str,
+        read: bool,
+    ) -> int:
+        """Mark messages as read (read=True) or unread (read=False) via
+        IMAP UID STORE on the \\Seen flag. Issue #151.
+
+        \\Seen is RFC 3501 base IMAP — no capability negotiation
+        needed, works against every server. Idempotent at the server
+        level (re-setting an already-set flag is a no-op), matching
+        the AppleScript path's behavior.
+
+        Args:
+            message_ids: RFC 5322 Message-IDs, with or without
+                surrounding angle brackets.
+            source_mailbox: Mailbox the messages live in.
+            read: True to mark read (+\\Seen), False to mark unread
+                (-\\Seen).
+
+        Returns:
+            Count of resolved + updated messages. Message-IDs that
+            don't resolve to a UID are silently skipped (matches
+            AppleScript).
+
+        Raises:
+            IMAPClientError: SELECT / SEARCH / STORE failed at the
+                protocol level.
+        """
+        bracketed_ids = [
+            mid if mid.startswith("<") and mid.endswith(">") else f"<{mid}>"
+            for mid in message_ids
+        ]
+
+        with self._session() as client:
+            client.select_folder(source_mailbox, readonly=False)
+
+            uids: list[int] = []
+            for bracketed in bracketed_ids:
+                found = client.search(["HEADER", "Message-ID", bracketed])
+                uids.extend(found)
+            if not uids:
+                return 0
+
+            if read:
+                client.add_flags(uids, [b"\\Seen"], silent=True)
+            else:
+                client.remove_flags(uids, [b"\\Seen"], silent=True)
+            return len(uids)
+
     @staticmethod
     def _has_capability(client: IMAPClient, name: bytes) -> bool:
         """True if ``name`` (e.g. ``b"X-GM-EXT-1"``) is in the post-login

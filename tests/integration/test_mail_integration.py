@@ -788,6 +788,110 @@ class TestDraftsLifecycleIntegration:
             except Exception:
                 pass
 
+    def test_update_message_read_status_via_imap_round_trip(
+        self,
+        connector: AppleMailConnector,
+        test_account: str,
+    ) -> None:
+        """#151: read-only update_message (read_status, no flag/move)
+        with account+source_mailbox → IMAP STORE \\Seen → verify via
+        direct IMAP that the flag was set, then flip to unread and
+        verify it was cleared.
+
+        Mail.app's mailbox view lags IMAP server changes; verification
+        uses a direct IMAPClient against the source mailbox."""
+        import uuid as _uuid
+        from datetime import datetime, timezone
+        from email.utils import format_datetime
+
+        from imapclient import IMAPClient
+
+        from apple_mail_mcp.keychain import get_imap_password
+
+        suffix = _uuid.uuid4().hex[:8]
+        src = f"ZZZ-AMM-READ-SRC-{suffix}"
+        msg_id_local = f"{_uuid.uuid4().hex}@apple-mail-mcp-test.invalid"
+        bracketed = f"<{msg_id_local}>"
+
+        host, port, email = connector._resolve_imap_config(test_account)
+        pw = get_imap_password(test_account, email)
+
+        assert connector.create_mailbox(account=test_account, name=src)
+
+        try:
+            # APPEND a synthetic message into source via direct IMAP
+            # explicitly without \Seen.
+            now = format_datetime(datetime.now(tz=timezone.utc))
+            raw = (
+                f"From: sender@apple-mail-mcp-test.invalid\r\n"
+                f"To: rcpt@apple-mail-mcp-test.invalid\r\n"
+                f"Subject: AMM #151 IMAP read-status test\r\n"
+                f"Date: {now}\r\n"
+                f"Message-ID: {bracketed}\r\n"
+                f"\r\n"
+                f"body\r\n"
+            ).encode()
+
+            append_client = IMAPClient(host, port=port, ssl=True, timeout=30)
+            append_client.login(email, pw)
+            try:
+                # flags=[] explicitly: ensure no \Seen at start.
+                append_client.append(src, raw, flags=[])
+            finally:
+                append_client.logout()
+
+            # Mark read via IMAP fast path.
+            marked = connector.update_message(
+                [msg_id_local],
+                read_status=True,
+                account=test_account,
+                source_mailbox=src,
+            )
+            assert marked == 1
+
+            # Verify \Seen is now present.
+            verify = IMAPClient(host, port=port, ssl=True, timeout=30)
+            verify.login(email, pw)
+            try:
+                verify.select_folder(src, readonly=True)
+                uids = verify.search(["HEADER", "Message-ID", bracketed])
+                assert len(uids) == 1, f"message missing after mark-read: {uids}"
+                flags_after_read = verify.get_flags(uids)
+                assert b"\\Seen" in flags_after_read[uids[0]], (
+                    f"\\Seen not set after mark-read: {flags_after_read}"
+                )
+            finally:
+                verify.logout()
+
+            # Flip to unread.
+            unmarked = connector.update_message(
+                [msg_id_local],
+                read_status=False,
+                account=test_account,
+                source_mailbox=src,
+            )
+            assert unmarked == 1
+
+            # Verify \Seen is now absent.
+            verify = IMAPClient(host, port=port, ssl=True, timeout=30)
+            verify.login(email, pw)
+            try:
+                verify.select_folder(src, readonly=True)
+                uids = verify.search(["HEADER", "Message-ID", bracketed])
+                flags_after_unread = verify.get_flags(uids)
+                assert b"\\Seen" not in flags_after_unread[uids[0]], (
+                    f"\\Seen not cleared after mark-unread: {flags_after_unread}"
+                )
+            finally:
+                verify.logout()
+        finally:
+            try:
+                connector.delete_mailbox(
+                    account=test_account, name=src, delete_messages=True
+                )
+            except Exception:
+                pass
+
     def test_update_mailbox_renames_in_place(
         self,
         connector: AppleMailConnector,
