@@ -180,15 +180,27 @@ class ImapConnectionPool:
                 entry.last_used = time.monotonic()
 
     def close(self) -> None:
-        """Log out all cached clients. Safe to call multiple times."""
+        """Log out all cached clients. Safe to call multiple times.
+
+        Acquires each entry's per-connection lock before issuing
+        ``logout()`` so an in-flight ``session()``-holder finishes its
+        operation before we drop the connection underneath it (#171).
+        Latent today because FastMCP is single-threaded, but the
+        pool's per-entry locks are designed for future thread-safety
+        and the atexit hook (#127) fires ``close()`` at interpreter
+        shutdown when daemon threads may still be alive.
+        """
         with self._cache_lock:
             entries = list(self._cache.values())
             self._cache.clear()
         for entry in entries:
-            try:
-                entry.client.logout()
-            except Exception:  # noqa: BLE001 — best effort
-                pass
+            # Wait for any in-flight session() block to finish before
+            # logging out — mirrors session()'s invalidation path.
+            with entry.lock:
+                try:
+                    entry.client.logout()
+                except Exception:  # noqa: BLE001 — best effort
+                    pass
 
 _IMAP_MONTHS = (
     "Jan",

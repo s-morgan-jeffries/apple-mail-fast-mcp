@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+**`ImapConnectionPool.close()` no longer races in-flight `session()` callers (#171):** `close()` previously snapshotted cached entries under the cache lock, then called `logout()` on each client without holding the per-entry lock. A thread inside a `session()` block would have its IMAP client logged out mid-operation. Latent today (FastMCP is single-threaded), but a real correctness hazard for any future threading and for the #127 atexit hook firing at interpreter shutdown alongside daemon threads. Fix: acquire each entry's lock before calling `logout()`, mirroring the pattern already used by `session()`'s invalidation path.
+
 **Complexity gate now enforces CC ≤ 20 (#174):** `scripts/check_complexity.sh` was filtering radon's JSON output via `-n F`, which limits to functions with CC ≥ 41. Functions in the dangerous CC 21–40 range silently passed the gate. Switched the filter to `-n D` (CC ≥ 21) so the threshold is actually meaningful, and added a per-function allowlist with per-entry CC ceilings: documented exceptions stay green at their current levels, new code over CC 20 fails the gate, and any allowlisted function that creeps higher than its ceiling fails as a regression. Five long-standing exceptions are listed in the allowlist pending dedicated refactor PRs: `server.py::create_draft` (36), `server.py::update_draft` (34), `mail_connector.py::AppleMailConnector.create_draft` (25), and the two threading helpers `_thread_via_xgm_per_mailbox` and `_thread_via_imap_thread` (21 each). See [`docs/guides/COMPLEXITY.md`](docs/guides/COMPLEXITY.md) for the allowlist mechanism and ratchet semantics.
 
 
