@@ -2772,7 +2772,14 @@ class TestFindThreadMembersImapThread:
         self, mock_cls: MagicMock
     ) -> None:
         """If client.thread() raises mid-flight (server lied about
-        THREAD capability), Tier 2 returns None → BFS runs."""
+        THREAD capability), Tier 2 returns None → BFS runs.
+
+        #172: this abort-and-fall-through behavior is intentional
+        even though the other per-mailbox error paths (SELECT /
+        search / fetch) just ``continue``. THREAD failure casts doubt
+        on earlier mailboxes' THREAD output in a way that local
+        search/fetch failures don't. See the inline comment in
+        ``_thread_via_imap_thread`` for the asymmetry rationale."""
         client = MagicMock()
         mock_cls.return_value = client
         client.capabilities.return_value = _fastmail_caps_with_thread()

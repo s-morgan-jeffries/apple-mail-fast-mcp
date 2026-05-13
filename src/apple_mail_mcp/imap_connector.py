@@ -1497,12 +1497,28 @@ class ImapConnector:
                     "Falling through to Tier 3.",
                     folder_name, exc,
                 )
-                # Mid-flight rejection — server lied about advertised cap.
-                # Surface as None so the dispatcher falls through to BFS,
-                # which produces a *complete* thread by re-walking. We
-                # intentionally discard any partial `collected` from
-                # earlier mailboxes here: incomplete data would be worse
-                # than the BFS round-trip cost.
+                # Mid-flight rejection — fall through to Tier 3 BFS,
+                # which produces a *complete* thread by re-walking via
+                # header search.
+                #
+                # Why THREAD-failure aborts and SELECT/search/fetch-
+                # failures just `continue` (#172):
+                #
+                # - SELECT/search/fetch failures are bounded to one
+                #   mailbox. Skipping that mailbox loses a few known-
+                #   relevant UIDs but doesn't cast doubt on data
+                #   already collected from earlier mailboxes.
+                # - THREAD failure indicates capability-level
+                #   unreliability: the server advertised THREAD but
+                #   can't actually perform it on at least some
+                #   mailboxes. That means THREAD output from earlier
+                #   mailboxes may also have been silently wrong
+                #   (truncated trees, missing references). Falling
+                #   through to Tier 3 BFS re-validates the whole
+                #   thread.
+                #
+                # We intentionally discard any partial `collected`
+                # from earlier mailboxes here.
                 return None
             cluster_uids: set[int] = set()
             for cluster in _flatten_thread_clusters(tree):
