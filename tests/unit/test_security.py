@@ -453,6 +453,70 @@ class TestCheckTestModeSafety:
         assert result["error_type"] == "safety_violation"
         assert "real@person.com" in result["error"]
 
+    def test_send_blocked_when_recipients_none_in_test_mode(
+        self, monkeypatch: Any
+    ) -> None:
+        """#175: implicit-reply path (no explicit to/cc/bcc, Mail.app
+        derives at send time) reaches the gate with recipients=None.
+        Must reject — the safety check has nothing to verify."""
+        monkeypatch.setenv("MAIL_TEST_MODE", "true")
+
+        result = check_test_mode_safety("create_draft", recipients=None)
+        assert result is not None
+        assert result["error_type"] == "safety_violation"
+        assert "explicit recipients" in result["error"]
+
+    def test_send_blocked_when_recipients_empty_in_test_mode(
+        self, monkeypatch: Any
+    ) -> None:
+        """#175: same as above but with explicit empty list."""
+        monkeypatch.setenv("MAIL_TEST_MODE", "true")
+
+        result = check_test_mode_safety("create_draft", recipients=[])
+        assert result is not None
+        assert result["error_type"] == "safety_violation"
+        assert "explicit recipients" in result["error"]
+
+    def test_send_blocked_for_update_draft_empty_recipients(
+        self, monkeypatch: Any
+    ) -> None:
+        """#175: same gap applies to update_draft's send path."""
+        monkeypatch.setenv("MAIL_TEST_MODE", "true")
+
+        result = check_test_mode_safety("update_draft", recipients=[])
+        assert result is not None
+        assert result["error_type"] == "safety_violation"
+        assert "update_draft" in result["error"]
+
+    def test_send_empty_recipients_passes_outside_test_mode(
+        self, monkeypatch: Any
+    ) -> None:
+        """#175: regression guard — the empty-recipients reject is
+        scoped to test mode. Outside test mode, the gate early-returns
+        None and the new branch is never reached."""
+        monkeypatch.delenv("MAIL_TEST_MODE", raising=False)
+
+        assert check_test_mode_safety("create_draft", recipients=None) is None
+        assert check_test_mode_safety("create_draft", recipients=[]) is None
+
+    def test_non_send_operation_with_empty_recipients_unchanged(
+        self, monkeypatch: Any
+    ) -> None:
+        """#175: regression guard — the new empty-recipients reject
+        only fires for operations in SEND_OPERATIONS. Other ops with
+        empty recipients (which is meaningless for them anyway) are
+        unaffected."""
+        monkeypatch.setenv("MAIL_TEST_MODE", "true")
+        monkeypatch.setenv("MAIL_TEST_ACCOUNT", "TestAccount")
+
+        # delete_messages isn't a send op — the new branch shouldn't fire.
+        assert (
+            check_test_mode_safety("delete_messages", recipients=None) is None
+        )
+        assert (
+            check_test_mode_safety("delete_messages", recipients=[]) is None
+        )
+
     def test_non_gated_operation_returns_none(self, monkeypatch: Any) -> None:
         monkeypatch.setenv("MAIL_TEST_MODE", "true")
         monkeypatch.setenv("MAIL_TEST_ACCOUNT", "TestAccount")

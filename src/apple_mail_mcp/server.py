@@ -2267,12 +2267,15 @@ async def create_draft(
         # ----------------------------------------------------------------
         if send_now:
             all_recipients = (to or []) + (cc or []) + (bcc or [])
-            if all_recipients:
-                safety_err = check_test_mode_safety(
-                    "create_draft", recipients=all_recipients
-                )
-                if safety_err:
-                    return safety_err
+            # #175: always call the gate when send_now=True — even with an
+            # empty recipients list — so the implicit-reply path doesn't
+            # silently bypass the reserved-domain check. The gate itself
+            # rejects empty recipients in test mode.
+            safety_err = check_test_mode_safety(
+                "create_draft", recipients=all_recipients
+            )
+            if safety_err:
+                return safety_err
             rate_err = check_rate_limit(
                 "create_draft", {"subject": subject, "to": to}
             )
@@ -2482,12 +2485,14 @@ async def update_draft(
             all_recipients = (
                 (final_to or []) + (final_cc or []) + (final_bcc or [])
             )
-            if all_recipients:
-                safety_err = check_test_mode_safety(
-                    "update_draft", recipients=all_recipients
-                )
-                if safety_err:
-                    return safety_err
+            # #175: always call the gate when send_now=True — same reasoning
+            # as create_draft. Empty-recipients reject in test mode lives
+            # inside check_test_mode_safety.
+            safety_err = check_test_mode_safety(
+                "update_draft", recipients=all_recipients
+            )
+            if safety_err:
+                return safety_err
             rate_err = check_rate_limit(
                 "update_draft",
                 {"draft_id": draft_id, "subject": final_subject},

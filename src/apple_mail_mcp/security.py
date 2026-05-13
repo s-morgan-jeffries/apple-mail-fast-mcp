@@ -419,8 +419,21 @@ def check_test_mode_safety(
                 f"{rule_name!r}.",
             )
 
-    # Send operations: verify every recipient is on a reserved test domain
-    if operation in SEND_OPERATIONS and recipients is not None:
+    # Send operations: verify every recipient is on a reserved test domain.
+    if operation in SEND_OPERATIONS:
+        # #175: empty recipients in test mode is unsafe — an implicit-reply
+        # send_now path (no explicit to/cc/bcc) lets Mail.app derive
+        # recipients at send time, bypassing the reserved-domain gate.
+        # Force explicit recipients so the safety check has something to
+        # validate. Catches the v0.7.0 analog of the v0.6 reply_to_message
+        # block that was dropped in #134's drafts-lifecycle consolidation.
+        if not recipients:
+            return _safety_error(
+                operation,
+                f"Test mode: {operation} requires explicit recipients for "
+                f"send (implicit-reply targets cannot be safety-verified "
+                f"before send).",
+            )
         bad = [r for r in recipients if not _is_reserved_test_domain(r)]
         if bad:
             return _safety_error(

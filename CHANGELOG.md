@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+**Test-mode safety gap on implicit-reply `send_now` (#175):** In test mode (`MAIL_TEST_MODE=true`), `create_draft(reply_to=X, send_now=True)` and the analogous `update_draft` path bypassed the reserved-domain safety check when no explicit `to`/`cc`/`bcc` overrides were supplied — Mail.app derived recipients from the original message at send time, so the server's pre-flight gate (which only fired on non-empty recipient lists) was skipped. The gap let test-mode replies target real addresses without surfacing as safety violations. Fixed at two layers: server-tool wrappers now always call `check_test_mode_safety` on `send_now=True` (even with empty recipients), and `check_test_mode_safety` itself now treats empty/None recipients on a `SEND_OPERATIONS` call in test mode as a `safety_violation`. The fix forces explicit recipients for any test-mode send. Surfaced during the v0.7.0 release-review documentation pass; analog of the v0.6 `reply_to_message` hardcoded block that was dropped when the drafts lifecycle (#134) replaced the four old send tools.
+
 **Flag color labels in `update_message(flag_color=...)` (#185):** The map from color name to AppleScript flag index in [`utils.py:get_flag_index`](src/apple_mail_mcp/utils.py) had two pairs of swapped labels. Empirical testing (Gmail/Mail.app, 2026-05-12) confirmed that callers passing certain colors got a different color in Mail.app's UI than they asked for:
 
 - `flag_color="orange"` previously rendered as **red**; now renders as **orange**.

@@ -3132,6 +3132,82 @@ class TestDraftToolErrorPaths:
         mock_mail.create_draft.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_create_draft_send_now_implicit_reply_blocked_in_test_mode(
+        self,
+        isolated_drafts: Any,
+        mock_mail: MagicMock,
+        mock_logger: MagicMock,
+        monkeypatch: Any,
+        mock_ctx_accept: MagicMock,
+    ) -> None:
+        """#175: implicit-reply send_now (no explicit to/cc/bcc) in test
+        mode is now blocked. Without the fix, the server would skip
+        check_test_mode_safety entirely (recipients list was empty);
+        the new server-side guard removal + security-side empty-recipients
+        reject combine to close the gap."""
+        from apple_mail_mcp.security import (
+            check_test_mode_safety as real_check,
+        )
+        from apple_mail_mcp.server import create_draft
+
+        # Restore the real check_test_mode_safety (the class-level
+        # autouse `stub_security` fixture replaced it with a no-op).
+        monkeypatch.setattr(
+            "apple_mail_mcp.server.check_test_mode_safety", real_check
+        )
+        monkeypatch.setenv("MAIL_TEST_MODE", "true")
+        monkeypatch.setenv("MAIL_TEST_ACCOUNT", "TestAccount")
+
+        # No to / cc / bcc — Mail.app would derive from reply_to at
+        # send time, potentially targeting a real address.
+        result = await create_draft(
+            reply_to="some-msg-id",
+            body="x", send_now=True, ctx=mock_ctx_accept,
+        )
+        assert result["error_type"] == "safety_violation"
+        assert "explicit recipients" in result["error"]
+        mock_mail.create_draft.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_draft_send_now_implicit_reply_blocked_in_test_mode(
+        self,
+        isolated_drafts: Any,
+        mock_mail: MagicMock,
+        mock_logger: MagicMock,
+        monkeypatch: Any,
+        mock_ctx_accept: MagicMock,
+    ) -> None:
+        """#175: same gap on update_draft's send path — closed by the
+        same fix."""
+        from apple_mail_mcp.security import (
+            check_test_mode_safety as real_check,
+        )
+        from apple_mail_mcp.server import update_draft
+
+        # Restore the real check_test_mode_safety (the class-level
+        # autouse `stub_security` fixture replaced it with a no-op).
+        monkeypatch.setattr(
+            "apple_mail_mcp.server.check_test_mode_safety", real_check
+        )
+        monkeypatch.setenv("MAIL_TEST_MODE", "true")
+        monkeypatch.setenv("MAIL_TEST_ACCOUNT", "TestAccount")
+
+        # No to / cc / bcc and the existing draft has none either —
+        # implicit-reply send path.
+        mock_mail.get_draft_state.return_value = {
+            "id": "draft-1", "to": [], "cc": [], "bcc": [],
+            "subject": "Re: hi", "body": "stub",
+            "attachments": [], "seed_kind": "reply",
+        }
+        result = await update_draft(
+            draft_id="draft-1", body="x", send_now=True,
+            ctx=mock_ctx_accept,
+        )
+        assert result["error_type"] == "safety_violation"
+        assert "explicit recipients" in result["error"]
+        mock_mail.update_draft.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_create_draft_send_now_rate_limit_blocks(
         self,
         isolated_drafts: Any,
