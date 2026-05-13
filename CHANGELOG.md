@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+**Dual-emit `rfc_message_id` field on read-tool rows (#148):** Every row returned by `search_messages`, `get_messages`, and `get_thread` now carries an additional `rfc_message_id: str | null` field alongside the existing `id` field. The `id` field is still path-native (Mail.app internal numeric on the AppleScript path, RFC 5322 Message-ID on the IMAP path); `rfc_message_id` is always RFC 5322 (bracketless), or `null` when the message lacks a Message-ID header (drafts, malformed mail). Closes the loop on #147's original motivation: callers whose read happened to fall back to AppleScript (returning an internal numeric `id`) can now feed `rfc_message_id` to the IMAP fast paths from #149 / #150 / #151 / #152, triggering them automatically without having to know which path produced the row. AppleScript-path cost is sub-second per mailbox (per-row direct property read, confirmed in #147's bench); IMAP-path cost is zero (already extracted for `id`). `get_thread` previously emitted `rfc_message_id` to its tell script for graph-walking but stripped it before returning; now keeps it.
+
 ### Fixed
 
 **Flag color labels in `update_message(flag_color=...)` (#185):** The map from color name to AppleScript flag index in [`utils.py:get_flag_index`](src/apple_mail_mcp/utils.py) had two pairs of swapped labels. Empirical testing (Gmail/Mail.app, 2026-05-12) confirmed that callers passing certain colors got a different color in Mail.app's UI than they asked for:

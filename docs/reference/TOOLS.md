@@ -72,6 +72,7 @@ When the call commits to the AppleScript path **and** a body/text filter is set,
   "messages": [
     {
       "id": "12345",
+      "rfc_message_id": "CABc123@example.com",
       "subject": "Meeting Tomorrow",
       "sender": "john@example.com",
       "date_received": "Mon Jan 15 2024 10:30:00",
@@ -82,6 +83,10 @@ When the call commits to the AppleScript path **and** a body/text filter is set,
   "count": 1
 }
 ```
+
+**Row fields:**
+- `id` — path-native: Mail.app internal numeric id when the AppleScript path runs, RFC 5322 Message-ID when the IMAP path runs. Fast for downstream same-path operations.
+- `rfc_message_id` — RFC 5322 Message-ID (bracketless), or `null` when the message lacks a Message-ID header. Always present, regardless of which path produced the row. Accepted by the IMAP fast paths in `update_message` / `delete_messages` (#149 / #150 / #151 / #152) — the dual-emit means cross-path consumers don't need to know which path generated their input.
 
 **Examples:**
 
@@ -158,6 +163,7 @@ For accounts configured with IMAP (via `apple-mail-mcp setup-imap --account <nam
   "messages": [
     {
       "id": "12345",
+      "rfc_message_id": "CABc123@example.com",
       "subject": "Meeting Tomorrow",
       "sender": "john@example.com",
       "date_received": "Mon Jan 15 2024 10:30:00",
@@ -169,6 +175,8 @@ For accounts configured with IMAP (via `apple-mail-mcp setup-imap --account <nam
   "count": 1
 }
 ```
+
+Row fields include both `id` (path-native — see `search_messages` for details) and `rfc_message_id` (always RFC 5322 bracketless, or `null` when the message lacks a Message-ID header). The dual-emit (#148) lets cross-path consumers hand the right id to the right tool without needing to know which path produced the row.
 
 **Examples:**
 
@@ -208,14 +216,18 @@ Return all messages in the thread containing the given anchor message, sorted by
 {
   "success": true,
   "thread": [
-    {"id": "100", "subject": "Q3 Report", "sender": "alice@x.com",
+    {"id": "100", "rfc_message_id": "anchor@x.com",
+     "subject": "Q3 Report", "sender": "alice@x.com",
      "date_received": "Mon Jan 1 2024 10:00:00", "read_status": true, "flagged": false},
-    {"id": "101", "subject": "Re: Q3 Report", "sender": "bob@x.com",
+    {"id": "101", "rfc_message_id": "reply1@x.com",
+     "subject": "Re: Q3 Report", "sender": "bob@x.com",
      "date_received": "Mon Jan 1 2024 14:30:00", "read_status": true, "flagged": false}
   ],
   "count": 2
 }
 ```
+
+Row fields include both `id` (path-native — see `search_messages` for details) and `rfc_message_id` (always RFC 5322 bracketless, or `null` when the message lacks a Message-ID header). See `search_messages` for the dual-emit (#148) rationale.
 
 Uses the connector's tiered IMAP threading dispatch (Tier 1 X-GM-THRID for Gmail per #122, Tier 3 header-search BFS fallback) when IMAP is configured; falls back to AppleScript otherwise.
 

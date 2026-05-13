@@ -991,6 +991,100 @@ class TestDraftsLifecycleIntegration:
             except Exception:
                 pass
 
+    def test_search_messages_returns_rfc_message_id_via_applescript(
+        self,
+        connector: AppleMailConnector,
+        test_account: str,
+    ) -> None:
+        """#148: AppleScript search rows carry both `id` (Mail.app
+        internal numeric) and `rfc_message_id` (RFC 5322, bracketless)
+        — verified end-to-end against real Mail.app.
+
+        Cost should be sub-second per mailbox per #147's probe (the
+        `message id of msg` direct-property read is cheap)."""
+        import uuid as _uuid
+        from datetime import datetime, timezone
+        from email.utils import format_datetime
+
+        from imapclient import IMAPClient
+
+        from apple_mail_mcp.keychain import get_imap_password
+
+        suffix = _uuid.uuid4().hex[:8]
+        src = f"ZZZ-AMM-DUAL-EMIT-{suffix}"
+        msg_id_local = f"{_uuid.uuid4().hex}@apple-mail-mcp-test.invalid"
+        bracketed = f"<{msg_id_local}>"
+
+        host, port, email = connector._resolve_imap_config(test_account)
+        pw = get_imap_password(test_account, email)
+
+        assert connector.create_mailbox(account=test_account, name=src)
+
+        try:
+            now = format_datetime(datetime.now(tz=timezone.utc))
+            raw = (
+                f"From: sender@apple-mail-mcp-test.invalid\r\n"
+                f"To: rcpt@apple-mail-mcp-test.invalid\r\n"
+                f"Subject: AMM #148 dual-emit test\r\n"
+                f"Date: {now}\r\n"
+                f"Message-ID: {bracketed}\r\n"
+                f"\r\n"
+                f"body\r\n"
+            ).encode()
+
+            append_client = IMAPClient(host, port=port, ssl=True, timeout=30)
+            append_client.login(email, pw)
+            try:
+                append_client.append(src, raw, flags=[])
+            finally:
+                append_client.logout()
+
+            # Force the AppleScript path so we exercise the dual-emit
+            # we just added (IMAP path's dual-emit is identical-id and
+            # already covered by unit tests).
+            connector._imap_failure_until[test_account] = (
+                __import__("time").monotonic() + 60
+            )
+
+            # Mail.app's IMAP sync may lag the APPEND. Poll up to ~30s.
+            import time as _time
+            for _ in range(10):
+                rows = connector.search_messages(
+                    account=test_account, mailbox=src, limit=10,
+                )
+                match = [
+                    r for r in rows
+                    if r.get("rfc_message_id") == msg_id_local
+                ]
+                if match:
+                    break
+                _time.sleep(3)
+            else:
+                raise AssertionError(
+                    "Mail.app never surfaced the APPENDed message via "
+                    "AppleScript search within 30s"
+                )
+
+            row = match[0]
+            assert "id" in row, "missing path-native `id`"
+            assert "rfc_message_id" in row, "missing dual-emit `rfc_message_id`"
+            assert row["rfc_message_id"] == msg_id_local, (
+                f"rfc_message_id wrong: {row['rfc_message_id']!r}"
+            )
+            # AppleScript path: `id` is Mail.app's internal numeric id,
+            # NOT equal to the RFC id.
+            assert row["id"] != row["rfc_message_id"], (
+                "AppleScript path should yield divergent id and "
+                "rfc_message_id; got equal values"
+            )
+        finally:
+            try:
+                connector.delete_mailbox(
+                    account=test_account, name=src, delete_messages=True
+                )
+            except Exception:
+                pass
+
     def test_update_mailbox_renames_in_place(
         self,
         connector: AppleMailConnector,

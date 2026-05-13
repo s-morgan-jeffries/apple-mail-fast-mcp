@@ -1348,7 +1348,7 @@ class AppleMailConnector:
                 set includeThis to true
                 {filter_block}
                 if includeThis then{attachments_clause}
-                    set msgRecord to {{|id|:(id of msg as text), |subject|:(subject of msg), |sender|:(sender of msg), |date_received|:(date received of msg as text), |read_status|:(read status of msg), |flagged|:(flagged status of msg){attachments_field}}}
+                    set msgRecord to {{|id|:(id of msg as text), |rfc_message_id|:(message id of msg), |subject|:(subject of msg), |sender|:(sender of msg), |date_received|:(date received of msg as text), |read_status|:(read status of msg), |flagged|:(flagged status of msg){attachments_field}}}
                     set end of resultData to msgRecord
                     set matchCount to matchCount + 1
                 end if
@@ -1498,7 +1498,7 @@ class AppleMailConnector:
                         set msg to first message of mb whose id is "{message_id_safe}"
                         {content_clause}
 {attachments_clause}
-                        set resultData to {{|id|:(id of msg as text), |subject|:(subject of msg), |sender|:(sender of msg), |date_received|:(date received of msg as text), |read_status|:(read status of msg), |flagged|:(flagged status of msg), |content|:msgContent{attachments_field}}}
+                        set resultData to {{|id|:(id of msg as text), |rfc_message_id|:(message id of msg), |subject|:(subject of msg), |sender|:(sender of msg), |date_received|:(date received of msg as text), |read_status|:(read status of msg), |flagged|:(flagged status of msg), |content|:msgContent{attachments_field}}}
                         exit repeat
                     end try
                 end repeat
@@ -2278,6 +2278,9 @@ class AppleMailConnector:
             )
             thread.append({
                 "id": cast(str, anchor.get("internal_id") or ""),
+                "rfc_message_id": cast(
+                    "str | None", anchor.get("rfc_message_id")
+                ),
                 "subject": anchor["subject"],
                 "sender": "",
                 "date_received": "",
@@ -2290,9 +2293,11 @@ class AppleMailConnector:
         # strings; lexicographic sort is a close-enough proxy within a thread.
         thread.sort(key=lambda m: m.get("date_received") or "")
 
-        # Drop threading internals from output rows (search-shape only).
+        # Drop threading-internal scratch fields from output rows. Per
+        # #148 we KEEP rfc_message_id alongside id (dual-emit), so
+        # callers can hand it to the IMAP fast paths from #149/#150/
+        # #151/#152 even when get_thread fell back to AppleScript.
         for m in thread:
-            m.pop("rfc_message_id", None)
             m.pop("in_reply_to", None)
             m.pop("references_raw", None)
             m.pop("references_parsed", None)

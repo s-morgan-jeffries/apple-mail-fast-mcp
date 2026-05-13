@@ -415,6 +415,25 @@ class TestEnvelopeTranslation:
         assert msg["id"] == "abc@example.com"
 
     @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_emits_both_id_and_rfc_message_id_dual_emit(self, mock_cls):
+        """#148: every IMAP-path row carries `rfc_message_id` alongside
+        `id`. On this path the two are intentionally identical (both
+        are the RFC 5322 Message-ID, bracketless)."""
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.search.return_value = [1]
+        mock_client.fetch.return_value = {
+            1: {
+                b"ENVELOPE": _fake_envelope(message_id=b"<dual@example.com>"),
+                b"FLAGS": (),
+            }
+        }
+        [msg] = ImapConnector("h", 993, "u@e.com", "pw").search_messages()
+        assert msg["id"] == "dual@example.com"
+        assert msg["rfc_message_id"] == "dual@example.com"
+        assert msg["id"] == msg["rfc_message_id"]
+
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
     def test_empty_sender_returns_empty_string(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client

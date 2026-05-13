@@ -4036,17 +4036,21 @@ class TestAppleMailConnector:
         result = connector._get_thread_applescript("100")
         assert len(result) == 3
         assert [m["id"] for m in result] == ["100", "101", "102"]
-        # Response rows match search_messages shape (6 fields).
+        # Response rows match search_messages shape (7 fields including
+        # the dual-emit rfc_message_id from #148).
         for m in result:
             assert set(m.keys()) == {
-                "id", "subject", "sender", "date_received", "read_status", "flagged",
+                "id", "rfc_message_id", "subject", "sender",
+                "date_received", "read_status", "flagged",
             }
 
     @patch.object(AppleMailConnector, "_run_applescript")
     def test_get_thread_drops_threading_internals_from_output(
         self, mock_run: MagicMock, connector: AppleMailConnector
     ) -> None:
-        """Response rows must NOT leak rfc_message_id / in_reply_to / references_raw."""
+        """Response rows must NOT leak in_reply_to / references_raw /
+        references_parsed (threading-internal scratch fields). They
+        DO carry rfc_message_id alongside id (dual-emit from #148)."""
         mock_run.side_effect = [
             '{"account":"Gmail","rfc_message_id":"<anchor@x>",'
             '"subject":"Q3","in_reply_to":"","references_raw":""}',
@@ -4056,7 +4060,7 @@ class TestAppleMailConnector:
         ]
         result = connector._get_thread_applescript("100")
         for m in result:
-            assert "rfc_message_id" not in m
+            assert "rfc_message_id" in m
             assert "in_reply_to" not in m
             assert "references_raw" not in m
             assert "references_parsed" not in m
@@ -4093,6 +4097,112 @@ class TestAppleMailConnector:
         # Base subject strips all Re: prefixes.
         assert 'subject contains "Q3 Report"' in candidate_script
         assert 'subject contains "Re:' not in candidate_script
+
+
+class TestDualEmitRfcMessageId:
+    """#148: every read-tool row carries an `rfc_message_id` field
+    alongside the existing `id` field. On the AppleScript path, `id`
+    is Mail.app's internal numeric id and `rfc_message_id` is the
+    RFC 5322 Message-ID. Missing-Message-ID cases serialize as None.
+
+    Cross-path consumers (e.g., callers feeding an AppleScript-path
+    row to one of the IMAP fast paths from #149/#150/#151/#152) can
+    use `rfc_message_id` regardless of which path produced the row."""
+
+    @pytest.fixture
+    def connector(self) -> AppleMailConnector:
+        return AppleMailConnector(timeout=30)
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_search_messages_applescript_emits_rfc_message_id_in_script(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """The emitted AppleScript record includes the
+        `|rfc_message_id|:(message id of msg)` field."""
+        mock_run.return_value = "[]"
+        connector._search_messages_applescript("Gmail", "INBOX", limit=10)
+        script = mock_run.call_args[0][0]
+        assert "|rfc_message_id|:(message id of msg)" in script
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_search_messages_applescript_includes_rfc_message_id_in_rows(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """The parsed result rows carry `rfc_message_id`."""
+        mock_run.return_value = (
+            '[{"id": "100", "rfc_message_id": "rfc-100@example.com",'
+            '"subject": "Hi", "sender": "a@x", "date_received": "Mon",'
+            '"read_status": false, "flagged": false}]'
+        )
+        result = connector._search_messages_applescript("Gmail", "INBOX")
+        assert result[0]["id"] == "100"
+        assert result[0]["rfc_message_id"] == "rfc-100@example.com"
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_get_message_applescript_emits_rfc_message_id_in_script(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """The emitted AppleScript record for get_message also
+        includes the dual-emit field."""
+        mock_run.return_value = (
+            '{"id": "100", "rfc_message_id": "rfc-100@example.com",'
+            '"subject": "Hi", "sender": "a@x", "date_received": "Mon",'
+            '"read_status": false, "flagged": false, "content": ""}'
+        )
+        connector._get_message_applescript("100", include_content=True)
+        script = mock_run.call_args[0][0]
+        assert "|rfc_message_id|:(message id of msg)" in script
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_get_message_applescript_includes_rfc_message_id_in_row(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        mock_run.return_value = (
+            '{"id": "100", "rfc_message_id": "rfc-100@example.com",'
+            '"subject": "Hi", "sender": "a@x", "date_received": "Mon",'
+            '"read_status": false, "flagged": false, "content": "body"}'
+        )
+        result = connector._get_message_applescript("100", include_content=True)
+        assert result["rfc_message_id"] == "rfc-100@example.com"
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_missing_message_id_serializes_as_none(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """A message without a Message-ID header (drafts, malformed
+        mail) yields `rfc_message_id: null` from AppleScript →
+        `None` in the Python row. Mocked here at the parsed-JSON
+        layer; the AppleScript-side missing-value coercion is handled
+        by NSJSONSerialization in `_wrap_as_json_script`."""
+        mock_run.return_value = (
+            '[{"id": "200", "rfc_message_id": null,'
+            '"subject": "draft", "sender": "", "date_received": "Tue",'
+            '"read_status": false, "flagged": false}]'
+        )
+        result = connector._search_messages_applescript("Gmail", "INBOX")
+        assert result[0]["rfc_message_id"] is None
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_get_thread_applescript_preserves_rfc_message_id_in_output(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """get_thread now KEEPS rfc_message_id in output rows
+        (previously stripped). Threading-internal scratch fields
+        (in_reply_to / references_raw / references_parsed) are still
+        dropped."""
+        mock_run.side_effect = [
+            '{"account": "Gmail", "rfc_message_id": "anchor@x",'
+            '"subject": "Q3", "in_reply_to": "", "references_raw": ""}',
+            '[{"id": "100", "rfc_message_id": "anchor@x", "in_reply_to": "",'
+            '"references_raw": "", "subject": "Q3", "sender": "a@x",'
+            '"date_received": "Mon", "read_status": false, "flagged": false}]'
+        ]
+        result = connector._get_thread_applescript("100")
+        assert len(result) == 1
+        assert result[0]["rfc_message_id"] == "anchor@x"
+        # Threading scratch fields still stripped.
+        for scratch in ("in_reply_to", "references_raw", "references_parsed"):
+            assert scratch not in result[0]
 
 
 class TestMessageIdAppleScriptInjection:

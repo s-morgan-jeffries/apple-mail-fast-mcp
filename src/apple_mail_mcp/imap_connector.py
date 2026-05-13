@@ -475,8 +475,16 @@ def _envelope_to_dict(
         date_str = date.isoformat()
     else:
         date_str = _decode(date)
+    # On the IMAP path, `id` and `rfc_message_id` are intentionally the
+    # same value — both are the RFC 5322 Message-ID (bracketless). The
+    # dual-emit (#148) lets cross-path consumers (e.g., callers feeding
+    # this row to an AppleScript-only tool) always have an RFC id
+    # available; on the AppleScript path the two diverge (`id` is the
+    # Mail.app internal numeric id, `rfc_message_id` is the RFC form).
+    rfc_id = _strip_brackets(_decode(envelope.message_id))
     return {
-        "id": _strip_brackets(_decode(envelope.message_id)),
+        "id": rfc_id,
+        "rfc_message_id": rfc_id,
         "subject": _decode(envelope.subject),
         "sender": _format_sender(envelope),
         "date_received": date_str,
