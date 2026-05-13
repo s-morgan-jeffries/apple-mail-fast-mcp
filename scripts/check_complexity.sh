@@ -30,22 +30,70 @@ fi
 echo "$REPORT"
 echo ""
 
-# Check for functions exceeding threshold
-FAILURES=$(radon cc "$SRC_DIR" -n F -j 2>&1 | python3 -c "
+# Check for functions exceeding threshold.
+#
+# IMPORTANT: pass -n D (rank D = CC ≥ 21) to radon so the JSON contains
+# every function in the dangerous range. Until #174, this was -n F (CC
+# ≥ 41), meaning anything from CC 21 to 40 silently passed the
+# `> THRESHOLD` check below.
+FAILURES=$(radon cc "$SRC_DIR" -n D -j 2>&1 | python3 -c "
 import json, sys
+
+THRESHOLD = $THRESHOLD
+
+# Per-function allowlist (max CC). Functions exceeding their entry's
+# value, OR new functions over THRESHOLD not in this list, fail the
+# gate. Entries are documented exceptions in docs/guides/COMPLEXITY.md;
+# refactor follow-ups are tracked per function.
+#
+# Lowering an entry (after a successful refactor) is encouraged — it's
+# a one-way ratchet. NEVER raise without updating COMPLEXITY.md and
+# justifying the structural reason in the PR.
+ALLOWLIST = {
+    ('server.py', 'create_draft'): 36,
+    ('server.py', 'update_draft'): 34,
+    ('mail_connector.py', 'AppleMailConnector.create_draft'): 25,
+    ('imap_connector.py', 'ImapConnector._thread_via_xgm_per_mailbox'): 21,
+    ('imap_connector.py', 'ImapConnector._thread_via_imap_thread'): 21,
+}
+
 data = json.load(sys.stdin)
-failures = []
+new_violations = []
+regressions = []
 for filepath, functions in data.items():
+    fname = filepath.rsplit('/', 1)[-1]
     for func in functions:
-        if func['complexity'] > $THRESHOLD:
-            failures.append(f\"  {filepath}:{func['lineno']} {func['name']} (CC={func['complexity']})\")
-if failures:
+        if func['complexity'] <= THRESHOLD:
+            continue
+        # radon's JSON splits class qualifier (classname) from name;
+        # compose them for the allowlist key so methods read like
+        # 'AppleMailConnector.create_draft' instead of bare 'create_draft'.
+        cls = func.get('classname') or ''
+        qualified = f'{cls}.{func[\"name\"]}' if cls else func['name']
+        key = (fname, qualified)
+        ceiling = ALLOWLIST.get(key)
+        if ceiling is None:
+            new_violations.append(
+                f\"  {filepath}:{func['lineno']} {qualified} \"
+                f\"(CC={func['complexity']}) — not in allowlist; \"
+                f\"refactor or add to ALLOWLIST in scripts/check_complexity.sh\"
+            )
+        elif func['complexity'] > ceiling:
+            regressions.append(
+                f\"  {filepath}:{func['lineno']} {qualified} \"
+                f\"(CC={func['complexity']}, allowlist max={ceiling}) \"
+                f\"— regressed; lower the function's CC, or update \"
+                f\"docs/guides/COMPLEXITY.md and justify in the PR\"
+            )
+
+problems = new_violations + regressions
+if problems:
     print('Functions exceeding threshold:')
-    for f in failures:
-        print(f)
+    for p in problems:
+        print(p)
     sys.exit(1)
 else:
-    print('All functions within threshold.')
+    print('All functions within threshold (or below their allowlist ceiling).')
 " 2>&1) || {
     echo "$FAILURES"
     exit 1

@@ -2100,6 +2100,90 @@ class AppleMailConnector:
             flagged=cast(bool, flagged),
         )
 
+    @staticmethod
+    def _build_flag_actions(
+        flagged: bool | None,
+        flag_color: str | None,
+    ) -> list[str]:
+        """Translate the (flagged, flag_color) patch into AppleScript
+        action strings. Pulled out of update_message in #174 to keep
+        that method below the CC ≤ 20 threshold.
+
+        Order of precedence: ``flagged=False`` always clears regardless
+        of color; ``flag_color`` set wins over bare ``flagged=True``;
+        bare ``flagged=True`` defaults to red (#185 fix).
+        """
+        from .utils import get_flag_index, validate_flag_color
+
+        if flagged is False:
+            return [
+                "set flag index of msg to -1",
+                "set flagged status of msg to false",
+            ]
+        if flag_color is not None:
+            if not validate_flag_color(flag_color):
+                raise ValueError(f"Invalid flag color: {flag_color}")
+            flag_index = get_flag_index(flag_color)
+            flagged_status = "true" if flag_color != "none" else "false"
+            return [
+                f"set flag index of msg to {flag_index}",
+                f"set flagged status of msg to {flagged_status}",
+            ]
+        if flagged is True:
+            # No color → default red. flag index 0 (red) sets bare \\Flagged
+            # on the IMAP server with no $MailFlagBit* keyword — same state
+            # the #152 IMAP fast path produces, ensuring path-independent
+            # rendering in Mail.app.
+            return [
+                f"set flag index of msg to {get_flag_index('red')}",
+                "set flagged status of msg to true",
+            ]
+        return []
+
+    def _try_imap_fast_paths(
+        self,
+        message_ids: list[str],
+        *,
+        read_status: bool | None,
+        flagged: bool | None,
+        flag_color: str | None,
+        destination_mailbox: str | None,
+        source_mailbox: str | None,
+        account: str | None,
+    ) -> int | None:
+        """Try each per-mutation IMAP fast path in turn (#149/#151/#152).
+        Returns the first non-None result, or None if no fast path
+        applies (caller falls through to the AppleScript pass).
+
+        The three fast paths' branch conditions are mutually exclusive
+        (each requires a single-field patch in its specific field), so
+        order doesn't matter functionally — but the historical order
+        is preserved for grep-ability against the issue numbers.
+
+        Pulled out of update_message in #174 to keep that function
+        below the CC ≤ 20 threshold; #149/#151/#152 each added a
+        _maybe_imap_* call + if-check, drifting it from 21 to 24.
+        Net effect of this helper: 1 call + 1 if-check at the call
+        site instead of 3 of each.
+        """
+        for fast_path in (
+            self._maybe_imap_move_only,
+            self._maybe_imap_read_only,
+            self._maybe_imap_flag_only,
+        ):
+            result = fast_path(
+                message_ids,
+                read_status=read_status,
+                flagged=flagged,
+                flag_color=flag_color,
+                destination_mailbox=destination_mailbox,
+                source_mailbox=source_mailbox,
+                account=account,
+            )
+            if result is not None:
+                return result
+        return None
+
     def _get_thread_applescript(self, message_id: str) -> list[dict[str, Any]]:
         """AppleScript path for get_thread (the universal baseline).
 
@@ -2607,7 +2691,7 @@ class AppleMailConnector:
                 "destination_mailbox is set"
             )
 
-        imap_count = self._maybe_imap_move_only(
+        imap_count = self._try_imap_fast_paths(
             message_ids,
             read_status=read_status,
             flagged=flagged,
@@ -2618,32 +2702,6 @@ class AppleMailConnector:
         )
         if imap_count is not None:
             return imap_count
-
-        imap_count = self._maybe_imap_read_only(
-            message_ids,
-            read_status=read_status,
-            flagged=flagged,
-            flag_color=flag_color,
-            destination_mailbox=destination_mailbox,
-            source_mailbox=source_mailbox,
-            account=account,
-        )
-        if imap_count is not None:
-            return imap_count
-
-        imap_count = self._maybe_imap_flag_only(
-            message_ids,
-            read_status=read_status,
-            flagged=flagged,
-            flag_color=flag_color,
-            destination_mailbox=destination_mailbox,
-            source_mailbox=source_mailbox,
-            account=account,
-        )
-        if imap_count is not None:
-            return imap_count
-
-        from .utils import get_flag_index, validate_flag_color
 
         actions: list[str] = []
 
@@ -2651,25 +2709,7 @@ class AppleMailConnector:
             target = "true" if read_status else "false"
             actions.append(f"set read status of msg to {target}")
 
-        # Flag handling — order matters: explicit flag_color wins over
-        # bare flagged=True; flagged=False clears regardless of color.
-        if flagged is False:
-            actions.append("set flag index of msg to -1")
-            actions.append("set flagged status of msg to false")
-        elif flag_color is not None:
-            if not validate_flag_color(flag_color):
-                raise ValueError(f"Invalid flag color: {flag_color}")
-            flag_index = get_flag_index(flag_color)
-            actions.append(f"set flag index of msg to {flag_index}")
-            flagged_status = "true" if flag_color != "none" else "false"
-            actions.append(f"set flagged status of msg to {flagged_status}")
-        elif flagged is True:
-            # No color → default red. flag index 0 (red) sets bare \\Flagged
-            # on the IMAP server with no $MailFlagBit* keyword — same state
-            # the #152 IMAP fast path produces, ensuring path-independent
-            # rendering in Mail.app.
-            actions.append(f"set flag index of msg to {get_flag_index('red')}")
-            actions.append("set flagged status of msg to true")
+        actions.extend(self._build_flag_actions(flagged, flag_color))
 
         # Move (always last — IMAP STORE requires source folder).
         if destination_mailbox is not None:
