@@ -88,20 +88,54 @@ mail = AppleMailConnector(imap_pool=_imap_pool)
 async def _elicit_confirmation(
     ctx: Context | None, summary: str, operation: str, params: dict[str, Any]
 ) -> dict[str, Any] | None:
-    """Elicit user confirmation via MCP. Returns error dict if declined, None if approved."""
-    if not ctx:
-        return None
+    """Elicit user confirmation via MCP. Fails closed — confirmation gates
+    the destructive operation entirely.
+
+    Returns:
+        - ``None`` only when the user explicitly accepted.
+        - ``{"error_type": "cancelled"}`` when the user declined.
+        - ``{"error_type": "confirmation_required"}`` when no context was
+          provided or the client's elicitation call failed (capability
+          unsupported, IO error). Pre-#226 these paths silently
+          proceeded; the silent-pass was a real bypass of the
+          confirmation gate.
+    """
+    if ctx is None:
+        operation_logger.log_operation(
+            operation, params, "confirmation_required"
+        )
+        return {
+            "success": False,
+            "error": (
+                "User confirmation is required for this operation, but "
+                "the MCP client did not provide a confirmation context."
+            ),
+            "error_type": "confirmation_required",
+        }
     try:
         result = await ctx.elicit(summary, None)
-        if not isinstance(result, AcceptedElicitation):
-            operation_logger.log_operation(operation, params, "cancelled")
-            return {
-                "success": False,
-                "error": "User declined to send",
-                "error_type": "cancelled",
-            }
-    except Exception:
-        logger.warning("Elicitation not supported by client, proceeding without confirmation")
+    except Exception as e:
+        logger.warning(
+            "Elicitation unavailable; blocking %s: %s", operation, e
+        )
+        operation_logger.log_operation(
+            operation, params, "confirmation_unavailable"
+        )
+        return {
+            "success": False,
+            "error": (
+                "User confirmation is required for this operation, but "
+                "the MCP client's elicitation capability is unavailable."
+            ),
+            "error_type": "confirmation_required",
+        }
+    if not isinstance(result, AcceptedElicitation):
+        operation_logger.log_operation(operation, params, "cancelled")
+        return {
+            "success": False,
+            "error": "User declined to continue",
+            "error_type": "cancelled",
+        }
     return None
 
 

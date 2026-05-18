@@ -26,6 +26,7 @@ from apple_mail_mcp.exceptions import (
     MailMessageNotFoundError,
 )
 from apple_mail_mcp.server import (
+    _elicit_confirmation,
     create_mailbox,
     create_rule,
     delete_messages,
@@ -73,6 +74,113 @@ def mock_ctx_decline() -> MagicMock:
     ctx = MagicMock()
     ctx.elicit = AsyncMock(return_value=DeclinedElicitation())
     return ctx
+
+
+@pytest.fixture
+def mock_ctx_raise() -> MagicMock:
+    """Mock MCP Context whose elicit() raises (simulates a client that
+    doesn't implement the elicitation capability — #226)."""
+    ctx = MagicMock()
+    ctx.elicit = AsyncMock(side_effect=RuntimeError("not supported"))
+    return ctx
+
+
+# ---------------------------------------------------------------------------
+# _elicit_confirmation gate-integrity tests (#226)
+#
+# Pre-#226 the helper silent-passed on `ctx is None` and on
+# `ctx.elicit(...)` raising, which let every downstream gated tool
+# (delete_*, send_now, rule mutations) be invoked without confirmation
+# from any MCP client that didn't implement elicitation. These tests
+# lock the fail-closed contract.
+# ---------------------------------------------------------------------------
+
+
+class TestElicitConfirmationFailsClosed:
+    """Regression tests for #226: the gate must fail closed when it
+    can't actually elicit user confirmation."""
+
+    async def test_returns_confirmation_required_when_ctx_is_none(
+        self,
+    ) -> None:
+        result = await _elicit_confirmation(
+            ctx=None, summary="Do X?", operation="op", params={"k": "v"},
+        )
+        assert result is not None
+        assert result["success"] is False
+        assert result["error_type"] == "confirmation_required"
+        assert "context" in result["error"].lower()
+
+    async def test_returns_confirmation_required_when_elicit_raises(
+        self, mock_ctx_raise: MagicMock,
+    ) -> None:
+        result = await _elicit_confirmation(
+            ctx=mock_ctx_raise, summary="Do X?",
+            operation="op", params={"k": "v"},
+        )
+        assert result is not None
+        assert result["success"] is False
+        assert result["error_type"] == "confirmation_required"
+        assert "elicitation" in result["error"].lower()
+
+    async def test_returns_cancelled_when_user_declines(
+        self, mock_ctx_decline: MagicMock,
+    ) -> None:
+        """Sanity check: the cancelled path must stay distinct from the
+        confirmation_required paths so MCP clients can give different UX
+        for "user said no" vs "couldn't ask user"."""
+        result = await _elicit_confirmation(
+            ctx=mock_ctx_decline, summary="Do X?",
+            operation="op", params={"k": "v"},
+        )
+        assert result is not None
+        assert result["error_type"] == "cancelled"
+
+    async def test_returns_none_when_user_accepts(
+        self, mock_ctx_accept: MagicMock,
+    ) -> None:
+        """Happy path stays None (treated as approved)."""
+        result = await _elicit_confirmation(
+            ctx=mock_ctx_accept, summary="Do X?",
+            operation="op", params={"k": "v"},
+        )
+        assert result is None
+
+    async def test_logs_to_audit_trail_on_missing_ctx(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Every gate decision belongs in the audit trail. Missing-ctx
+        bypass must be logged so operators can spot it."""
+        from apple_mail_mcp import server as server_mod
+        calls: list[tuple[str, dict[str, Any], str]] = []
+        monkeypatch.setattr(
+            server_mod.operation_logger, "log_operation",
+            lambda op, params, status: calls.append((op, params, status)),
+        )
+        await _elicit_confirmation(
+            ctx=None, summary="Do X?", operation="delete_rule",
+            params={"rule_index": 1},
+        )
+        assert calls == [("delete_rule", {"rule_index": 1}, "confirmation_required")]
+
+    async def test_logs_to_audit_trail_on_elicit_raise(
+        self, mock_ctx_raise: MagicMock, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The raise path uses a distinct status string so the audit
+        trail can tell missing-ctx apart from elicit-unsupported."""
+        from apple_mail_mcp import server as server_mod
+        calls: list[tuple[str, dict[str, Any], str]] = []
+        monkeypatch.setattr(
+            server_mod.operation_logger, "log_operation",
+            lambda op, params, status: calls.append((op, params, status)),
+        )
+        await _elicit_confirmation(
+            ctx=mock_ctx_raise, summary="Do X?",
+            operation="delete_rule", params={"rule_index": 1},
+        )
+        assert calls == [
+            ("delete_rule", {"rule_index": 1}, "confirmation_unavailable")
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +356,23 @@ class TestDeleteRule:
         mock_mail.list_rules.return_value = []
         result = await delete_rule(rule_index=99, ctx=None)
         assert result["success"] is False
+        # Note: rule_not_found short-circuits BEFORE the confirmation
+        # gate, so this case isn't affected by #226's fail-closed change.
         assert result["error_type"] == "rule_not_found"
+
+    async def test_missing_ctx_blocks_delete_with_confirmation_required(
+        self, mock_mail: MagicMock,
+    ) -> None:
+        """#226 integration test: a direct-call-site tool must surface
+        the helper's confirmation_required error rather than completing
+        the delete when no ctx is supplied."""
+        mock_mail.list_rules.return_value = [
+            {"index": 1, "name": "Junk filter", "enabled": True},
+        ]
+        result = await delete_rule(rule_index=1, ctx=None)
+        assert result["success"] is False
+        assert result["error_type"] == "confirmation_required"
+        mock_mail.delete_rule.assert_not_called()
 
 
 class TestCreateRule:
@@ -2590,6 +2714,27 @@ class TestCreateDraftTool:
         )
         assert result["success"] is False
         assert result["error_type"] == "cancelled"
+        mock_mail.create_draft.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_now_missing_ctx_blocks_with_confirmation_required(
+        self,
+        isolated_drafts: Any,
+        mock_mail: MagicMock,
+        mock_logger: MagicMock,
+    ) -> None:
+        """#226 integration test: an indirect call site (through
+        _run_send_now_gates) must surface the helper's
+        confirmation_required error rather than completing the send
+        when no ctx is supplied."""
+        from apple_mail_mcp.server import create_draft
+
+        result = await create_draft(
+            to=["a@example.com"], subject="hi", body="x",
+            send_now=True, ctx=None,
+        )
+        assert result["success"] is False
+        assert result["error_type"] == "confirmation_required"
         mock_mail.create_draft.assert_not_called()
 
     @pytest.mark.asyncio
