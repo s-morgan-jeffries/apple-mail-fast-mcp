@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.2] - 2026-05-20
+
+Patch release. Three substantive bug fixes — one security regression in our own gate chain, one regression introduced at v0.8.1, and one long-latent AppleEvent timeout bug surfaced by use on slow Exchange/EWS accounts. Two of the three are contributor-authored: [@fmasi](https://github.com/fmasi) reported and fixed the v0.8.1 regression they noticed within hours of release; [@allenpan05](https://github.com/allenpan05) reported and fixed the AppleEvent timeout bug. Thanks to both.
+
+### Fixed
+
+**`_elicit_confirmation` fails closed on missing context / unsupported elicitation (#226):** The confirmation step in our destructive-operation gate chain had two silent-pass paths that bypassed enforcement: when `ctx` was `None` (any MCP client that didn't pass a context) and when `ctx.elicit(...)` raised (clients that don't implement the elicitation capability). Both paths returned `None`, which downstream callers interpret as "approved." Result: every gated tool that wires through the helper — `delete_rule`, `update_rule`, `delete_mailbox`, `delete_template`, plus `create_draft` / `update_draft` with `send_now=True` (via `_run_send_now_gates`) — could be invoked without confirmation from any MCP client that doesn't implement elicitation. The safety and rate-limit gates still fired, but the explicit "user confirmed this action" gate was gone.
+
+Both bypass paths now return a typed `confirmation_required` error distinct from the existing `cancelled` (user-declined) error — MCP clients can give different UX for "user said no" vs "couldn't ask user." Both paths now also log to the audit trail with distinct statuses (`confirmation_required` for missing ctx, `confirmation_unavailable` for elicit-raise) so operators can spot bypass attempts. The `cancelled` error message changes from "User declined to send" to "User declined to continue" — the helper is used for deletes and rule mutations too, not just sends.
+
+Surfaced via a contributor's fork patch surveyed during the v0.8.1 post-mortem.
+
+**`find_message_by_message_id` regression introduced at v0.8.1 (#231, fix #232 by @fmasi):** v0.8.1's PR #208 added bracket-wrapping to `find_message_by_message_id` based on the (unverified) assumption that Mail.app stores `message id` with brackets per RFC 5322. fmasi sampled 81 message ids across 27 mailboxes on two accounts (iCloud + Gmail) and found **zero** stored bracketed — IMAP servers strip outer brackets per RFC 3501 when returning Message-ID via FETCH ENVELOPE, and Mail.app stores whatever IMAP gave it. The v0.8.1 wrap meant `create_draft(reply_to=<bare RFC id>)` and `create_draft(forward_of=...)` were silently failing with `MailMessageNotFoundError` on IMAP-backed accounts — the original #205 failure mode, just routed through the helper.
+
+Fix uses a compound AppleScript clause that queries both forms in one round-trip: `whose (message id is "X" or message id is "<X>")`. Strips brackets from input first so the canonical bare form drives both arms. Robust to whatever Mail.app actually stored on any account type. PR #232 also adds three integration tests against real Mail.app — the safety net that CLAUDE.md's "if you touched AppleScript, write integration tests" rule was asking for. PR #208's unit tests passed because they asserted the generated AppleScript string but never verified Mail.app would actually match against it; the integration tests added here close that gap.
+
+**AppleEvent timeout bypass on AppleScript paths (#227, fix #228 by @allenpan05):** AppleScript scripts emitted by `_wrap_as_json_script` lacked a `with timeout of N seconds` clause. As a result, Mail's default 60-second AppleEvent timeout fired before whatever subprocess timeout the connector was constructed with — `AppleMailConnector(timeout=N)` was effectively a no-op for any operation Mail couldn't complete in 60s. Once the AppleEvent timed out, the scripting bridge entered an unresponsive `Connection is invalid (-609)` state for ~30s. Hit reliably on Exchange/EWS accounts where per-message property fetches are server-bound rather than local.
+
+`_wrap_as_json_script` now takes a required `timeout` keyword arg and wraps the body in `with timeout of {timeout} seconds ... end timeout`. All 12 call sites pass `self.timeout` so the in-script timeout matches the subprocess kill timer. Default-configured users (`AppleMailConnector(timeout=60)`) see no behavior change since that matches Mail's old default; users who passed higher timeouts now actually get them.
+
+**Known gap:** ~10 other `_run_applescript` call sites (mutation paths like `mark_as_read`, `move_messages`, `update_message`) build their AppleScript directly without going through `_wrap_as_json_script` and therefore don't yet get the `with timeout` protection. These are typically small-batch operations that don't approach the 60s wall in practice, but the gap is tracked as #233 for v0.9.0.
+
 ## [0.8.1] - 2026-05-17
 
 Patch release. Three user-facing bug fixes — two reported by external contributor [@fmasi](https://github.com/fmasi) with full reproductions — plus a refactor sweep that drops every remaining function below the CC 20 threshold (complexity allowlist now empty).
