@@ -36,6 +36,8 @@ The Apple Mail MCP server provides programmatic access to your email through Cla
 
 ## Attack Surface Analysis
 
+> **For the canonical trust-boundary breakdown and STRIDE analysis, see [`docs/guides/THREAT_MODEL.md`](guides/THREAT_MODEL.md).** The narrative below is preserved for continuity and will be reconciled with the threat model in #220.
+
 ### 1. Prompt Injection
 
 **Risk:** Malicious email content could influence Claude's behavior.
