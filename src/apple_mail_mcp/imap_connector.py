@@ -34,7 +34,7 @@ from datetime import datetime as _datetime
 from datetime import timedelta as _timedelta
 from typing import Any, cast
 
-from imapclient import IMAPClient
+from imapclient import DRAFT, IMAPClient
 from imapclient.exceptions import IMAPClientError, LoginError
 from imapclient.response_types import Envelope
 
@@ -1047,6 +1047,63 @@ class ImapConnector:
         "Deleted Messages",
         "Deleted Items",
     )
+
+    # Conventional Drafts folder names to fall back on when the server
+    # doesn't advertise \\Drafts via SPECIAL-USE (RFC 6154). Issue #245.
+    _CONVENTIONAL_DRAFTS_NAMES: tuple[str, ...] = (
+        "Drafts",
+        "[Gmail]/Drafts",
+        "INBOX.Drafts",
+    )
+
+    def append_draft(self, raw_message: bytes) -> str:
+        """APPEND a pre-built RFC822 message to the account's Drafts
+        folder with the ``\\Draft`` flag, and return the folder used.
+
+        Bypasses Mail.app's AppleScript ``content`` setter, which wraps
+        every body in an ``Apple-Mail-URLShareWrapper``
+        ``<blockquote type="cite">`` that renders as a quote on iOS
+        (Mail.app bug FB11734014, issue #245). The caller builds
+        ``raw_message`` via :func:`apple_mail_mcp.draft_builder.build_draft_mime`.
+        """
+        with self._session() as client:
+            folder = self._find_drafts_folder(
+                client
+            ) or self._find_drafts_by_convention(client)
+            if folder is None:
+                raise MailMessageNotFoundError(
+                    f"No Drafts folder found on {self._host} "
+                    f"(no \\Drafts SPECIAL-USE flag and none of "
+                    f"{list(self._CONVENTIONAL_DRAFTS_NAMES)} present)."
+                )
+            client.append(folder, raw_message, flags=[DRAFT])
+            return folder
+
+    @staticmethod
+    def _find_drafts_folder(client: IMAPClient) -> str | None:
+        """Return the Drafts folder name via the ``\\Drafts`` SPECIAL-USE
+        flag (RFC 6154), or None if the server doesn't advertise it."""
+        for flags, _delim, name in client.list_folders():
+            if b"\\Drafts" in flags:
+                if isinstance(name, (bytes, bytearray)):
+                    return name.decode("utf-8", errors="replace")
+                return cast(str, name)
+        return None
+
+    def _find_drafts_by_convention(self, client: IMAPClient) -> str | None:
+        """Fall back to conventional Drafts names for servers that don't
+        advertise SPECIAL-USE ``\\Drafts``. First match wins in
+        :attr:`_CONVENTIONAL_DRAFTS_NAMES` order."""
+        present: set[str] = set()
+        for _flags, _delim, name in client.list_folders():
+            if isinstance(name, (bytes, bytearray)):
+                present.add(name.decode("utf-8", errors="replace"))
+            else:
+                present.add(name)
+        for candidate in self._CONVENTIONAL_DRAFTS_NAMES:
+            if candidate in present:
+                return candidate
+        return None
 
     def delete_messages(
         self,

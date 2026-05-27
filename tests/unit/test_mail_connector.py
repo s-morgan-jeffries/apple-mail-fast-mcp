@@ -5317,6 +5317,9 @@ class TestCreateDraft:
                 subject="hi",
                 body="x",
                 from_account="Gmail",
+                # #245: seed="new" save-as-draft now routes via IMAP APPEND;
+                # send_now=True keeps exercising the AppleScript sender line.
+                send_now=True,
             )
         script = mock_run.call_args[0][0]
         assert (
@@ -5339,6 +5342,9 @@ class TestCreateDraft:
                 subject="hi",
                 body="x",
                 from_account="Gmail",
+                # #245: seed="new" save-as-draft now routes via IMAP APPEND;
+                # send_now=True keeps exercising the AppleScript sender line.
+                send_now=True,
             )
         script = mock_run.call_args[0][0]
         assert 'set sender of theMessage to "me@x.com"' in script
@@ -5362,6 +5368,9 @@ class TestCreateDraft:
                 subject="hi",
                 body="x",
                 from_account="Gmail",
+                # #245: seed="new" save-as-draft now routes via IMAP APPEND;
+                # send_now=True keeps exercising the AppleScript sender line.
+                send_now=True,
             )
         script = mock_run.call_args[0][0]
         assert "\x00" not in script
@@ -6717,3 +6726,84 @@ class TestMailboxResolverShape:
         assert "is not container" in script
         # NOT a localized string comparison.
         assert 'is not "mailbox"' not in script
+
+
+class TestCreateDraftImapAppend:
+    """seed='new' drafts are created via IMAP APPEND to avoid Mail.app's
+    cite-blockquote wrapper (issue #245)."""
+
+    def _conn(self):
+        return AppleMailConnector(timeout=30)
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    @patch("apple_mail_mcp.mail_connector.ImapConnector")
+    @patch("apple_mail_mcp.mail_connector.get_imap_password", return_value="pw")
+    @patch.object(
+        AppleMailConnector,
+        "_resolve_imap_config",
+        return_value=("imap.host", 993, "appleid@fmasi.eu"),
+    )
+    @patch.object(
+        AppleMailConnector,
+        "_resolve_account_to_sender",
+        return_value="Fred <email@fmasi.eu>",
+    )
+    def test_new_draft_with_account_uses_imap_append(
+        self, _sender, _cfg, _pw, mock_imap_cls, mock_applescript
+    ):
+        conn = self._conn()
+        result = conn.create_draft(
+            seed="new",
+            to=["lazar@hadleigh.co.uk"],
+            subject="Re: Flat 9 Constable House",
+            body="Hi Lazar,\n\nNo wrapper here.",
+            from_account="iCloud",
+            send_now=False,
+        )
+
+        # IMAP path used, AppleScript NOT touched.
+        mock_applescript.assert_not_called()
+        append = mock_imap_cls.return_value.append_draft
+        append.assert_called_once()
+        raw = append.call_args[0][0]
+        assert b"No wrapper here." in raw
+        assert b"blockquote" not in raw.lower()
+        # Display-name From carried into the MIME (IMAP-path equivalent of #158).
+        assert b"Fred <email@fmasi.eu>" in raw
+        # draft_id is the generated RFC Message-ID.
+        assert "@" in result["draft_id"]
+
+    @patch.object(AppleMailConnector, "_run_applescript", return_value="123")
+    @patch("apple_mail_mcp.mail_connector.ImapConnector")
+    @patch("apple_mail_mcp.mail_connector.get_imap_password", return_value="pw")
+    @patch.object(
+        AppleMailConnector,
+        "_resolve_imap_config",
+        return_value=("imap.host", 993, "appleid@fmasi.eu"),
+    )
+    @patch.object(
+        AppleMailConnector,
+        "_resolve_account_to_sender",
+        return_value="Fred <email@fmasi.eu>",
+    )
+    def test_falls_back_to_applescript_when_imap_not_configured(
+        self, _sender, _cfg, _pw, mock_imap_cls, mock_applescript
+    ):
+        from apple_mail_mcp.exceptions import MailKeychainEntryNotFoundError
+
+        mock_imap_cls.return_value.append_draft.side_effect = (
+            MailKeychainEntryNotFoundError("no creds")
+        )
+        conn = self._conn()
+        result = conn.create_draft(
+            seed="new",
+            to=["x@example.invalid"],
+            subject="hi",
+            body="body",
+            from_account="iCloud",
+            send_now=False,
+        )
+        # Tried IMAP, then fell back to AppleScript.
+        mock_imap_cls.return_value.append_draft.assert_called_once()
+        mock_applescript.assert_called_once()
+        assert result["draft_id"] == "123"

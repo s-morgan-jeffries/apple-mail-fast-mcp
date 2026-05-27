@@ -3120,3 +3120,39 @@ class TestFindThreadMembersImapThread:
         # Tier 2 made 2 SEARCHes per folder × 3 folders = 6.
         # BFS adds 3 SEARCHes (1 id × 3 headers) per folder.
         assert client.search.call_count > 6
+
+
+class TestAppendDraft:
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_appends_to_special_use_drafts_with_draft_flag(self, mock_cls):
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.list_folders.return_value = [
+            ((b"\\HasNoChildren",), b"/", "INBOX"),
+            ((b"\\Drafts", b"\\HasNoChildren"), b"/", "Drafts"),
+        ]
+
+        conn = ImapConnector("imap.example.com", 993, "u@e.com", "pw")
+        conn.append_draft(b"raw-bytes")
+
+        args, kwargs = mock_client.append.call_args
+        assert args[0] == "Drafts"
+        assert args[1] == b"raw-bytes"
+        flags = kwargs.get("flags", args[2] if len(args) > 2 else None)
+        assert flags is not None and b"\\Draft" in list(flags)
+        mock_client.logout.assert_called_once()
+
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_falls_back_to_conventional_drafts_name(self, mock_cls):
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        # No SPECIAL-USE \Drafts flag advertised, but a conventional folder exists.
+        mock_client.list_folders.return_value = [
+            ((b"\\HasNoChildren",), b"/", "INBOX"),
+            ((b"\\HasNoChildren",), b"/", "Drafts"),
+        ]
+
+        conn = ImapConnector("imap.example.com", 993, "u@e.com", "pw")
+        conn.append_draft(b"raw-bytes")
+
+        assert mock_client.append.call_args[0][0] == "Drafts"

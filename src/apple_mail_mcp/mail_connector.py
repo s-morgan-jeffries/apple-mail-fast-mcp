@@ -16,6 +16,7 @@ from typing import Any, cast
 
 from imapclient.exceptions import IMAPClientError, LoginError
 
+from .draft_builder import build_draft_mime
 from .drafts import _validate_draft_id
 from .exceptions import (
     MailAccountNotFoundError,
@@ -4005,6 +4006,46 @@ class AppleMailConnector:
             set theMessage to {verb} origMsg opening window false
         """
 
+    def _create_draft_via_imap(
+        self,
+        *,
+        from_account: str,
+        to: list[str],
+        cc: list[str] | None,
+        bcc: list[str] | None,
+        subject: str,
+        body: str,
+        attachment_paths: list[Path] | None,
+    ) -> dict[str, str]:
+        """Create a save-as-draft by APPENDing a clean RFC822 message over
+        IMAP (issue #245), instead of Mail.app's AppleScript ``content``
+        setter. Returns the generated RFC Message-ID as ``draft_id``.
+
+        Raises the standard ``_IMAP_FALLBACK_EXCS`` (e.g. no Keychain
+        opt-in, network failure) which ``create_draft`` catches to fall
+        back to AppleScript. ``MailAccountNotFoundError`` / ``ValueError``
+        from sender resolution are NOT caught — they are caller/config
+        errors and must surface.
+        """
+        sender = self._resolve_account_to_sender(from_account)
+        host, port, email = self._resolve_imap_config(from_account)
+        password = get_imap_password(from_account, email)
+        message_id, raw = build_draft_mime(
+            sender=sender,
+            to=to,
+            cc=cc,
+            bcc=bcc,
+            subject=subject,
+            body=body,
+            attachments=(
+                [Path(p) for p in attachment_paths] if attachment_paths else None
+            ),
+        )
+        imap = ImapConnector(host, port, email, password, pool=self._imap_pool)
+        imap.append_draft(raw)
+        self._imap_clear_breaker(from_account)
+        return {"draft_id": message_id, "sent_message_id": ""}
+
     def create_draft(
         self,
         *,
@@ -4021,6 +4062,14 @@ class AppleMailConnector:
         send_now: bool = False,
     ) -> dict[str, str]:
         """Create a draft (fresh, reply, or forward). Optionally send.
+
+        For ``seed="new"`` save-as-draft (``send_now=False``) with a known
+        ``from_account``, the draft is created via IMAP APPEND of a clean
+        RFC 822 message rather than Mail.app's AppleScript ``content``
+        setter, which wraps the body in a cite-blockquote that renders as
+        a quote on iOS (Mail.app bug FB11734014, #245). Falls back to the
+        AppleScript path when IMAP isn't configured. Reply/forward and
+        ``send_now=True`` still use AppleScript.
 
         Args:
             seed: ``"new"``, ``"reply"``, or ``"forward"``.
@@ -4058,6 +4107,33 @@ class AppleMailConnector:
             MailAppleScriptError: AppleScript failure.
         """
         self._validate_create_draft_args(seed, seed_id, to, subject)
+
+        # IMAP-APPEND path for compose drafts (issue #245): bypasses
+        # Mail.app's AppleScript `content` setter, which wraps the body in
+        # an Apple-Mail-URLShareWrapper <blockquote type="cite"> (Mail.app
+        # bug FB11734014) that renders as a quote on iOS. Scoped to
+        # seed="new" save-as-draft with a known account; on the usual
+        # IMAP-degradation signals (e.g. no Keychain opt-in) we fall back
+        # to the AppleScript path below, preserving prior behavior.
+        if (
+            seed == "new"
+            and not send_now
+            and from_account is not None
+            and not self._imap_breaker_open(from_account)
+        ):
+            try:
+                return self._create_draft_via_imap(
+                    from_account=from_account,
+                    to=to or [],
+                    cc=cc,
+                    bcc=bcc,
+                    subject=subject or "",
+                    body=body,
+                    attachment_paths=attachment_paths,
+                )
+            except _IMAP_FALLBACK_EXCS as exc:
+                self._log_imap_fallback(from_account, exc)
+            # fall through to the AppleScript path
 
         # If the caller handed us an RFC 5322 Message-ID (the form read
         # tools emit on the IMAP path per #148), resolve to Mail's
