@@ -224,3 +224,47 @@ class TestDraftStateStore:
         # The on-disk JSON shouldn't have reply_all for forward seeds.
         data = json.loads((tmp_path / "160991.json").read_text())
         assert "reply_all" not in data
+
+
+class TestExtractDraftAttachmentsPathTraversal:
+    """extract_draft_attachments must not let an attachment filename (which
+    can originate from a forwarded message's attacker-set MIME filename)
+    escape dest_dir. ``.resolve()`` collapses ``..`` deterministically, so an
+    unsanitized name would write attacker bytes to an arbitrary path."""
+
+    def test_traversal_name_contained(self, tmp_path: Path) -> None:
+        from apple_mail_mcp.mail_connector import _compute_draft_extract_targets
+
+        targets = _compute_draft_extract_targets(
+            ["../../../../tmp/evil.sh", "report.pdf"], tmp_path
+        )
+        for p in targets:
+            assert p.resolve().is_relative_to(tmp_path.resolve())
+        # Reduced to a safe basename, kept under its index subdir.
+        assert targets[0].name == "evil.sh"
+        assert len(targets) == 2
+
+    def test_absolute_name_contained(self, tmp_path: Path) -> None:
+        from apple_mail_mcp.mail_connector import _compute_draft_extract_targets
+
+        targets = _compute_draft_extract_targets(["/etc/passwd"], tmp_path)
+        assert targets[0].resolve().is_relative_to(tmp_path.resolve())
+        assert targets[0].name == "passwd"
+
+    def test_extract_script_targets_sanitized_path(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from apple_mail_mcp.mail_connector import AppleMailConnector
+
+        conn = AppleMailConnector(timeout=30)
+        with patch.object(AppleMailConnector, "_run_applescript") as mock_run:
+            mock_run.return_value = "0"
+            conn.extract_draft_attachments(
+                "160991", ["../../../../tmp/evil.sh"], tmp_path
+            )
+            script = mock_run.call_args[0][0]
+
+        # The AppleScript saves to the sanitized path under dest_dir/0/,
+        # never the resolved-out-of-tree path the raw name would produce.
+        expected = str((tmp_path / "0" / "evil.sh").resolve())
+        assert expected in script

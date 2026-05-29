@@ -174,6 +174,31 @@ def _compute_attachment_save_targets(
     return targets
 
 
+def _compute_draft_extract_targets(
+    attachment_names: list[str], dest_dir: Path
+) -> list[Path]:
+    """Sanitized, contained per-attachment target paths under ``dest_dir/<i>/``.
+
+    Each attachment name is attacker-influenced (it can originate from a
+    forwarded message's MIME filename), so it is reduced to a safe basename
+    via :func:`sanitize_filename` before being joined under its index
+    subdirectory. The subdir-per-index scheme isolates basename collisions;
+    sanitization stops a ``..``/absolute name from escaping ``dest_dir`` once
+    the path is resolved (``Path.resolve`` collapses ``..``). Returns one
+    resolved path per name, in order.
+    """
+    dest_resolved = dest_dir.resolve()
+    targets: list[Path] = []
+    for i, name in enumerate(attachment_names):
+        target = (dest_dir / str(i) / sanitize_filename(name)).resolve()
+        if not target.is_relative_to(dest_resolved):
+            # Unreachable while sanitize_filename strips separators and "..";
+            # kept as a hard gate against a future regression in that contract.
+            raise ValueError(f"draft attachment {name!r} escapes dest_dir")
+        targets.append(target)
+    return targets
+
+
 def _filter_imap_results_to_cutoff(
     messages: list[dict[str, Any]], cutoff_dt: _datetime
 ) -> list[dict[str, Any]]:
@@ -4012,17 +4037,17 @@ class AppleMailConnector:
         if not attachment_names:
             return []
 
-        # Pre-create per-attachment subdirectories on the Python side so
-        # the AppleScript only has to do `save att in (POSIX file <path>)`.
-        target_paths: list[Path] = []
-        for i, name in enumerate(attachment_names):
-            subdir = dest_dir / str(i)
-            subdir.mkdir(parents=True, exist_ok=True)
-            target_paths.append(subdir / name)
+        # Compute sanitized, containment-checked target paths on the Python
+        # side (the attachment name is attacker-influenced — it can carry a
+        # forwarded message's MIME filename), then pre-create each per-index
+        # subdirectory so the AppleScript only does `save att in (POSIX file
+        # <path>)`.
+        target_paths = _compute_draft_extract_targets(attachment_names, dest_dir)
+        for p in target_paths:
+            p.parent.mkdir(parents=True, exist_ok=True)
 
         targets_safe = ", ".join(
-            f'"{escape_applescript_string(str(p.resolve()))}"'
-            for p in target_paths
+            f'"{escape_applescript_string(str(p))}"' for p in target_paths
         )
 
         script = f"""
