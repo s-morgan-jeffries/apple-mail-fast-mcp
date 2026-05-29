@@ -15,7 +15,6 @@ from apple_mail_mcp.utils import (
     normalize_subject,
     parse_applescript_json,
     parse_applescript_list,
-    parse_date_filter,
     parse_rfc822_ids,
     sanitize_input,
     validate_email,
@@ -81,26 +80,6 @@ class TestFormatAppleScriptList:
     def test_escapes_special_chars(self) -> None:
         result = format_applescript_list(['hello "world"'])
         assert result == '{"hello \\"world\\""}'
-
-
-class TestParseDateFilter:
-    """Tests for parse_date_filter."""
-
-    def test_days_ago(self) -> None:
-        result = parse_date_filter("7 days ago")
-        assert result == "(current date) - (7 * days)"
-
-    def test_weeks_ago(self) -> None:
-        result = parse_date_filter("2 weeks ago")
-        assert result == "(current date) - (2 * weeks)"
-
-    def test_last_week(self) -> None:
-        result = parse_date_filter("last week")
-        assert result == "(current date) - (1 * weeks)"
-
-    def test_iso_date(self) -> None:
-        result = parse_date_filter("2024-01-15")
-        assert result == 'date "2024-01-15"'
 
 
 class TestValidateEmail:

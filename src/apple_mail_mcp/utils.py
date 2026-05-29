@@ -107,38 +107,6 @@ def format_applescript_list(items: list[str]) -> str:
     return "{" + ", ".join(escaped_items) + "}"
 
 
-def parse_date_filter(date_str: str) -> str:
-    """
-    Convert human-readable date to AppleScript date expression.
-
-    Args:
-        date_str: Date string like "7 days ago", "2024-01-01", "last week"
-
-    Returns:
-        AppleScript date expression
-    """
-    # Handle relative dates
-    pattern = r"(\d+)\s+(day|week|month|year)s?\s+ago"
-    match = re.match(pattern, date_str.lower())
-
-    if match:
-        amount = int(match.group(1))
-        unit = match.group(2)
-        return f"(current date) - ({amount} * {unit}s)"
-
-    # Handle "last X"
-    if date_str.lower().startswith("last "):
-        unit = date_str[5:].strip().rstrip("s") + "s"
-        return f"(current date) - (1 * {unit})"
-
-    # Handle ISO dates (YYYY-MM-DD)
-    if re.match(r"\d{4}-\d{2}-\d{2}", date_str):
-        return f'date "{date_str}"'
-
-    # Default: return as is
-    return f'date "{date_str}"'
-
-
 def validate_email(email: str) -> bool:
     """
     Validate email address format.
