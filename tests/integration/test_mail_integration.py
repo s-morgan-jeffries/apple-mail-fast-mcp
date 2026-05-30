@@ -20,8 +20,10 @@ from _pytest.monkeypatch import MonkeyPatch
 from apple_mail_mcp.mail_connector import (
     _MAILBOX_RESOLVER_HANDLERS,
     AppleMailConnector,
+    _wrap_as_json_script,
     _wrap_with_timeout,
 )
+from apple_mail_mcp.utils import parse_applescript_json
 
 # Skip all integration tests by default
 # Run with: pytest --run-integration
@@ -1605,3 +1607,50 @@ class TestTimeoutWrappingCompiles:
         )
         result = connector._run_applescript(script)
         assert result.isdigit()
+
+
+class TestResolveImapConfigAppleScript:
+    """#267 / #272 — _resolve_imap_config coerces `server name` / `port`
+    for `missing value` so accounts without an IMAP server don't drop those
+    keys from NSJSONSerialization and KeyError the caller.
+
+    The real missing-value path needs a POP / "On My Mac" / mid-config
+    account, which a typical dev machine (all IMAP/iCloud accounts) can't
+    provide — so these two tests cover the change against real osascript
+    from both ends: the modified method still works on a server-bearing
+    account (no regression), and the coercion idiom genuinely survives
+    NSJSONSerialization (the mechanism the fix relies on)."""
+
+    def test_resolve_imap_config_real_account_no_regression(
+        self, connector: AppleMailConnector, test_account: str
+    ) -> None:
+        """The edited tell-block still parses and runs against a real
+        server-bearing account, returning a usable (host, port, email)."""
+        host, port, email = connector._resolve_imap_config(test_account)
+        assert isinstance(host, str) and host  # non-empty server name
+        assert isinstance(port, int) and port > 0
+        assert isinstance(email, str) and email
+
+    def test_missing_value_coercion_survives_json_serialization(
+        self, connector: AppleMailConnector
+    ) -> None:
+        """The crux of the fix: a `missing value` host/port, once coerced to
+        ``""`` / ``0`` with the same idiom _resolve_imap_config uses, must
+        survive NSJSONSerialization as present keys (uncoerced, the keys are
+        silently dropped — the exact cause of the KeyError). Runs through
+        real osascript + the production JSON wrapper + parser."""
+        body = """
+        tell application "Mail"
+            set acctHost to missing value
+            if acctHost is missing value then set acctHost to ""
+            set acctPort to missing value
+            if acctPort is missing value then set acctPort to 0
+            set resultData to {|host|:acctHost, |port|:acctPort}
+        end tell
+        """
+        script = _wrap_as_json_script(body, timeout=connector.timeout)
+        parsed = parse_applescript_json(connector._run_applescript(script))
+        assert isinstance(parsed, dict)
+        # Keys present (not dropped) and coerced to safe defaults.
+        assert parsed.get("host") == ""
+        assert parsed.get("port") == 0
