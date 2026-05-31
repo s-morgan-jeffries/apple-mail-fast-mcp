@@ -1,4 +1,4 @@
-.PHONY: help install dev test test-unit test-integration test-e2e test-verbose lint format typecheck complexity audit check-all coverage clean
+.PHONY: help install dev test test-unit test-integration test-e2e test-verbose lint format typecheck complexity audit check-all coverage clean eval-descriptions eval-tools
 
 help:
 	@echo "Available targets:"
@@ -75,3 +75,18 @@ check-all: lint typecheck test complexity
 clean:
 	rm -rf __pycache__ .pytest_cache .coverage htmlcov/ .mypy_cache .ruff_cache
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
+# Regenerate the blind-eval tool descriptions from the live FastMCP server
+# (keeps evals/agent_tool_usability/tool_descriptions.md in sync — #219).
+eval-descriptions:
+	uv run python evals/agent_tool_usability/generate_descriptions.py
+
+# Run the blind agent tool-usability eval against the open-weight OpenRouter
+# models (needs an OPENROUTER_API_KEY env var or the apple-mail-mcp-evals /
+# openrouter Keychain entry; costs money). The Claude column is produced
+# separately via a Claude Code subagent. See evals/agent_tool_usability/. (#219)
+eval-tools:
+	uv run --with openai python evals/agent_tool_usability/run_eval.py \
+		--model mistralai/mistral-large-2411 qwen/qwen-2.5-72b-instruct \
+		meta-llama/llama-3.3-70b-instruct deepseek/deepseek-chat-v3-0324 \
+		--runs 5
