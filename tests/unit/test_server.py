@@ -1784,14 +1784,29 @@ class TestSaveAttachments:
     def test_success_returns_saved_count(
         self, mock_mail: MagicMock, mock_logger: MagicMock, tmp_path: Any
     ) -> None:
-        mock_mail.save_attachments.return_value = 2
+        mock_mail.save_attachments.return_value = {"saved": 2, "rejected": []}
 
         result = save_attachments("1", str(tmp_path))
 
         assert result["success"] is True
         assert result["saved"] == 2
         assert result["directory"] == str(tmp_path)
+        assert result["rejected"] == []
         mock_logger.log_operation.assert_called_once()
+
+    def test_surfaces_rejected_attachments(
+        self, mock_mail: MagicMock, mock_logger: MagicMock, tmp_path: Any
+    ) -> None:
+        """Byte-cap rejections (#236) are passed through to the tool payload."""
+        rejected = [{"name": "huge.bin", "size": 9_999_999_999,
+                     "reason": "per_attachment_cap"}]
+        mock_mail.save_attachments.return_value = {"saved": 1, "rejected": rejected}
+
+        result = save_attachments("1", str(tmp_path))
+
+        assert result["success"] is True
+        assert result["saved"] == 1
+        assert result["rejected"] == rejected
 
     def test_directory_not_found(
         self, mock_mail: MagicMock, mock_logger: MagicMock, tmp_path: Any

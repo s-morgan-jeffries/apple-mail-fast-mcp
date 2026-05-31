@@ -176,7 +176,7 @@ INVOCATION_CASES: list[tuple[str, dict[str, Any], str, Any]] = [
         "save_attachments",
         {"message_id": "msg-1", "save_directory": _TMP_DIR},
         "save_attachments",
-        0,
+        {"saved": 0, "rejected": []},
     ),
     (
         "create_mailbox",

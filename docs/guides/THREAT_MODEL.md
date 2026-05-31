@@ -92,7 +92,7 @@ Five boundaries, each analyzed below with a 1-paragraph prose intro followed by 
 | Tampering | Caller-supplied `dest_dir` for `save_attachments` points to a system-critical path | Caller (LLM-via-user) is trusted with this. We validate path existence and reject `..` segments in [`save_attachments`](../../src/apple_mail_mcp/mail_connector.py), but do not blocklist system paths | (informational — accepted trust assumption) |
 | Repudiation | File writes are logged | [`operation_logger`](../../src/apple_mail_mcp/security.py) covers create / save / template ops | — |
 | Information disclosure | Templates dir readable by other user-processes at the same UID | OOS | — |
-| Denial of service | Disk fill via massive attachments or template inflation | `sanitize_input` 10000-char cap on template content | ⚠️ **No byte cap on `save_attachments`** — confirmed during plan-writing (see Open gaps). File follow-up |
+| Denial of service | Disk fill via massive attachments or template inflation | `sanitize_input` 10000-char cap on template content; per-attachment (100 MB) + aggregate (500 MB) byte caps on `save_attachments` — pre-check + post-write net, configurable via `APPLE_MAIL_MCP_MAX_ATTACHMENT_BYTES` / `APPLE_MAIL_MCP_MAX_TOTAL_ATTACHMENT_BYTES` (#236) | ✅ #236 |
 | Elevation | n/a | — | — |
 
 ### 5. MCP / LLM-as-conduit
@@ -117,7 +117,6 @@ Findings flagged `⚠️` in the tables above, mapped to tracked issues:
 |---|---|---|
 | osascript / AppleScript (§1) | Non-wrapped AS paths bypass `with timeout of N` | [#233](https://github.com/s-morgan-jeffries/apple-mail-mcp/issues/233) |
 | IMAP (§2) | Audit every IMAP→AS path applies `escape_applescript_string` | [#214](https://github.com/s-morgan-jeffries/apple-mail-mcp/issues/214) (property tests) |
-| Filesystem (§4) | No byte cap on `save_attachments` | [#236](https://github.com/s-morgan-jeffries/apple-mail-mcp/issues/236) (filed from this work) |
 | MCP / LLM-as-conduit (§5) | No automated prompt-injection detection on `get_message` responses | [#225](https://github.com/s-morgan-jeffries/apple-mail-mcp/issues/225) (planning) |
 | MCP / LLM-as-conduit (§5) | `create_rule` does not gate dangerous actions (move / forward / delete / copy) | [#222](https://github.com/s-morgan-jeffries/apple-mail-mcp/issues/222) |
 

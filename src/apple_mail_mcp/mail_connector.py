@@ -196,6 +196,103 @@ def _build_received_within_hours_short_circuit(
     return preamble, exit_clause
 
 
+# Byte caps for save_attachments — disk-fill DoS protection (#236). A hostile
+# email can carry a multi-GB attachment; without a cap, "save the attachment"
+# writes it in full. Defaults are overridable per-connector (constructor) and,
+# at the server layer, via env vars.
+DEFAULT_MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024        # 100 MB per attachment
+DEFAULT_MAX_TOTAL_ATTACHMENT_BYTES = 500 * 1024 * 1024  # 500 MB per call
+
+
+def _select_attachments_within_caps(
+    attachments: list[dict[str, Any]],
+    attachment_indices: list[int] | None,
+    *,
+    per_cap: int,
+    total_cap: int,
+) -> tuple[list[int], list[dict[str, Any]]]:
+    """Pre-check pass for save_attachments byte caps (#236).
+
+    Walks the selected attachments (in selection order, mirroring
+    ``_compute_attachment_save_targets``) and splits them into allowed
+    (0-based) indices and rejected records. An attachment is rejected when its
+    reported size exceeds ``per_cap`` (reason ``per_attachment_cap``) or would
+    push the running total over ``total_cap`` (``aggregate_cap``). A reported
+    size of 0/unknown is treated as under-cap and allowed (fail-open) — the
+    post-write net (:func:`_prune_oversized_written`) catches an attachment
+    Mail under-reported here.
+    """
+    if attachment_indices is not None:
+        selected = [
+            (i, attachments[i])
+            for i in attachment_indices
+            if 0 <= i < len(attachments)
+        ]
+    else:
+        selected = list(enumerate(attachments))
+
+    allowed: list[int] = []
+    rejected: list[dict[str, Any]] = []
+    total = 0
+    for i, att in selected:
+        size = int(att.get("size") or 0)
+        name = str(att.get("name") or "")
+        if size > per_cap:
+            rejected.append(
+                {"name": name, "size": size, "reason": "per_attachment_cap"}
+            )
+            continue
+        if total + size > total_cap:
+            rejected.append(
+                {"name": name, "size": size, "reason": "aggregate_cap"}
+            )
+            continue
+        total += size
+        allowed.append(i)
+    return allowed, rejected
+
+
+def _prune_oversized_written(
+    targets: list[tuple[int, Path]],
+    *,
+    per_cap: int,
+    total_cap: int,
+) -> tuple[int, list[dict[str, Any]]]:
+    """Post-write safety net for save_attachments byte caps (#236).
+
+    After the AppleScript save, stat each written file and delete (and report)
+    any that exceed ``per_cap`` on disk or push the actual running total over
+    ``total_cap`` — covering the case where Mail under-reported size before the
+    write. Only acts on paths that exist, so it is inert under mocked
+    AppleScript (no real files). Returns ``(removed_count, rejected_records)``.
+    """
+    removed = 0
+    rejected: list[dict[str, Any]] = []
+    running = 0
+    for _as_idx, path in targets:
+        if not path.is_file():
+            continue
+        actual = path.stat().st_size
+        if actual > per_cap:
+            path.unlink(missing_ok=True)
+            removed += 1
+            rejected.append(
+                {"name": path.name, "size": actual,
+                 "reason": "per_attachment_cap_postwrite"}
+            )
+            continue
+        if running + actual > total_cap:
+            path.unlink(missing_ok=True)
+            removed += 1
+            rejected.append(
+                {"name": path.name, "size": actual,
+                 "reason": "aggregate_cap_postwrite"}
+            )
+            continue
+        running += actual
+    return removed, rejected
+
+
 def _compute_attachment_save_targets(
     attachment_names: list[str],
     save_directory: Path,
@@ -587,6 +684,8 @@ class AppleMailConnector:
         timeout: int = 60,
         *,
         imap_pool: ImapConnectionPool | None = None,
+        max_attachment_bytes: int = DEFAULT_MAX_ATTACHMENT_BYTES,
+        max_total_attachment_bytes: int = DEFAULT_MAX_TOTAL_ATTACHMENT_BYTES,
     ) -> None:
         """
         Initialize the Mail connector.
@@ -599,9 +698,15 @@ class AppleMailConnector:
                 across calls, amortizing the ~400 ms TCP+TLS+LOGIN
                 overhead per call. Default None (per-call lifecycle —
                 the v0.5.0 behavior). See issue #75.
+            max_attachment_bytes: Per-attachment byte cap for
+                ``save_attachments`` (disk-fill DoS protection, #236).
+            max_total_attachment_bytes: Aggregate byte cap per
+                ``save_attachments`` call.
         """
         self.timeout = timeout
         self._imap_pool = imap_pool
+        self.max_attachment_bytes = max_attachment_bytes
+        self.max_total_attachment_bytes = max_total_attachment_bytes
         # Accounts for which we've already logged a WARNING about IMAP failure.
         # Subsequent failures for the same account are demoted to DEBUG per
         # invariant 5 in docs/research/imap-auth-options-decision.md.
@@ -2853,9 +2958,16 @@ class AppleMailConnector:
         message_id: str,
         save_directory: Path,
         attachment_indices: list[int] | None = None,
-    ) -> int:
+    ) -> dict[str, Any]:
         """
         Save attachments from a message to a directory.
+
+        Per-attachment and aggregate byte caps (``max_attachment_bytes`` /
+        ``max_total_attachment_bytes``) guard against disk-fill DoS from a
+        hostile oversized attachment (#236): oversized attachments are
+        pre-checked out before saving, and a post-write net deletes any file
+        that still lands over the cap (covering sizes Mail under-reports for
+        not-yet-downloaded attachments).
 
         Args:
             message_id: Message ID
@@ -2863,7 +2975,10 @@ class AppleMailConnector:
             attachment_indices: Indices of attachments to save (None = all)
 
         Returns:
-            Number of attachments saved
+            ``{"saved": int, "rejected": list[dict]}`` — count actually
+            written, and per-rejection records ``{name, size, reason}`` where
+            reason is ``per_attachment_cap`` / ``aggregate_cap`` (pre-check) or
+            ``*_postwrite`` (post-write net).
 
         Raises:
             FileNotFoundError: If save directory doesn't exist
@@ -2894,13 +3009,24 @@ class AppleMailConnector:
         # path. (Concatenating `name of att` into the path inside AppleScript
         # was a path-traversal → arbitrary-file-write vector.)
         attachments = self._get_attachments_applescript(message_id)
+
+        # Pre-check byte caps (#236): drop oversized attachments before saving.
+        allowed, rejected = _select_attachments_within_caps(
+            attachments,
+            attachment_indices,
+            per_cap=self.max_attachment_bytes,
+            total_cap=self.max_total_attachment_bytes,
+        )
+        if not allowed:
+            return {"saved": 0, "rejected": rejected}
+
         targets = _compute_attachment_save_targets(
             [str(a.get("name", "")) for a in attachments],
             save_directory,
-            attachment_indices,
+            allowed,
         )
         if not targets:
-            return 0
+            return {"saved": 0, "rejected": rejected}
 
         message_id_safe = escape_applescript_string(sanitize_input(message_id))
         idx_list = ", ".join(str(idx) for idx, _ in targets)
@@ -2940,7 +3066,17 @@ class AppleMailConnector:
         )
 
         result = self._run_applescript(script)
-        return int(result) if result.isdigit() else 0
+        saved = int(result) if result.isdigit() else 0
+
+        # Post-write net (#236): delete any file that landed over the cap
+        # (e.g. Mail under-reported size pre-download) and report it.
+        removed, post_rejected = _prune_oversized_written(
+            targets,
+            per_cap=self.max_attachment_bytes,
+            total_cap=self.max_total_attachment_bytes,
+        )
+        rejected.extend(post_rejected)
+        return {"saved": max(0, saved - removed), "rejected": rejected}
 
     def move_messages(
         self,

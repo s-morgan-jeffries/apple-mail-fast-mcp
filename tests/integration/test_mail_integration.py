@@ -1654,3 +1654,29 @@ class TestResolveImapConfigAppleScript:
         # Keys present (not dropped) and coerced to safe defaults.
         assert parsed.get("host") == ""
         assert parsed.get("port") == 0
+
+
+class TestSaveAttachmentsByteCapSizeSource:
+    """#236 — the save_attachments byte caps key off `file size of att`
+    (enumerated by _get_attachments_applescript). Validate against real
+    Mail.app that the size field is actually populated for real attachment
+    content, so the pre-check has something to enforce on. Skips if the test
+    account's INBOX has no attachment-bearing message."""
+
+    def test_attachment_size_is_populated(
+        self, connector: AppleMailConnector, test_account: str
+    ) -> None:
+        msgs = connector._search_messages_applescript(
+            account=test_account, mailbox="INBOX", has_attachment=True, limit=1
+        )
+        if not msgs:
+            pytest.skip("no attachment-bearing message in test INBOX")
+        atts = connector._get_attachments_applescript(str(msgs[0]["id"]))
+        if not atts:
+            pytest.skip("message reported no enumerable attachments")
+        for a in atts:
+            assert isinstance(a["size"], int)
+            assert a["size"] >= 0
+        # Meaningfully populated for real content (not all zero), so the
+        # per-attachment / aggregate caps have a real size to gate on.
+        assert any(a["size"] > 0 for a in atts)

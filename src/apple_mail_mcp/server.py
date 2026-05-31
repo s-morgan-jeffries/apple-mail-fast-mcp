@@ -119,9 +119,35 @@ def _register_pool_atexit(pool: ImapConnectionPool | None) -> None:
         atexit.register(pool.close)
 
 
+def _attachment_cap_overrides() -> dict[str, int]:
+    """Read optional save_attachments byte-cap overrides from the environment
+    (#236), mirroring the APPLE_MAIL_MCP_IMAP_POOL opt-in pattern. Returns
+    kwargs for AppleMailConnector; invalid/unset values fall back to the
+    connector defaults (100 MB per attachment / 500 MB aggregate)."""
+    import os
+    overrides: dict[str, int] = {}
+    for env_name, kwarg in (
+        ("APPLE_MAIL_MCP_MAX_ATTACHMENT_BYTES", "max_attachment_bytes"),
+        ("APPLE_MAIL_MCP_MAX_TOTAL_ATTACHMENT_BYTES", "max_total_attachment_bytes"),
+    ):
+        raw = os.getenv(env_name)
+        if raw is None:
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            logger.warning("Ignoring non-integer %s=%r", env_name, raw)
+            continue
+        if value <= 0:
+            logger.warning("Ignoring non-positive %s=%r", env_name, raw)
+            continue
+        overrides[kwarg] = value
+    return overrides
+
+
 _imap_pool = _build_imap_pool()
 _register_pool_atexit(_imap_pool)
-mail = AppleMailConnector(imap_pool=_imap_pool)
+mail = AppleMailConnector(imap_pool=_imap_pool, **_attachment_cap_overrides())
 
 
 async def _elicit_confirmation(
@@ -1384,14 +1410,19 @@ def save_attachments(
         attachment_indices: Specific attachment indices to save (0-based), None for all
 
     Returns:
-        Dictionary indicating success and number of attachments saved
+        Dict with ``success``, ``saved`` (count written), ``directory``, and
+        ``rejected`` (attachments skipped by the per-attachment / aggregate
+        byte caps, each ``{name, size, reason}``; #236).
 
     Example:
         >>> save_attachments("12345", "/Users/me/Downloads")
-        {"success": True, "saved": 2, "directory": "/Users/me/Downloads"}
+        {"success": True, "saved": 2, "directory": "/Users/me/Downloads",
+         "rejected": []}
 
         >>> save_attachments("12345", "/Users/me/Downloads", [0, 2])
-        {"success": True, "saved": 2, "directory": "/Users/me/Downloads"}
+        {"success": True, "saved": 1, "directory": "/Users/me/Downloads",
+         "rejected": [{"name": "huge.bin", "size": 2147483648,
+                       "reason": "per_attachment_cap"}]}
     """
     from pathlib import Path
 
@@ -1421,7 +1452,7 @@ def save_attachments(
             f"Saving attachments from message {message_id} to {save_directory}"
         )
 
-        count = mail.save_attachments(
+        result = mail.save_attachments(
             message_id=message_id,
             save_directory=save_path,
             attachment_indices=attachment_indices,
@@ -1439,8 +1470,10 @@ def save_attachments(
 
         return {
             "success": True,
-            "saved": count,
+            "saved": result["saved"],
             "directory": save_directory,
+            # Attachments skipped/removed by the byte caps (#236), if any.
+            "rejected": result["rejected"],
         }
 
     except (FileNotFoundError, ValueError) as e:

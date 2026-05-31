@@ -120,7 +120,8 @@ class TestSaveAttachments:
             attachment_indices=[0]
         )
 
-        assert result == 1
+        assert result["saved"] == 1
+        assert result["rejected"] == []
         call_args = mock_run.call_args_list[-1][0][0]
         assert str(tmp_path) in call_args
 
@@ -141,7 +142,90 @@ class TestSaveAttachments:
             save_directory=tmp_path
         )
 
-        assert result == 3
+        assert result["saved"] == 3
+        assert result["rejected"] == []
+
+    # --- Byte caps (#236) ---------------------------------------------------
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_per_attachment_cap_rejects_oversized(
+        self, mock_run: MagicMock, tmp_path: Path
+    ) -> None:
+        """An attachment whose reported size exceeds the per-attachment cap is
+        rejected before any save runs (only the enumerate AppleScript fires)."""
+        connector = AppleMailConnector(timeout=30, max_attachment_bytes=10)
+        mock_run.side_effect = [
+            '[{"name":"huge.bin","mime_type":"application/octet-stream",'
+            '"size":100,"downloaded":true}]',
+        ]
+        result = connector.save_attachments("12345", tmp_path)
+        assert result["saved"] == 0
+        assert len(result["rejected"]) == 1
+        assert result["rejected"][0]["name"] == "huge.bin"
+        assert result["rejected"][0]["reason"] == "per_attachment_cap"
+        # No save script — enumerate only.
+        assert mock_run.call_count == 1
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_aggregate_cap_rejects_when_total_exceeded(
+        self, mock_run: MagicMock, tmp_path: Path
+    ) -> None:
+        connector = AppleMailConnector(
+            timeout=30, max_attachment_bytes=1000, max_total_attachment_bytes=150
+        )
+        mock_run.side_effect = [
+            '[{"name":"a.bin","mime_type":"application/octet-stream",'
+            '"size":100,"downloaded":true},'
+            '{"name":"b.bin","mime_type":"application/octet-stream",'
+            '"size":100,"downloaded":true}]',
+            "1",
+        ]
+        result = connector.save_attachments("12345", tmp_path)
+        assert result["saved"] == 1
+        assert [r["reason"] for r in result["rejected"]] == ["aggregate_cap"]
+        assert result["rejected"][0]["name"] == "b.bin"
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_fail_open_on_unknown_size(
+        self, mock_run: MagicMock, tmp_path: Path
+    ) -> None:
+        """A reported size of 0 is treated as under-cap and saved (the
+        post-write net would still delete it if it turned out oversized)."""
+        connector = AppleMailConnector(timeout=30, max_attachment_bytes=10)
+        mock_run.side_effect = [
+            '[{"name":"unknown.bin","mime_type":"application/octet-stream",'
+            '"size":0,"downloaded":false}]',
+            "1",
+        ]
+        result = connector.save_attachments("12345", tmp_path)
+        assert result["saved"] == 1
+        assert result["rejected"] == []
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_postwrite_net_deletes_oversized_written_file(
+        self, mock_run: MagicMock, tmp_path: Path
+    ) -> None:
+        """Even if the reported size passed the pre-check, a written file that
+        exceeds the cap on disk is deleted and reported (covers Mail
+        under-reporting size for a not-yet-downloaded attachment)."""
+        connector = AppleMailConnector(timeout=30, max_attachment_bytes=10)
+        # Reported size 5 passes the pre-check...
+        mock_run.side_effect = [
+            '[{"name":"big.bin","mime_type":"application/octet-stream",'
+            '"size":5,"downloaded":false}]',
+            "1",
+        ]
+        # ...but the actual written file is 100 bytes (> 10-byte cap).
+        written = tmp_path / "big.bin"
+        written.write_bytes(b"x" * 100)
+
+        result = connector.save_attachments("12345", tmp_path)
+
+        assert result["saved"] == 0
+        assert not written.exists()  # post-write net deleted it
+        assert [r["reason"] for r in result["rejected"]] == [
+            "per_attachment_cap_postwrite"
+        ]
 
     def test_save_to_invalid_directory(self, connector: AppleMailConnector) -> None:
         """Test error when save directory is invalid."""
@@ -275,7 +359,7 @@ class TestSaveAttachmentsPathTraversal:
         ]
         result = connector.save_attachments(message_id="123", save_directory=tmp_path)
 
-        assert result == 1
+        assert result["saved"] == 1
         save_script = mock_run.call_args_list[-1][0][0]
         # The vulnerable runtime path concatenation must be gone.
         assert "& attName" not in save_script
