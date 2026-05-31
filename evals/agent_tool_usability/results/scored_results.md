@@ -11,15 +11,17 @@
 
 ## Summary
 
-| Model | Score (MANUAL excl.) | PASS% | PARTIAL | FAIL | Notes |
-|-------|----------------------|-------|---------|------|-------|
-| DeepSeek V3 0324 (5 runs) | 387/390 | 99% (193/195) | 1 | 1 | |
-| Claude Sonnet 4.6 (subagent, 1 run) | 76/78 | 97% (38/39) | 0 | 1 | deterministic |
-| Llama 3.3 70B Instruct (5 runs) | 371/390 | 92% (179/195) | 13 | 3 | |
-| Qwen 2.5 72B Instruct (5 runs) | 367/390 | 91% (177/195) | 13 | 5 | |
-| Mistral Large 2411 (5 runs) | 361/394 | 90% (177/197) | 7 | 4 | |
+Score = points (PASS=2, PARTIAL=1, FAIL=0) ÷ max, with MANUAL scenarios excluded from both.
 
-All five models land **90–99%** — the v0.9.0 tool descriptions are clear enough for a blind,
+| Model | Score | % | PASS | PARTIAL | FAIL |
+|-------|-------|---|------|---------|------|
+| DeepSeek V3 0324 (5 runs) | 387/390 | 99.2% | 193 | 1 | 1 |
+| Claude Sonnet 4.6 (subagent, 1 run) | 76/78 | 97.4% | 38 | 0 | 1 |
+| Llama 3.3 70B Instruct (5 runs) | 371/390 | 95.1% | 179 | 13 | 3 |
+| Qwen 2.5 72B Instruct (5 runs) | 367/390 | 94.1% | 177 | 13 | 5 |
+| Mistral Large 2411 (5 runs) | 361/394 | 91.6% | 177 | 7 | 4 |
+
+All five models land **92–99%** — the v0.9.0 tool descriptions are clear enough for a blind,
 unbriefed model to pick the right tool in nearly every scenario.
 
 ## Key Findings
