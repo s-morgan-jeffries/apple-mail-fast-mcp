@@ -26,7 +26,8 @@ uv sync --dev
 2. Write tests first (TDD): RED -> GREEN -> REFACTOR
 3. Implement backend (`mail_connector.py`) and frontend (`server.py`) together
 4. Run checks: `make check-all`
-5. Open a PR against `main`
+5. **If your PR touches IMAP or AppleScript code paths** — `imap_connector.py`, `mail_connector.py` AppleScript bodies/wrappers, or tools gated by `_elicit_confirmation` — also run `make test-e2e` before pushing (requires `MAIL_TEST_MODE=true`; the happy-path dispatch tests are mocked and need no account, but the full suite needs a test Mail.app account). **CI does not run e2e** — they need Mail.app — so a stale e2e failure on `main` is only caught by someone running this locally.
+6. Open a PR against `main`
 
 ## Branch Convention
 

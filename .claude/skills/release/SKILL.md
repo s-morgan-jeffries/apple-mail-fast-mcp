@@ -49,8 +49,9 @@ Run ALL checks (stop on failure):
 2. `./scripts/check_client_server_parity.sh`
 3. `./scripts/check_complexity.sh`
 4. `make test`
-5. `./scripts/check_dependencies.sh`
-6. `./scripts/check_applescript_safety.sh`
+5. `make test-e2e` — **mandatory** (requires `MAIL_TEST_MODE=true` + a test Mail.app account). CI excludes e2e, so this is the only gate that catches a stale e2e failure. A pre-existing failure on `main` is a **release-blocker**, not a known issue to ship around (#257).
+6. `./scripts/check_dependencies.sh`
+7. `./scripts/check_applescript_safety.sh`
 
 ## Phase 10: Commit, Push, PR
 - Commit: `"release: vX.Y.Z"`

@@ -208,6 +208,23 @@ INVOCATION_CASES: list[tuple[str, dict[str, Any], str, Any]] = [
 class TestToolInvocation:
     """Invoke each tool via mcp.call_tool and verify structured response shape."""
 
+    @pytest.fixture(autouse=True)
+    def _accept_elicitation(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The e2e harness invokes tools via ``mcp.call_tool`` with no live MCP
+        session, so the real ``_elicit_confirmation`` would fail closed on
+        gated tools (``delete_mailbox``, ``delete_messages``) — its
+        ``ctx.elicit()`` raises "session not available". Simulate user
+        acceptance so the happy-path test exercises tool *dispatch*, not the
+        confirmation flow (which is covered in tests/unit/test_server.py).
+        Class-scoped so it doesn't mask gate behavior elsewhere. (#257)
+        """
+        async def _accept(*_args: object, **_kwargs: object) -> None:
+            return None  # None == user accepted
+
+        monkeypatch.setattr(
+            "apple_mail_mcp.server._elicit_confirmation", _accept
+        )
+
     @pytest.mark.parametrize(
         "tool_name,call_args,connector_method,connector_return",
         INVOCATION_CASES,
