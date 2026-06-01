@@ -152,7 +152,8 @@ class MailDraftError(MailError):
 
 class MailDraftInvalidIdError(MailDraftError):
     """Draft id failed validation (path traversal, invalid chars, too long,
-    or empty). Ids must match ^[a-zA-Z0-9_-]{1,128}$."""
+    or empty). Ids must match ^[A-Za-z0-9._@+=-]{1,255}$ — a Mail.app
+    numeric id or a bare RFC 5322 Message-ID, with no path separators."""
 
     pass
 

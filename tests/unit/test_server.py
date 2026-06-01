@@ -2965,6 +2965,35 @@ class TestCreateDraftTool:
         assert seed.reply_all is True
 
     @pytest.mark.asyncio
+    async def test_reply_via_imap_rfc_id_succeeds_and_persists_seed(
+        self,
+        isolated_drafts: Any,
+        mock_mail: MagicMock,
+        mock_logger: MagicMock,
+    ) -> None:
+        # Regression (#245 / PR #293): the IMAP-APPEND reply path returns a
+        # bare RFC Message-ID as draft_id. Persisting the seed must NOT
+        # reject that id — previously _persist_draft_seed raised
+        # MailDraftInvalidIdError AFTER the draft was created, so the tool
+        # reported success:false despite a real draft on the server.
+        from apple_mail_mcp.drafts import DraftStateStore
+        from apple_mail_mcp.server import create_draft
+
+        rfc_id = "178031450722.27521.4532321693417753548@frederics-mbp.lan"
+        mock_mail.create_draft.return_value = {
+            "draft_id": rfc_id, "sent_message_id": ""
+        }
+        result = await create_draft(
+            reply_to="orig.abc@hadleigh.co.uk", body="thanks"
+        )
+        assert result["success"] is True
+        assert result["draft_id"] == rfc_id
+        seed = DraftStateStore().get_seed(rfc_id)
+        assert seed is not None
+        assert seed.seed_kind == "reply"
+        assert seed.seed_id == "orig.abc@hadleigh.co.uk"
+
+    @pytest.mark.asyncio
     async def test_draft_state_not_persisted_for_send_now(
         self,
         isolated_drafts: Any,

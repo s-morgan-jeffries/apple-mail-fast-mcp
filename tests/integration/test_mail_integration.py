@@ -502,6 +502,60 @@ class TestDraftsLifecycleIntegration:
         finally:
             connector.delete_draft(draft_id)
 
+    def test_imap_append_message_id_round_trips_state_and_delete(
+        self, connector: AppleMailConnector, test_account: str
+    ) -> None:
+        """Issue #245 / PR #293: the IMAP-APPEND draft path returns a bare
+        RFC Message-ID as draft_id (not Mail's internal numeric id).
+        get_draft_state and delete_draft must resolve that Message-ID back
+        to Mail's internal id (via find_message_by_message_id) for their
+        `whose id is` lookups — otherwise a freshly-created draft can be
+        neither read back nor deleted.
+
+        Skips if the test account has no Keychain entry (IMAP path can't be
+        exercised; the AppleScript fallback returns a numeric id which the
+        fresh/reply tests above already cover).
+        """
+        from apple_mail_mcp.exceptions import (
+            MailKeychainAccessDeniedError,
+            MailKeychainEntryNotFoundError,
+        )
+        from apple_mail_mcp.keychain import get_imap_password
+
+        try:
+            _, _, email = connector._resolve_imap_config(test_account)
+            get_imap_password(test_account, email)
+        except (
+            MailKeychainEntryNotFoundError,
+            MailKeychainAccessDeniedError,
+        ):
+            pytest.skip(
+                f"No Keychain entry for {test_account!r} — IMAP-APPEND path "
+                f"can't be exercised. Run `apple-mail-mcp setup-imap` first."
+            )
+
+        result = connector.create_draft(
+            seed="new",
+            from_account=test_account,
+            to=["test1@example.com"],
+            subject="ZZZ-AMM-INTEG-MSGID",
+            body="integration message-id round-trip body",
+        )
+        draft_id = result["draft_id"]
+        # IMAP path returns a BARE Message-ID (has @, no angle brackets).
+        assert "@" in draft_id, (
+            "expected IMAP-APPEND path (bare Message-ID draft_id); got "
+            f"{draft_id!r} — AppleScript fallback likely fired"
+        )
+        assert "<" not in draft_id and ">" not in draft_id
+
+        try:
+            state = connector.get_draft_state(draft_id)
+            assert state["subject"] == "ZZZ-AMM-INTEG-MSGID"
+            assert "integration message-id round-trip body" in state["body"]
+        finally:
+            assert connector.delete_draft(draft_id) is True
+
     def test_reply_save_preserves_threading_headers(
         self,
         connector: AppleMailConnector,

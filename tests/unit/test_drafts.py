@@ -19,6 +19,19 @@ class TestValidateDraftId:
 
         _validate_draft_id("abc_123-xyz")
 
+    def test_accepts_bare_rfc_message_id(self):
+        from apple_mail_mcp.drafts import _validate_draft_id
+
+        # IMAP-APPEND drafts (#245) return the RFC 5322 Message-ID as the
+        # draft_id; the bare (bracket-stripped) form must validate.
+        _validate_draft_id("178031450722.27521.4532321693417753548@frederics-mbp.lan")
+
+    def test_accepts_message_id_with_plus_and_equals(self):
+        from apple_mail_mcp.drafts import _validate_draft_id
+
+        # atext allows + and = ; real-world Message-IDs use them.
+        _validate_draft_id("a+b=c.123@mail.example.com")
+
     def test_rejects_path_traversal(self):
         from apple_mail_mcp.drafts import _validate_draft_id
 
@@ -47,7 +60,22 @@ class TestValidateDraftId:
         from apple_mail_mcp.drafts import _validate_draft_id
 
         with pytest.raises(MailDraftInvalidIdError):
-            _validate_draft_id("a" * 129)
+            _validate_draft_id("a" * 256)
+
+    def test_rejects_backslash(self):
+        from apple_mail_mcp.drafts import _validate_draft_id
+
+        # No path separators, even after widening for Message-IDs.
+        with pytest.raises(MailDraftInvalidIdError):
+            _validate_draft_id("foo\\bar")
+
+    def test_rejects_angle_brackets(self):
+        from apple_mail_mcp.drafts import _validate_draft_id
+
+        # draft_id is the BARE Message-ID; the bracketed form is normalized
+        # away at the boundary and must not validate here.
+        with pytest.raises(MailDraftInvalidIdError):
+            _validate_draft_id("<abc@host>")
 
 
 class TestDefaultRoot:
