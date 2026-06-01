@@ -4,8 +4,7 @@ Complete reference for all MCP tools provided by the Apple Mail MCP server.
 
 ## Overview
 
-**Current Version:** v0.6.0
-**Total Tools:** 27
+**Total Tools:** 23 (9 read-only, 14 mutating — see Classification below). See the [CHANGELOG](../../CHANGELOG.md) for the version history.
 
 ## Tool annotations (`readOnlyHint` / `destructiveHint` / `idempotentHint`)
 
@@ -419,27 +418,6 @@ update_message(
 
 ---
 
-## Coming Soon (Phase 2 - v0.2.0)
-
-
-### create_mailbox
-
-Create a new mailbox/folder.
-
-**Parameters:**
-- `account`: string - Account name
-- `name`: string - Mailbox name
-- `parent_mailbox`: string (optional) - Parent for nested mailboxes
-
-### delete_messages
-
-Delete messages (move to trash).
-
-**Parameters:**
-- `message_ids`: array[string] - Messages to delete
-- `confirm`: boolean - Require confirmation
-
----
 
 ## Error Handling
 
@@ -571,14 +549,17 @@ Save attachments from a message to a directory.
 ```json
 {
   "success": true,
-  "count": 2,
+  "saved": 2,
   "directory": "/Users/me/Downloads",
-  "saved_files": [
-    "report.pdf",
-    "data.xlsx"
-  ]
+  "rejected": []
 }
 ```
+
+`saved` is the number of attachments written. `rejected` lists any attachments skipped by the byte
+caps (per-attachment default 100 MB, aggregate 500 MB per call — disk-fill DoS protection, #236),
+each as `{"name", "size", "reason"}` where reason is `per_attachment_cap` / `aggregate_cap` (pre-check)
+or `*_postwrite` (an oversized file deleted after writing). Override the caps with
+`APPLE_MAIL_MCP_MAX_ATTACHMENT_BYTES` / `APPLE_MAIL_MCP_MAX_TOTAL_ATTACHMENT_BYTES`.
 
 **Examples:**
 
@@ -1026,10 +1007,9 @@ longer treats trashed drafts as editable.
 # 1. Find all unread messages
 unread = search_messages(account="Gmail", read_status=False)
 
-# 2. For each message, get full details
-for msg in unread["messages"]:
-    full_msg = get_message(message_id=msg["id"])
-    # Process message...
+# 2. Fetch full details (get_messages takes a list of ids)
+full = get_messages(message_ids=[msg["id"] for msg in unread["messages"]])
+# Process full["messages"]...
 
 # 3. Mark processed messages as read
 processed_ids = [msg["id"] for msg in unread["messages"]]
@@ -1048,7 +1028,7 @@ results = search_messages(
 )
 
 # 2. Get full message
-original = get_message(message_id=results["messages"][0]["id"])
+original = get_messages(message_ids=[results["messages"][0]["id"]])
 
 # 3. Send reply (use create_draft with send_now=True to skip the
 #    save-then-send dance)

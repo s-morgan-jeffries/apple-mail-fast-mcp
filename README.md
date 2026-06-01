@@ -10,14 +10,17 @@ An MCP server that provides programmatic access to Apple Mail, enabling AI assis
 
 ## Tools (23)
 
-**Core:** list_mailboxes, search_messages, get_messages, update_message
-**Drafts lifecycle:** create_draft, update_draft, delete_draft
-**Mailbox CRUD:** create_mailbox, update_mailbox, delete_mailbox
-**Attachments & Management:** save_attachments, delete_messages
-**Discovery & Rules:** list_accounts, list_rules, get_thread, create_rule, update_rule, delete_rule
-**Templates:** list_templates, get_template, save_template, delete_template, render_template
+Grouped by lifecycle (9 read-only, 14 mutating):
 
-See [docs/reference/TOOLS.md](docs/reference/TOOLS.md) for full parameter and return-shape documentation.
+- **Discovery** — `list_accounts`, `list_mailboxes`, `list_rules`, `list_templates`: enumerate what's configured (no external cache — call per account).
+- **Read** — `search_messages`, `get_messages`, `get_thread`, `get_template`, `render_template`: read messages/threads and render templates.
+- **Message actions** — `update_message` (read/flag/move in one pass), `delete_messages` (→ Trash), `save_attachments` (to disk, byte-capped).
+- **Drafts** — `create_draft` (new / reply / forward, optionally `send_now`), `update_draft`, `delete_draft`.
+- **Mailbox CRUD** — `create_mailbox`, `update_mailbox` (rename or move), `delete_mailbox`.
+- **Rules** — `create_rule`, `update_rule`, `delete_rule`.
+- **Templates (write)** — `save_template`, `delete_template`.
+
+Destructive operations (`delete_*`, `create_rule` with move/forward/delete actions, `create_draft` with `send_now=true`) prompt for confirmation via MCP elicitation. See [docs/reference/TOOLS.md](docs/reference/TOOLS.md) for full parameters and return shapes.
 
 ## Prerequisites
 
@@ -37,18 +40,19 @@ uv sync --dev
 
 ## Configuration
 
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`). `uv sync` installs a console script at `.venv/bin/apple-mail-mcp`; point Claude Desktop at its **absolute path** — it's the most reliable form under Claude Desktop's restricted spawn environment (no reliance on `uv` being on `PATH`):
 
 ```json
 {
   "mcpServers": {
     "apple-mail": {
-      "command": "uv",
-      "args": ["--directory", "/path/to/apple-mail-mcp", "run", "python", "-m", "apple_mail_mcp.server"]
+      "command": "/path/to/apple-mail-mcp/.venv/bin/apple-mail-mcp"
     }
   }
 }
 ```
+
+(Equivalent alternative if you prefer driving it through uv: `"command": "uv", "args": ["--directory", "/path/to/apple-mail-mcp", "run", "apple-mail-mcp"]`.)
 
 ### Optional: split read / write servers
 
@@ -58,12 +62,11 @@ Claude Desktop prompts per-tool for permission. If you want to **batch-approve t
 {
   "mcpServers": {
     "apple-mail-read": {
-      "command": "uv",
-      "args": ["--directory", "/path/to/apple-mail-mcp", "run", "python", "-m", "apple_mail_mcp.server", "--read-only"]
+      "command": "/path/to/apple-mail-mcp/.venv/bin/apple-mail-mcp",
+      "args": ["--read-only"]
     },
     "apple-mail-write": {
-      "command": "uv",
-      "args": ["--directory", "/path/to/apple-mail-mcp", "run", "python", "-m", "apple_mail_mcp.server"]
+      "command": "/path/to/apple-mail-mcp/.venv/bin/apple-mail-mcp"
     }
   }
 }
@@ -147,14 +150,22 @@ make test-integration  # Integration tests (requires Mail.app)
 ## Architecture
 
 ```
-server.py (FastMCP tools — thin orchestration)
-  -> mail_connector.py (AppleScript bridge — domain logic)
-     -> subprocess.run(["osascript", ...])
-        -> Apple Mail.app
+server.py (FastMCP tools — thin orchestration, validation, elicitation gates)
+  -> mail_connector.py (dispatch + domain logic)
+     -> AppleScript path:  subprocess.run(["osascript", ...]) -> Apple Mail.app   (universal baseline)
+     -> IMAP fast path:    imap_connector.py -> the account's IMAP server          (when hinted + Keychain creds)
 ```
 
-- **server.py** — MCP tool registration, input validation, response formatting
-- **mail_connector.py** — All AppleScript generation and execution
+**Dispatch model.** AppleScript is the always-available baseline. When a read/mutation call supplies
+an `account` (and, where relevant, `mailbox`) hint **and** the account has Keychain IMAP credentials,
+the connector takes a server-side IMAP fast path; on any IMAP failure it falls back to AppleScript, so
+you never lose functionality — you only gain speed. See
+[docs/reference/ARCHITECTURE.md](docs/reference/ARCHITECTURE.md) for the full dispatch model, the
+dual-emit message-ID scheme, the drafts lifecycle, and the IMAP thread tiers.
+
+- **server.py** — MCP tool registration, input validation, confirmation (elicitation) gates, response formatting
+- **mail_connector.py** — AppleScript generation/execution + IMAP-fast-path dispatch
+- **imap_connector.py** — IMAP client + connection pool (search, fetch, bulk-mutation fast paths)
 - **security.py** — Input sanitization, audit logging, confirmation flows
 - **utils.py** — Pure functions: escaping, parsing, validation
 - **exceptions.py** — Typed exception hierarchy
@@ -162,11 +173,16 @@ server.py (FastMCP tools — thin orchestration)
 ## Security
 
 - Local execution only (no cloud processing)
-- Uses existing Mail.app authentication (no credential storage)
-- All inputs sanitized and AppleScript-escaped
-- Destructive operations require confirmation
-- Operation audit logging
-- See [SECURITY.md](SECURITY.md) for policy and [docs/SECURITY.md](docs/SECURITY.md) for detailed analysis
+- Uses existing Mail.app authentication; IMAP app-passwords (opt-in) live in the macOS Keychain, never in the repo or config
+- All inputs sanitized and AppleScript-escaped (defense against AppleScript injection)
+- Destructive operations require user confirmation via MCP elicitation; rate limits + audit logging on top
+- `save_attachments` is byte-capped (per-attachment + aggregate) against disk-fill DoS
+
+Docs:
+- [SECURITY.md](SECURITY.md) — vulnerability-reporting policy
+- [docs/SECURITY.md](docs/SECURITY.md) — user-facing security posture & privacy
+- [docs/guides/THREAT_MODEL.md](docs/guides/THREAT_MODEL.md) — STRIDE trust-boundary analysis
+- [docs/guides/SECURITY_CHECKLIST.md](docs/guides/SECURITY_CHECKLIST.md) — per-feature contributor checklist
 
 ## Contributing
 
