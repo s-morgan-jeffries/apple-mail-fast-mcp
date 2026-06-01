@@ -1130,6 +1130,94 @@ class TestDraftsLifecycleIntegration:
             except Exception:
                 pass
 
+    def test_update_message_flag_via_applescript_matches_rfc_id(
+        self,
+        connector: AppleMailConnector,
+        test_account: str,
+    ) -> None:
+        """#291: update_message's AppleScript pass must match an RFC 5322
+        Message-ID, not only Mail's numeric `id`. `flag_color` can't go
+        through IMAP, so it always falls to the AppleScript pass; passing
+        the bracketless RFC id that read tools emit used to match nothing
+        and silently return 0. This forces the AppleScript path, APPENDs a
+        message with a known Message-ID, then flags it BY that RFC id and
+        asserts the patch counted 1 (pre-#291 this returned 0). Unit tests
+        only assert the generated script string and cannot catch this.
+        """
+        import time as _time
+        import uuid as _uuid
+        from datetime import datetime, timezone
+        from email.utils import format_datetime
+
+        from imapclient import IMAPClient
+
+        from apple_mail_mcp.keychain import get_imap_password
+
+        suffix = _uuid.uuid4().hex[:8]
+        src = f"ZZZ-AMM-RFC-FLAG-{suffix}"
+        msg_id_local = f"{_uuid.uuid4().hex}@apple-mail-mcp-test.invalid"
+        bracketed = f"<{msg_id_local}>"
+
+        host, port, email = connector._resolve_imap_config(test_account)
+        pw = get_imap_password(test_account, email)
+
+        assert connector.create_mailbox(account=test_account, name=src)
+        try:
+            now = format_datetime(datetime.now(tz=timezone.utc))
+            raw = (
+                f"From: sender@apple-mail-mcp-test.invalid\r\n"
+                f"To: rcpt@apple-mail-mcp-test.invalid\r\n"
+                f"Subject: AMM #291 rfc-id flag test\r\n"
+                f"Date: {now}\r\n"
+                f"Message-ID: {bracketed}\r\n"
+                f"\r\n"
+                f"body\r\n"
+            ).encode()
+
+            append_client = IMAPClient(host, port=port, ssl=True, timeout=30)
+            append_client.login(email, pw)
+            try:
+                append_client.append(src, raw, flags=[])
+            finally:
+                append_client.logout()
+
+            # Force the AppleScript pass (flag_color can't use IMAP anyway).
+            connector._imap_failure_until[test_account] = (
+                _time.monotonic() + 60
+            )
+
+            # Mail.app's IMAP sync may lag the APPEND. Poll up to ~30s for
+            # the message to surface before we flag it by RFC id.
+            for _ in range(10):
+                rows = connector.search_messages(
+                    account=test_account, mailbox=src, limit=10,
+                )
+                if any(r.get("rfc_message_id") == msg_id_local for r in rows):
+                    break
+                _time.sleep(3)
+            else:
+                raise AssertionError(
+                    "Mail.app never surfaced the APPENDed message within 30s"
+                )
+
+            updated = connector.update_message(
+                [msg_id_local],
+                flag_color="orange",
+                account=test_account,
+                source_mailbox=src,
+            )
+            assert updated == 1, (
+                "AppleScript pass failed to match the RFC Message-ID "
+                "(pre-#291 this silently returned 0)"
+            )
+        finally:
+            try:
+                connector.delete_mailbox(
+                    account=test_account, name=src, delete_messages=True
+                )
+            except Exception:
+                pass
+
     def test_update_mailbox_renames_in_place(
         self,
         connector: AppleMailConnector,

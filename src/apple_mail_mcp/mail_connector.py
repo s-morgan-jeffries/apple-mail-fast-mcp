@@ -625,8 +625,19 @@ def _bulk_repeat_block(
             as `whose (id is X or message id is X)` makes Mail's query
             compiler fail the whole filter when X is a non-numeric RFC
             id (the `id is X` integer comparison poisons the `or`),
-            matching nothing. The counter increment is appended
-            automatically.
+            matching nothing. The `message id` arm itself queries BOTH
+            the bare and `<bracketed>` forms (`message id is A or message
+            id is B` — safe, both are string comparisons), mirroring
+            `find_message_by_message_id`: IMAP-backed accounts store the
+            id bare, but other paths may store it bracketed per RFC 5322
+            (#232). The counter increment is appended automatically.
+
+            Performance: on the cross-scan path (no `source_mailbox`) the
+            `message id` fallback is NOT indexed (~20s/mailbox on a real
+            account; see APPLESCRIPT_GOTCHAS.md) and fires once per mailbox
+            for any RFC id, since the numeric `id` arm always misses for
+            those. Callers holding an RFC id should pass `account` +
+            `source_mailbox` to take the narrow single-mailbox path.
         counter_var: Name of the AppleScript counter variable (e.g.
             "updateCount", "moveCount") that gets incremented per success.
 
@@ -661,7 +672,9 @@ def _bulk_repeat_block(
             f"                end try\n"
             f"                if not matched then\n"
             f"                    try\n"
-            f"                        set msg to first message of sourceMb whose message id is mid\n"
+            f"                        set midBare to mid\n"
+            f'                        if midBare starts with "<" and midBare ends with ">" then set midBare to text 2 thru -2 of midBare\n'
+            f'                        set msg to first message of sourceMb whose (message id is midBare or message id is ("<" & midBare & ">"))\n'
             f"                        set matched to true\n"
             f"                    end try\n"
             f"                end if\n"
@@ -687,7 +700,9 @@ def _bulk_repeat_block(
         f"                        end try\n"
         f"                        if not matched then\n"
         f"                            try\n"
-        f"                                set msg to first message of mb whose message id is mid\n"
+        f"                                set midBare to mid\n"
+        f'                                if midBare starts with "<" and midBare ends with ">" then set midBare to text 2 thru -2 of midBare\n'
+        f'                                set msg to first message of mb whose (message id is midBare or message id is ("<" & midBare & ">"))\n'
         f"                                set matched to true\n"
         f"                            end try\n"
         f"                        end if\n"

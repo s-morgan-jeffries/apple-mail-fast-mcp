@@ -4646,7 +4646,12 @@ class TestUpdateMessageMatchesRfcMessageId:
         # in the single existing AppleScript pass — no separate resolver
         # round-trip.
         script = mock_run.call_args[0][0]
-        assert "whose message id is mid" in script
+        # The pass tries the RFC message id; the message-id arm queries
+        # both the bare and <bracketed> forms (mirrors #232 /
+        # find_message_by_message_id), so other providers' bracketed
+        # storage still matches.
+        assert "message id is midBare" in script
+        assert 'message id is ("<" & midBare & ">")' in script
         assert f'"{self.RFC_ID}"' in script
         mock_find.assert_not_called()
         mock_run.assert_called_once()
