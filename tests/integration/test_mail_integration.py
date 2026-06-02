@@ -582,6 +582,208 @@ class TestDraftsLifecycleIntegration:
         finally:
             connector.delete_draft(draft_id)
 
+    def _append_via_imap(
+        self,
+        connector: AppleMailConnector,
+        test_account: str,
+        mailbox: str,
+        raw: bytes,
+    ) -> None:
+        """APPEND a raw RFC 822 message to ``mailbox`` over IMAP (helper for
+        the #293 reply/forward clean-path tests). Caller creates the
+        mailbox and handles cleanup."""
+        from imapclient import IMAPClient
+
+        from apple_mail_mcp.keychain import get_imap_password
+
+        host, port, email = connector._resolve_imap_config(test_account)
+        pw = get_imap_password(test_account, email)
+        client = IMAPClient(host, port=port, ssl=True, timeout=30)
+        client.login(email, pw)
+        try:
+            client.append(mailbox, raw, flags=[])
+        finally:
+            client.logout()
+
+    def _skip_without_keychain(
+        self, connector: AppleMailConnector, test_account: str
+    ) -> None:
+        from apple_mail_mcp.exceptions import (
+            MailKeychainAccessDeniedError,
+            MailKeychainEntryNotFoundError,
+        )
+        from apple_mail_mcp.keychain import get_imap_password
+
+        try:
+            _, _, email = connector._resolve_imap_config(test_account)
+            get_imap_password(test_account, email)
+        except (
+            MailKeychainEntryNotFoundError,
+            MailKeychainAccessDeniedError,
+        ):
+            pytest.skip(
+                f"No Keychain entry for {test_account!r} — IMAP path can't "
+                f"be exercised. Run `apple-mail-mcp setup-imap` first."
+            )
+
+    def test_fetch_raw_message_happy_and_folder_miss(
+        self, connector: AppleMailConnector, test_account: str
+    ) -> None:
+        """#293: ImapConnector.fetch_raw_message returns a message's raw RFC
+        822 bytes when found in the given folder, and raises
+        MailMessageNotFoundError when the folder doesn't contain it (so the
+        reply/forward orchestrator can fall back to AppleScript). Exercises
+        the real IMAP SEARCH/FETCH boundary the unit tests mock out.
+        """
+        import uuid as _uuid
+        from datetime import datetime, timezone
+        from email.utils import format_datetime
+
+        from apple_mail_mcp.exceptions import MailMessageNotFoundError
+        from apple_mail_mcp.imap_connector import ImapConnector
+        from apple_mail_mcp.keychain import get_imap_password
+
+        self._skip_without_keychain(connector, test_account)
+
+        suffix = _uuid.uuid4().hex[:8]
+        src = f"ZZZ-AMM-FETCHRAW-{suffix}"
+        msg_id_local = f"{_uuid.uuid4().hex}@apple-mail-mcp-test.invalid"
+        host, port, email = connector._resolve_imap_config(test_account)
+        pw = get_imap_password(test_account, email)
+
+        assert connector.create_mailbox(account=test_account, name=src)
+        try:
+            now = format_datetime(datetime.now(tz=timezone.utc))
+            raw = (
+                f"From: sender@apple-mail-mcp-test.invalid\r\n"
+                f"To: rcpt@apple-mail-mcp-test.invalid\r\n"
+                f"Subject: AMM #293 fetch-raw test\r\n"
+                f"Date: {now}\r\n"
+                f"Message-ID: <{msg_id_local}>\r\n"
+                f"\r\n"
+                f"raw fetch body\r\n"
+            ).encode()
+            self._append_via_imap(connector, test_account, src, raw)
+
+            imap = ImapConnector(host, port, email, pw)
+
+            # Happy path: present in src.
+            fetched = imap.fetch_raw_message(msg_id_local, src)
+            assert b"AMM #293 fetch-raw test" in fetched
+            assert msg_id_local.encode() in fetched
+
+            # Folder-miss: the same id is not in INBOX -> raises so the
+            # orchestrator can fall back to AppleScript.
+            with pytest.raises(MailMessageNotFoundError):
+                imap.fetch_raw_message(msg_id_local, "INBOX")
+        finally:
+            try:
+                connector.delete_mailbox(
+                    account=test_account, name=src, delete_messages=True
+                )
+            except Exception:
+                pass
+
+    def test_reply_via_imap_append_is_clean_and_threaded(
+        self, connector: AppleMailConnector, test_account: str
+    ) -> None:
+        """#293 / #292: a reply save-as-draft with a seed_mailbox goes
+        through the clean IMAP-APPEND path (no iOS cite-blockquote): it
+        fetches the original over IMAP, rebuilds a text/plain reply with a
+        quoted original + threading headers, and APPENDs to Drafts. The
+        IMAP path returns a bare RFC Message-ID as draft_id (the AppleScript
+        fallback would return a numeric id), so that shape proves the clean
+        path fired. Verifies In-Reply-To, Re: subject, and the quoted body.
+        """
+        import time as _time
+        import uuid as _uuid
+        from datetime import datetime, timezone
+        from email.utils import format_datetime
+
+        self._skip_without_keychain(connector, test_account)
+
+        suffix = _uuid.uuid4().hex[:8]
+        src = f"ZZZ-AMM-REPLYSRC-{suffix}"
+        orig_id = f"{_uuid.uuid4().hex}@apple-mail-mcp-test.invalid"
+
+        assert connector.create_mailbox(account=test_account, name=src)
+        draft_id = ""
+        try:
+            now = format_datetime(datetime.now(tz=timezone.utc))
+            raw = (
+                f"From: Ada Original <ada@apple-mail-mcp-test.invalid>\r\n"
+                f"To: rcpt@apple-mail-mcp-test.invalid\r\n"
+                f"Subject: AMM 293 original subject\r\n"
+                f"Date: {now}\r\n"
+                f"Message-ID: <{orig_id}>\r\n"
+                f"\r\n"
+                f"This is the original message body.\r\n"
+            ).encode()
+            self._append_via_imap(connector, test_account, src, raw)
+
+            result = connector.create_draft(
+                seed="reply",
+                seed_id=orig_id,
+                seed_mailbox=src,
+                from_account=test_account,
+                body="ZZZ-AMM-293-REPLY-BODY",
+            )
+            draft_id = result["draft_id"]
+
+            # Clean IMAP-APPEND path returns a BARE RFC Message-ID; the
+            # AppleScript fallback would have returned a numeric id.
+            assert "@" in draft_id and "<" not in draft_id, (
+                f"expected IMAP clean-path draft_id (bare Message-ID); got "
+                f"{draft_id!r} — AppleScript fallback likely fired"
+            )
+
+            # Mail.app may lag picking up the APPENDed draft; poll briefly.
+            state = None
+            for _ in range(10):
+                try:
+                    state = connector.get_draft_state(draft_id)
+                    break
+                except Exception:
+                    _time.sleep(3)
+            assert state is not None, "draft never became readable within 30s"
+
+            assert state["in_reply_to"], "reply must carry In-Reply-To"
+            assert orig_id in state["in_reply_to"], (
+                f"In-Reply-To should reference the original; got "
+                f"{state['in_reply_to']!r}"
+            )
+            assert state["subject"].startswith("Re:"), (
+                f"expected Re: prefix; got {state['subject']!r}"
+            )
+            # Clean reply rebuild: user's new text on top, an attribution
+            # line, then the original carried as a quoted reply (NOT a
+            # cite-blockquote). The literal "> " markers are normalised away
+            # by Mail.app's plain-text `content` read-back; the pure builder
+            # unit tests assert the "> " quoting directly. Here we verify the
+            # round-trip-stable structure.
+            body = state["body"]
+            assert "ZZZ-AMM-293-REPLY-BODY" in body
+            assert "wrote:" in body, "reply should carry an attribution line"
+            assert "This is the original message body." in body, (
+                f"original must be quoted into the reply; body was {body!r}"
+            )
+            assert (
+                body.index("ZZZ-AMM-293-REPLY-BODY")
+                < body.index("This is the original message body.")
+            ), "user's new text should sit above the quoted original"
+        finally:
+            if draft_id:
+                try:
+                    connector.delete_draft(draft_id)
+                except Exception:
+                    pass
+            try:
+                connector.delete_mailbox(
+                    account=test_account, name=src, delete_messages=True
+                )
+            except Exception:
+                pass
+
     def test_attachment_extraction_round_trip(
         self,
         connector: AppleMailConnector,
