@@ -263,3 +263,107 @@ class TestToolInvocation:
         assert result.structured_content["success"] is True
         assert "error" not in result.structured_content
         getattr(mock_mail, connector_method).assert_called_once()
+
+
+class TestStringifiedParamCoercion:
+    """#309: some MCP hosts (e.g. Cowork) serialize every tool argument as a
+    string, so array/dict params arrive as JSON strings. The tool layer
+    coerces them back before validation — these calls must succeed (pre-fix
+    they failed with a Pydantic ``list_type`` error) and the connector must
+    receive the parsed list/dict.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _accept_elicitation(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def _accept(*_a: object, **_k: object) -> None:
+            return None
+
+        monkeypatch.setattr(
+            "apple_mail_mcp.server._elicit_confirmation", _accept
+        )
+
+    @staticmethod
+    def _call_values(call_args: Any) -> list[Any]:
+        args, kwargs = call_args
+        return list(args) + list(kwargs.values())
+
+    async def test_delete_messages_stringified_message_ids(
+        self, mock_mail: MagicMock
+    ) -> None:
+        mock_mail.delete_messages.return_value = 1
+        result = await server.mcp.call_tool(
+            "delete_messages", {"message_ids": '["msg-1", "msg-2"]'}
+        )
+        assert result.structured_content["success"] is True
+        mock_mail.delete_messages.assert_called_once()
+        assert ["msg-1", "msg-2"] in self._call_values(
+            mock_mail.delete_messages.call_args
+        )
+
+    async def test_create_draft_stringified_recipients(
+        self, mock_mail: MagicMock
+    ) -> None:
+        # The exact reported case (#309): to/cc arrive as JSON strings.
+        mock_mail.create_draft.return_value = {
+            "draft_id": "d1", "sent_message_id": ""
+        }
+        result = await server.mcp.call_tool(
+            "create_draft",
+            {"to": '["a@example.com"]', "cc": '["c@d.com"]',
+             "subject": "s", "body": "b"},
+        )
+        assert result.structured_content["success"] is True
+        flat = self._call_values(mock_mail.create_draft.call_args)
+        assert ["a@example.com"] in flat
+        assert ["c@d.com"] in flat
+
+    async def test_save_attachments_stringified_int_indices(
+        self, mock_mail: MagicMock, tmp_path: Path
+    ) -> None:
+        mock_mail.save_attachments.return_value = {"saved": 0, "rejected": []}
+        result = await server.mcp.call_tool(
+            "save_attachments",
+            {"message_id": "m1", "save_directory": str(tmp_path),
+             "attachment_indices": "[0, 2]"},
+        )
+        assert result.structured_content["success"] is True
+        assert [0, 2] in self._call_values(
+            mock_mail.save_attachments.call_args
+        )
+
+    async def test_create_rule_stringified_conditions_and_actions(
+        self, mock_mail: MagicMock
+    ) -> None:
+        mock_mail.create_rule.return_value = 1
+        result = await server.mcp.call_tool(
+            "create_rule",
+            {"name": "R",
+             "conditions":
+                 '[{"field": "from", "operator": "contains", "value": "x"}]',
+             "actions": '{"mark_as_read": true}'},
+        )
+        assert result.structured_content["success"] is True
+        flat = self._call_values(mock_mail.create_rule.call_args)
+        assert [
+            {"field": "from", "operator": "contains", "value": "x"}
+        ] in flat
+        assert {"mark_as_read": True} in flat
+
+    async def test_real_list_still_works(self, mock_mail: MagicMock) -> None:
+        # Well-behaved clients send real lists — coercion is a no-op.
+        mock_mail.delete_messages.return_value = 1
+        result = await server.mcp.call_tool(
+            "delete_messages", {"message_ids": ["msg-1"]}
+        )
+        assert result.structured_content["success"] is True
+        assert ["msg-1"] in self._call_values(
+            mock_mail.delete_messages.call_args
+        )
+
+    async def test_advertised_schema_stays_array(self) -> None:
+        # BeforeValidator coercion must not change the published schema, so
+        # well-behaved clients still see `array`.
+        tool = await server.mcp.get_tool("delete_messages")
+        assert (
+            tool.parameters["properties"]["message_ids"]["type"] == "array"
+        )

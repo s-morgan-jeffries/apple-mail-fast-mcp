@@ -444,6 +444,47 @@ def walk_thread_graph(
     return accepted
 
 
+def coerce_json_list(v: Any) -> Any:
+    """Coerce a stringified array back to a list (#309).
+
+    Some MCP hosts (e.g. Cowork) serialize every tool argument as a string,
+    so a ``list[...]`` param arrives as ``'["a@b.com"]'`` and Pydantic
+    rejects it with a ``list_type`` error. Used as a Pydantic
+    ``BeforeValidator`` on list-typed tool params: a JSON-array string
+    becomes the list, a bare non-JSON string becomes a single-element list,
+    an empty string becomes ``[]``. Real lists and ``None`` pass through
+    untouched, so well-behaved clients are unaffected. Element types are
+    still validated by Pydantic afterwards.
+    """
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return []
+        try:
+            parsed = json.loads(s)
+        except (ValueError, TypeError):
+            return [v]
+        return parsed if isinstance(parsed, list) else [v]
+    return v
+
+
+def coerce_json_dict(v: Any) -> Any:
+    """Coerce a stringified object back to a dict (#309).
+
+    Companion to :func:`coerce_json_list` for ``dict``-typed tool params
+    (e.g. rule ``actions``, template ``vars``). A JSON-object string becomes
+    the dict; anything else (real dict, ``None``, non-object JSON, garbage)
+    passes through to be validated/rejected normally.
+    """
+    if isinstance(v, str):
+        try:
+            parsed = json.loads(v)
+        except (ValueError, TypeError):
+            return v
+        return parsed if isinstance(parsed, dict) else v
+    return v
+
+
 def is_apple_hosted_address(address: str) -> bool:
     """True if ``address`` is on an Apple-hosted iCloud Mail domain.
 

@@ -9,10 +9,11 @@ import sys
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, TypeVar, cast
+from typing import Annotated, Any, TypeVar, cast
 
 from fastmcp import Context, FastMCP
 from fastmcp.server.elicitation import AcceptedElicitation
+from pydantic import BeforeValidator
 
 from .drafts import DraftStateStore, SeedRecord
 from .exceptions import (
@@ -44,6 +45,7 @@ from .security import (
     validate_send_operation,
 )
 from .templates import Template, TemplateStore
+from .utils import coerce_json_dict, coerce_json_list
 
 # Configure logging
 logging.basicConfig(
@@ -70,6 +72,17 @@ _READ_ONLY = _pre_parse_read_only()
 
 # Create FastMCP server
 mcp = FastMCP("apple-mail")
+
+# Param-coercion aliases for MCP hosts that stringify array/dict arguments
+# (e.g. Cowork — #309). BeforeValidator runs ahead of type validation, so a
+# JSON-encoded list/dict string is parsed back before Pydantic checks it. The
+# advertised JSON schema stays array/object, so well-behaved clients that send
+# real lists/dicts are unaffected (coercion is a no-op for non-strings).
+StrList = Annotated[list[str], BeforeValidator(coerce_json_list)]
+IntList = Annotated[list[int], BeforeValidator(coerce_json_list)]
+DictList = Annotated[list[dict[str, Any]], BeforeValidator(coerce_json_list)]
+StrDict = Annotated[dict[str, str], BeforeValidator(coerce_json_dict)]
+AnyDict = Annotated[dict[str, Any], BeforeValidator(coerce_json_dict)]
 
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -411,8 +424,8 @@ async def delete_rule(
 )
 async def create_rule(
     name: str,
-    conditions: list[dict[str, Any]],
-    actions: dict[str, Any],
+    conditions: DictList,
+    actions: AnyDict,
     match_logic: str = "all",
     enabled: bool = True,
     ctx: Context | None = None,
@@ -522,8 +535,8 @@ async def update_rule(
     rule_index: int,
     name: str | None = None,
     enabled: bool | None = None,
-    conditions: list[dict[str, Any]] | None = None,
-    actions: dict[str, Any] | None = None,
+    conditions: DictList | None = None,
+    actions: AnyDict | None = None,
     match_logic: str | None = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
@@ -835,7 +848,7 @@ def search_messages(
     received_within_hours: int | None = None,
     has_attachment: bool | None = None,
     limit: int = 50,
-    source: list[str] | None = None,
+    source: StrList | None = None,
     include_attachments: bool = False,
     body_contains: str | None = None,
     text_contains: str | None = None,
@@ -1072,7 +1085,7 @@ def search_messages(
     {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
 )
 def get_messages(
-    message_ids: list[str],
+    message_ids: StrList,
     include_content: bool = True,
     headers_only: bool = False,
     account: str | None = None,
@@ -1163,7 +1176,7 @@ def get_messages(
     mutating=True,
 )
 def update_message(
-    message_ids: list[str],
+    message_ids: StrList,
     read_status: bool | None = None,
     flagged: bool | None = None,
     flag_color: str | None = None,
@@ -1399,7 +1412,7 @@ def get_thread(message_id: str) -> dict[str, Any]:
 def save_attachments(
     message_id: str,
     save_directory: str,
-    attachment_indices: list[int] | None = None,
+    attachment_indices: IntList | None = None,
 ) -> dict[str, Any]:
     """
     Save attachments from a message to a directory.
@@ -1875,7 +1888,7 @@ async def delete_mailbox(
     mutating=True,
 )
 async def delete_messages(
-    message_ids: list[str],
+    message_ids: StrList,
     permanent: bool = False,
     account: str | None = None,
     source_mailbox: str | None = None,
@@ -2200,7 +2213,7 @@ async def delete_template(
 def render_template(
     name: str,
     message_id: str | None = None,
-    vars: dict[str, str] | None = None,
+    vars: StrDict | None = None,
 ) -> dict[str, Any]:
     """Render a template into ready-to-send subject and body text.
 
@@ -2582,15 +2595,15 @@ async def create_draft(
     reply_to: str | None = None,
     forward_of: str | None = None,
     seed_mailbox: str | None = None,
-    to: list[str] | None = None,
-    cc: list[str] | None = None,
-    bcc: list[str] | None = None,
+    to: StrList | None = None,
+    cc: StrList | None = None,
+    bcc: StrList | None = None,
     subject: str | None = None,
     body: str = "",
-    attachment_paths: list[str] | None = None,
+    attachment_paths: StrList | None = None,
     reply_all: bool = False,
     template_name: str | None = None,
-    template_vars: dict[str, str] | None = None,
+    template_vars: StrDict | None = None,
     from_account: str | None = None,
     send_now: bool = False,
     ctx: Context | None = None,
@@ -2764,14 +2777,14 @@ async def create_draft(
 )
 async def update_draft(
     draft_id: str,
-    to: list[str] | None = None,
-    cc: list[str] | None = None,
-    bcc: list[str] | None = None,
+    to: StrList | None = None,
+    cc: StrList | None = None,
+    bcc: StrList | None = None,
     subject: str | None = None,
     body: str | None = None,
-    attachment_paths: list[str] | None = None,
+    attachment_paths: StrList | None = None,
     template_name: str | None = None,
-    template_vars: dict[str, str] | None = None,
+    template_vars: StrDict | None = None,
     from_account: str | None = None,
     send_now: bool = False,
     ctx: Context | None = None,

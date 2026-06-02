@@ -7,6 +7,8 @@ import pytest
 from apple_mail_mcp.exceptions import MailAppleScriptError
 from apple_mail_mcp.utils import (
     applescript_account_clause,
+    coerce_json_dict,
+    coerce_json_list,
     escape_applescript_string,
     format_applescript_list,
     get_flag_index,
@@ -457,5 +459,54 @@ class TestIsIcloudImapHost:
 
     def test_substring_spoof_not_matched(self) -> None:
         assert is_icloud_imap_host("mail.me.com.evil.com") is False
+
+
+class TestCoerceJsonList:
+    """#309: coerce stringified arrays (MCP hosts that serialize params)."""
+
+    def test_json_array_string_becomes_list(self) -> None:
+        assert coerce_json_list('["a@b.com", "c@d.com"]') == ["a@b.com", "c@d.com"]
+
+    def test_json_int_array_string_becomes_list(self) -> None:
+        assert coerce_json_list("[0, 2]") == [0, 2]
+
+    def test_bare_string_becomes_single_element(self) -> None:
+        assert coerce_json_list("john@example.com") == ["john@example.com"]
+
+    def test_empty_string_becomes_empty_list(self) -> None:
+        assert coerce_json_list("") == []
+        assert coerce_json_list("   ") == []
+
+    def test_non_list_json_string_wraps_as_single_element(self) -> None:
+        # A JSON scalar string isn't a list → treat the original as one elem.
+        assert coerce_json_list("5") == ["5"]
+
+    def test_real_list_passes_through(self) -> None:
+        v = ["x@y.com"]
+        assert coerce_json_list(v) is v
+
+    def test_none_passes_through(self) -> None:
+        assert coerce_json_list(None) is None
+
+
+class TestCoerceJsonDict:
+    """#309: coerce stringified objects."""
+
+    def test_json_object_string_becomes_dict(self) -> None:
+        assert coerce_json_dict('{"name": "Bob"}') == {"name": "Bob"}
+
+    def test_real_dict_passes_through(self) -> None:
+        v = {"k": "v"}
+        assert coerce_json_dict(v) is v
+
+    def test_none_passes_through(self) -> None:
+        assert coerce_json_dict(None) is None
+
+    def test_non_object_json_passes_through_to_fail_validation(self) -> None:
+        # A JSON array/scalar isn't a dict → leave as-is for Pydantic to reject.
+        assert coerce_json_dict("[1, 2]") == "[1, 2]"
+
+    def test_garbage_string_passes_through(self) -> None:
+        assert coerce_json_dict("not json") == "not json"
         assert get_flag_index("Red") == 0
         assert get_flag_index("oRaNgE") == 1
