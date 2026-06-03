@@ -8,6 +8,7 @@ import pytest
 from imapclient.exceptions import IMAPClientError
 from imapclient.response_types import Address, Envelope
 
+from apple_mail_mcp.exceptions import MailMessageNotFoundError
 from apple_mail_mcp.imap_connector import (
     CONNECT_TIMEOUT_S,
     OPERATION_TIMEOUT_S,
@@ -3240,3 +3241,58 @@ class TestAppendDraft:
         conn.append_draft(b"raw-bytes")
 
         assert mock_client.append.call_args[0][0] == "Drafts"
+
+
+class TestEnvelopeVanishRobustness:
+    """#314: a message can be expunged/moved between SEARCH and FETCH (a
+    concurrent change), so the server's FETCH response omits ENVELOPE for
+    that UID. search_messages must skip it (return the rest), and get_message
+    must report not-found — neither may crash with KeyError: ENVELOPE."""
+
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_search_skips_uid_with_missing_envelope(
+        self, mock_cls: MagicMock
+    ) -> None:
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.search.return_value = [1, 2, 3]
+        fetched = _fake_fetch_result([1, 3])
+        # uid 2 matched SEARCH but its FETCH entry lacks ENVELOPE (vanished).
+        fetched[2] = {b"FLAGS": ()}
+        mock_client.fetch.return_value = fetched
+
+        conn = ImapConnector("imap.example.com", 993, "u@e.com", "pw")
+        result = conn.search_messages()
+
+        assert [m["id"] for m in result] == [
+            "msg-1@example.com", "msg-3@example.com"
+        ]
+
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_search_skips_uid_absent_from_fetch(
+        self, mock_cls: MagicMock
+    ) -> None:
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.search.return_value = [1, 2, 3]
+        # uid 2 is entirely absent from the FETCH dict.
+        mock_client.fetch.return_value = _fake_fetch_result([1, 3])
+
+        conn = ImapConnector("imap.example.com", 993, "u@e.com", "pw")
+        result = conn.search_messages()
+
+        assert len(result) == 2
+
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_get_message_vanished_raises_not_found(
+        self, mock_cls: MagicMock
+    ) -> None:
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.search.return_value = [5]
+        # Matched by Message-ID search but the entry lacks ENVELOPE.
+        mock_client.fetch.return_value = {5: {b"FLAGS": ()}}
+
+        conn = ImapConnector("imap.example.com", 993, "u@e.com", "pw")
+        with pytest.raises(MailMessageNotFoundError):
+            conn.get_message("<gone@example.com>")
