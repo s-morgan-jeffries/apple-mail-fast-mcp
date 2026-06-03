@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-06-03
+
+Patch release. The theme is **IMAP-path correctness and interop robustness**: several contributor-relevant crashes and login edge cases on the IMAP fast path are fixed (concurrent-mutation FETCH, iCloud login resolution, split connect/operation timeouts), tool parameters arriving as stringified JSON from clients like Cowork are now coerced, and reply/forward drafts no longer render with an iOS cite-blockquote wrapper. Alongside the fixes: a new warn-only prompt-injection detector on read responses, an automated doc/artifact drift gate wired into CI and the release flow, and test-suite hardening (Hypothesis property tests on the escape/sanitize boundary, plus a fix for the unit suite leaking to real `osascript`).
+
+### Added
+
+**Warn-only prompt-injection detection on read responses (#225):** `get_message` (and other read paths) now scan returned message content for prompt-injection patterns and attach a non-blocking warning when matches are found. This is detection-only — content is never altered or withheld — giving clients a signal without changing behavior. First slice of the broader #225 planning issue.
+
+### Changed
+
+**Automated doc/artifact drift gate + release refresh hooks (#288):** A new `scripts/check_docs.sh` gate fails CI on tool-set coverage gaps, references to removed names, broken cross-references, and eval-description drift. The release workflow gains a mandatory artifact-refresh phase so derived snapshots (eval descriptions, benchmark baseline, blind-eval scores) can't silently rot between releases.
+
+**Bulk-mutation benchmarks captured via a self-seeding source (#287):** The previously-skipped IMAP bulk-mutation benchmarks now run against a self-seeding source account, closing the perf-coverage gap that needed a 50+-message mailbox.
+
+### Fixed
+
+**IMAP `search_messages` / `get_message` survive a message vanishing mid-FETCH (#314):** Concurrent mailbox mutation could leave a FETCH response missing its `ENVELOPE`, raising `KeyError: ENVELOPE`. Both paths now tolerate a message disappearing between the search and the fetch.
+
+**Tool parameters coerced from stringified arrays/dicts (#309):** `create_draft`'s `to` / `cc` / `bcc` (and other list/dict params) failed when a client such as Cowork serialized them as JSON strings instead of arrays. Parameters are now coerced before use, restoring interop.
+
+**iCloud IMAP login resolves to the `@icloud.com` address (#299):** `_resolve_imap_config` could pick a third-party Apple ID as the IMAP login, producing `AUTHENTICATIONFAILED` against iCloud (the inverse of #201). Login now resolves to the `@icloud.com` address.
+
+**Split IMAP connect vs operation timeouts (#249):** A single timeout covered both connect and operations; these are now split (3s connect, 30s operation) so a slow connect can't consume the operation budget and a slow operation isn't capped at the connect timeout.
+
+**Reply/forward drafts written via IMAP APPEND (#292, #245 follow-up):** Saving a reply/forward as a draft still rendered as an iOS cite-blockquote; these drafts are now written via IMAP APPEND, bypassing Mail.app's compose mangling (extending the #245 fix to the reply/forward paths).
+
+**`update_message` matches RFC 5322 Message-ID (#291):** Message lookup now matches the RFC 5322 `Message-ID` in addition to Mail's numeric id, so callers holding an RFC id can target a message directly.
+
+**`draft_id` interpolation hardened + RFC ids resolved in extract (#294):** Defense-in-depth escaping of `draft_id` and resolution of RFC Message-ID draft ids in the extract path, closing the gap tracked from the v0.9.0 release review.
+
+**Unit suite no longer leaks to real `osascript` (#298):** IMAP error-path unit tests were stalling ~30s each on a real socket timeout, pushing CI to ~5min; the suite is now fully isolated from real `osascript`, dropping unit-test time back to seconds.
+
+**`/merge-and-status` robustness (#253, #268):** The status catch-net is now resilient to transient empty results (#253), and milestone selection uses a version-aware sort instead of an alphabetic one that picked v0.10.0 over v0.9.0 (#268).
+
+### Security
+
+**`draft_id` defense-in-depth (#294):** See Fixed — the `draft_id` interpolation hardening also closes the latent injection surface tracked from the v0.9.0 release review, even though `_validate_draft_id`'s regex already made it injection-safe.
+
+### Tests
+
+**Hypothesis property tests on the escape/sanitize/validate boundary (#214):** Property-based tests now fuzz the `sanitize_input` → `escape_applescript_string` → validation boundary, exercising input shapes the example-based suite didn't cover.
+
+### Dependencies
+
+**Consolidated dependency bump + pyjwt security fix (#235):** A consolidated transitive-dependency bump that also clears the pyjwt PYSEC-2025-183 advisory now that the fastmcp/mcp range ships a fixed version.
+
 ## [0.9.0] - 2026-06-01
 
 Minor release. The theme is **hardening the destructive-operation surface and the IMAP fast path**: explicit user-confirmation gates now front the remaining unguarded deletes and rule mutations, `save_attachments` is bounded against disk-fill, a contributor-reported IMAP CRLF command-injection vector is closed, and a STRIDE threat model now documents the trust boundaries those defenses sit on. Alongside the security work: an opt-in read-only server mode, a new recency search filter, several IMAP correctness fixes (three of them contributor-authored), and a full documentation reconciliation to the current 23-tool surface.
