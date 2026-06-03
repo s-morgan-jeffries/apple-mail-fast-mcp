@@ -697,7 +697,14 @@ class ImapConnector:
 
             results: list[dict[str, Any]] = []
             for uid in uids:
-                entry = fetched[uid]
+                entry = fetched.get(uid)
+                # A message can vanish between SEARCH and FETCH (expunged or
+                # moved by a concurrent change — another client, a rule, or
+                # our own move/delete on this mailbox). The server then omits
+                # ENVELOPE for that UID. Skip it rather than crashing the
+                # whole search. (#314)
+                if entry is None or b"ENVELOPE" not in entry:
+                    continue
                 if has_attachment is not None:
                     has = _bodystructure_has_attachment(
                         entry.get(b"BODYSTRUCTURE")
@@ -707,7 +714,7 @@ class ImapConnector:
                     if has_attachment is False and has:
                         continue
                 row = _envelope_to_dict(
-                    entry[b"ENVELOPE"], tuple(entry[b"FLAGS"])
+                    entry[b"ENVELOPE"], tuple(entry.get(b"FLAGS", ()))
                 )
                 if include_attachments:
                     row["attachments"] = _bodystructure_extract_attachments(
@@ -790,10 +797,18 @@ class ImapConnector:
                 )
 
             fetched = client.fetch(uids[:1], fetch_keys)
-            entry = next(iter(fetched.values()))
+            entry = next(iter(fetched.values()), None)
+            # The message matched SEARCH but vanished before FETCH (expunged
+            # or moved by a concurrent change) — treat as not-found rather
+            # than crashing on the missing ENVELOPE. (#314)
+            if entry is None or b"ENVELOPE" not in entry:
+                raise MailMessageNotFoundError(
+                    f"Message-ID {message_id!r} vanished from mailbox "
+                    f"{mailbox!r} between SEARCH and FETCH."
+                )
 
             result = _envelope_to_dict(
-                entry[b"ENVELOPE"], tuple(entry[b"FLAGS"])
+                entry[b"ENVELOPE"], tuple(entry.get(b"FLAGS", ()))
             )
             if want_body:
                 body_bytes = entry.get(b"BODY[TEXT]") or b""
