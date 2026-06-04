@@ -1078,6 +1078,65 @@ class ImapConnector:
         with self._session() as client:
             client.rename_folder(old_name, new_name)
 
+
+    def _resolve_uids_batch(
+        self,
+        client: IMAPClient,
+        message_ids: list[str],
+    ) -> list[int]:
+        """Resolve RFC 5322 Message-IDs to UIDs in a single FETCH round-trip.
+
+        Instead of N individual SEARCH HEADER calls, fetch all UIDs in the
+        mailbox and their ENVELOPE data, then build a local mapping.
+        This reduces O(N) to O(1) round-trips. Ref: #316.
+        """
+        if not message_ids:
+            return []
+
+        # Normalize message IDs (strip brackets, lowercase)
+        normalized_ids = set()
+        for mid in message_ids:
+            stripped = mid.strip("<>").lower()
+            normalized_ids.add(stripped)
+            normalized_ids.add(f"<{stripped}>")
+
+        # Fetch all UIDs and their ENVELOPE data in one round-trip
+        all_uids = client.search("ALL")
+        if not all_uids:
+            return []
+
+        # Fetch ENVELOPE for all UIDs in batches to avoid memory issues
+        batch_size = 500
+        uid_to_message_id: dict[int, str] = {}
+
+        for i in range(0, len(all_uids), batch_size):
+            batch = all_uids[i:i + batch_size]
+            fetched = client.fetch(batch, ["ENVELOPE"])
+            for uid, data in fetched.items():
+                envelope = data.get(b"ENVELOPE")
+                if envelope and envelope.message_id:
+                    msg_id = envelope.message_id.decode().lower()
+                    uid_to_message_id[uid] = msg_id
+
+        # Build reverse mapping: message_id -> uid
+        message_id_to_uid: dict[str, int] = {}
+        for uid, msg_id in uid_to_message_id.items():
+            message_id_to_uid[msg_id] = uid
+
+        # Resolve requested message IDs
+        resolved_uids = []
+        for mid in message_ids:
+            stripped = mid.strip("<>").lower()
+            uid = message_id_to_uid.get(stripped)
+            if uid is not None:
+                resolved_uids.append(uid)
+            else:
+                uid = message_id_to_uid.get(f"<{stripped}>")
+                if uid is not None:
+                    resolved_uids.append(uid)
+
+        return resolved_uids
+
     def move_messages(
         self,
         message_ids: list[str],
@@ -1118,7 +1177,6 @@ class ImapConnector:
             IMAPClientError: SELECT / SEARCH / MOVE / COPY / STORE /
                 EXPUNGE failed at the protocol level.
         """
-        bracketed_ids = [_bracket_message_id(mid) for mid in message_ids]
         _reject_control_chars(source_mailbox, "source_mailbox")
         _reject_control_chars(destination_mailbox, "destination_mailbox")
 
@@ -1134,10 +1192,8 @@ class ImapConnector:
                     f"safe scoped move"
                 )
 
-            uids: list[int] = []
-            for bracketed in bracketed_ids:
-                found = client.search(["HEADER", "Message-ID", bracketed])
-                uids.extend(found)
+            # Batch resolve all Message-IDs to UIDs in one round-trip
+            uids = self._resolve_uids_batch(client, message_ids)
             if not uids:
                 return 0
 
@@ -1252,7 +1308,6 @@ class ImapConnector:
                 SPECIAL-USE or conventional names.
             IMAPClientError: Protocol-level failure.
         """
-        bracketed_ids = [_bracket_message_id(mid) for mid in message_ids]
         _reject_control_chars(source_mailbox, "source_mailbox")
 
         with self._session() as client:
@@ -1284,10 +1339,8 @@ class ImapConnector:
 
             client.select_folder(source_mailbox, readonly=False)
 
-            uids: list[int] = []
-            for bracketed in bracketed_ids:
-                found = client.search(["HEADER", "Message-ID", bracketed])
-                uids.extend(found)
+            # Batch resolve all Message-IDs to UIDs in one round-trip
+            uids = self._resolve_uids_batch(client, message_ids)
             if not uids:
                 return 0
 
@@ -1329,16 +1382,13 @@ class ImapConnector:
             IMAPClientError: SELECT / SEARCH / STORE failed at the
                 protocol level.
         """
-        bracketed_ids = [_bracket_message_id(mid) for mid in message_ids]
         _reject_control_chars(source_mailbox, "source_mailbox")
 
         with self._session() as client:
             client.select_folder(source_mailbox, readonly=False)
 
-            uids: list[int] = []
-            for bracketed in bracketed_ids:
-                found = client.search(["HEADER", "Message-ID", bracketed])
-                uids.extend(found)
+            # Batch resolve all Message-IDs to UIDs in one round-trip
+            uids = self._resolve_uids_batch(client, message_ids)
             if not uids:
                 return 0
 
@@ -1386,16 +1436,13 @@ class ImapConnector:
             IMAPClientError: SELECT / SEARCH / STORE failed at the
                 protocol level.
         """
-        bracketed_ids = [_bracket_message_id(mid) for mid in message_ids]
         _reject_control_chars(source_mailbox, "source_mailbox")
 
         with self._session() as client:
             client.select_folder(source_mailbox, readonly=False)
 
-            uids: list[int] = []
-            for bracketed in bracketed_ids:
-                found = client.search(["HEADER", "Message-ID", bracketed])
-                uids.extend(found)
+            # Batch resolve all Message-IDs to UIDs in one round-trip
+            uids = self._resolve_uids_batch(client, message_ids)
             if not uids:
                 return 0
 
