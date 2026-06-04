@@ -501,15 +501,17 @@ class TestUpdateRule:
         mock_ctx_accept.elicit.assert_awaited_once()
         mock_mail.update_rule.assert_called_once()
 
-    async def test_actions_patch_prompts_and_succeeds(
+    async def test_dangerous_actions_patch_prompts_and_succeeds(
         self, mock_mail: MagicMock, mock_ctx_accept: MagicMock
     ) -> None:
+        # #280: a patch that installs a dangerous action (move/forward/
+        # delete/copy) still confirms.
         mock_mail.list_rules.return_value = [
             {"index": 1, "name": "Junk filter", "enabled": True},
         ]
         result = await update_rule(
             rule_index=1,
-            actions={"mark_read": True},
+            actions={"move_to": "Archive"},
             ctx=mock_ctx_accept,
         )
         assert result["success"] is True
@@ -596,6 +598,37 @@ class TestUpdateRule:
             {"index": 1, "name": "X", "enabled": True},
         ]
         result = await update_rule(rule_index=1, enabled=True)
+        assert result["success"] is True
+        mock_mail.update_rule.assert_called_once()
+
+    async def test_organizational_actions_patch_does_not_prompt(
+        self, mock_mail: MagicMock, mock_ctx_accept: MagicMock
+    ) -> None:
+        # #280: an actions patch limited to organizational flags
+        # (mark_read / mark_flagged / flag_color) skips the prompt.
+        mock_mail.list_rules.return_value = [
+            {"index": 1, "name": "Junk filter", "enabled": True},
+        ]
+        result = await update_rule(
+            rule_index=1,
+            actions={"mark_read": True, "mark_flagged": True},
+            ctx=mock_ctx_accept,
+        )
+        assert result["success"] is True
+        mock_ctx_accept.elicit.assert_not_awaited()
+        mock_mail.update_rule.assert_called_once()
+
+    async def test_organizational_actions_patch_succeeds_without_ctx(
+        self, mock_mail: MagicMock
+    ) -> None:
+        # #280 ergonomics: organizational-only actions no longer fail closed
+        # when no ctx is available (previously every actions patch gated).
+        mock_mail.list_rules.return_value = [
+            {"index": 1, "name": "X", "enabled": True},
+        ]
+        result = await update_rule(
+            rule_index=1, actions={"mark_read": True}
+        )
         assert result["success"] is True
         mock_mail.update_rule.assert_called_once()
 

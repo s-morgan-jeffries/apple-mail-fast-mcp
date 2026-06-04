@@ -449,12 +449,15 @@ Patch semantics: only fields you provide are changed. ``conditions`` and
 ``actions``, when provided, REPLACE their respective structures wholesale
 (not merged).
 
-Conditional confirmation: prompts the user via MCP elicitation only when
-the patch touches ``conditions``, ``actions``, or ``match_logic`` —
-those replacements are irrecoverable. Patches limited to ``enabled``
-and/or ``name`` (trivially reversible) skip the prompt. The
-enable/disable path replaces the removed ``set_rule_enabled`` tool: call
-``update_rule(rule_index, enabled=True|False)``.
+Conditional confirmation: prompts the user via MCP elicitation when the
+patch touches ``conditions`` or ``match_logic`` (which alter matching
+scope), or replaces ``actions`` with a set that includes a dangerous
+action (move / forward / delete / copy). An ``actions`` patch limited to
+organizational flags (``mark_read`` / ``mark_flagged`` / ``flag_color``)
+skips the prompt, as do patches limited to ``enabled`` and/or ``name``
+(trivially reversible). The enable/disable path replaces the removed
+``set_rule_enabled`` tool: call ``update_rule(rule_index,
+enabled=True|False)``.
 
 Refuses to update any rule whose existing actions include something
 outside the supported schema (run-AppleScript, redirect, reply text,
