@@ -40,7 +40,10 @@ from .exceptions import MailDraftInvalidIdError
 # separator no input can escape the drafts directory. Bracketed
 # Message-IDs are normalized to bare form at the boundary before reaching
 # here. The 255-char cap is generous for any real Message-ID.
-_DRAFT_ID_RE = re.compile(r"^[A-Za-z0-9._@+=-]{1,255}$")
+# `.` is allowed (RFC Message-IDs use it) but a `..` run is a path-traversal
+# sequence (draft_id becomes a filename stem) — the negative lookahead forbids
+# it so the regex stays the single source of truth for what's accepted. (#325)
+_DRAFT_ID_RE = re.compile(r"^(?!.*\.\.)[A-Za-z0-9._@+=-]{1,255}$")
 _EXT = ".json"
 
 SeedKind = Literal["reply", "forward"]
@@ -56,7 +59,7 @@ class SeedRecord:
 
 
 def _validate_draft_id(draft_id: str) -> None:
-    if not isinstance(draft_id, str) or not _DRAFT_ID_RE.match(draft_id):
+    if not isinstance(draft_id, str) or not _DRAFT_ID_RE.fullmatch(draft_id):
         raise MailDraftInvalidIdError(
             f"draft_id {draft_id!r} must match {_DRAFT_ID_RE.pattern}"
         )

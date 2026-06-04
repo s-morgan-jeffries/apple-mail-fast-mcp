@@ -299,6 +299,8 @@ class TestTemplateStore:
             "a" * 65,  # too long
             "with.dot",
             "with$",
+            "trailing\n",  # #325: `$` + re.match let a trailing newline pass
+            "embed\nded",
         ],
     )
     def test_save_rejects_invalid_names(self, tmp_path: Path, bad_name: str):

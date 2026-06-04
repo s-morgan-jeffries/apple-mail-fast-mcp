@@ -178,7 +178,7 @@ def serialize_template(t: Template) -> str:
 
 
 def _validate_name(name: str) -> None:
-    if not isinstance(name, str) or not _NAME_RE.match(name):
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
         raise MailTemplateInvalidNameError(
             f"template name {name!r} must match {_NAME_RE.pattern}"
         )
@@ -213,7 +213,7 @@ class TemplateStore:
             if entry.suffix != _EXT or not entry.is_file():
                 continue
             name = entry.stem
-            if not _NAME_RE.match(name):
+            if not _NAME_RE.fullmatch(name):
                 continue
             try:
                 out.append(self.get(name))

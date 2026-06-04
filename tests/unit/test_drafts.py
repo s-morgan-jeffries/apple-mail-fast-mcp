@@ -50,6 +50,30 @@ class TestValidateDraftId:
         with pytest.raises(MailDraftInvalidIdError):
             _validate_draft_id("")
 
+    def test_rejects_trailing_newline(self):
+        from apple_mail_mcp.drafts import _validate_draft_id
+
+        # #325: `$` + re.match let a trailing newline slip past an
+        # otherwise-valid id; fullmatch rejects it.
+        with pytest.raises(MailDraftInvalidIdError):
+            _validate_draft_id("160991\n")
+
+    def test_rejects_embedded_newline(self):
+        from apple_mail_mcp.drafts import _validate_draft_id
+
+        with pytest.raises(MailDraftInvalidIdError):
+            _validate_draft_id("160\n991")
+
+    def test_rejects_double_dot(self):
+        from apple_mail_mcp.drafts import _validate_draft_id
+
+        # #325: `.` is in the charset, so `..` matches the regex; it's a
+        # path-traversal sequence and must be rejected explicitly.
+        with pytest.raises(MailDraftInvalidIdError):
+            _validate_draft_id("..")
+        with pytest.raises(MailDraftInvalidIdError):
+            _validate_draft_id("a..b@host")
+
     def test_rejects_non_string(self):
         from apple_mail_mcp.drafts import _validate_draft_id
 
