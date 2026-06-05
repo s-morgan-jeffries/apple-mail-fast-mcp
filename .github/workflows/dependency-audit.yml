@@ -1,0 +1,89 @@
+name: Dependency Audit
+
+# Weekly off-the-release-path advisory scan (#296). pip-audit checks published
+# advisories against our pinned versions, so it goes red over time on UNCHANGED
+# pins as new CVEs are disclosed. Discovering that at release time forces
+# last-minute bumps on the release branch (the v0.9.0 idna/starlette/urllib3
+# pain). This job surfaces advisories continuously into a tracking issue, so
+# bumps land on their own PRs with their own test cycle.
+
+on:
+  schedule:
+    # Mondays 09:17 UTC. Off-the-hour: GitHub delays cron jobs scheduled on
+    # the hour due to load.
+    - cron: "17 9 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: dependency-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ISSUE_TITLE: "[deps] Dependency advisories detected"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v7
+
+      - run: uv python install 3.10
+
+      - run: uv sync --dev
+
+      - name: Run pip-audit
+        id: audit
+        run: |
+          set +e
+          uv run pip-audit --format markdown > audit.md 2> audit.err
+          echo "exit=$?" >> "$GITHUB_OUTPUT"
+          echo "----- pip-audit (markdown) -----"
+          cat audit.md
+          echo "----- pip-audit (stderr) -----"
+          cat audit.err
+
+      - name: Open or update tracking issue
+        if: steps.audit.outputs.exit != '0'
+        run: |
+          {
+            echo "Automated weekly \`pip-audit\` (#296) found known advisories against the current pins."
+            echo ""
+            echo "_Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} — updated $(date -u '+%Y-%m-%d %H:%M UTC')._"
+            echo ""
+            cat audit.md
+            echo ""
+            echo "---"
+            echo "Bump the affected dependencies on their own PR (not on a release branch). Direct-dep advisories also hard-block the release gate (\`scripts/check_dependencies.sh\`); transitive ones are warnings there."
+          } > issue-body.md
+
+          existing=$(gh issue list --state open --label dependencies \
+            --search "in:title \"$ISSUE_TITLE\"" --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            echo "Updating existing issue #$existing"
+            gh issue edit "$existing" --body-file issue-body.md
+            gh issue comment "$existing" --body "Refreshed by the weekly dependency audit ($(date -u '+%Y-%m-%d'))."
+          else
+            echo "Creating new tracking issue"
+            gh issue create --title "$ISSUE_TITLE" \
+              --label dependencies --label security \
+              --body-file issue-body.md
+          fi
+
+      - name: Resolve tracking issue when clean
+        if: steps.audit.outputs.exit == '0'
+        run: |
+          existing=$(gh issue list --state open --label dependencies \
+            --search "in:title \"$ISSUE_TITLE\"" --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            echo "No advisories; closing issue #$existing"
+            gh issue comment "$existing" --body "Resolved: \`pip-audit\` reports no known advisories as of $(date -u '+%Y-%m-%d %H:%M UTC') (run ${{ github.run_id }})."
+            gh issue close "$existing"
+          else
+            echo "No advisories and no open tracking issue — nothing to do."
+          fi

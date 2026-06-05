@@ -65,7 +65,7 @@ Run ALL checks (stop on failure):
 3. `./scripts/check_complexity.sh`
 4. `make test`
 5. `make test-e2e` — **mandatory** (requires `MAIL_TEST_MODE=true` + a test Mail.app account). CI excludes e2e, so this is the only gate that catches a stale e2e failure. A pre-existing failure on `main` is a **release-blocker**, not a known issue to ship around (#257).
-6. `./scripts/check_dependencies.sh`
+6. `./scripts/check_dependencies.sh` — hard-fails only on advisories in **direct** deps (`fastmcp`/`imapclient`); transitive advisories are warnings (exit 0), surfaced continuously off the release path by `.github/workflows/dependency-audit.yml` so they don't block a release (#296). A direct-dep advisory still blocks — bump the pin and re-run.
 7. `./scripts/check_applescript_safety.sh`
 8. `./scripts/check_docs.sh` — doc/artifact drift gate (tool-set coverage, removed-name, cross-refs, eval-description sync) (#288)
 
