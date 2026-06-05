@@ -11,7 +11,10 @@ echo "Checking documentation claims..."
 echo ""
 echo "Check 1: Tool count..."
 README_TOOL_CLAIM=$(grep -oE 'Tools \([0-9]+\)' README.md 2>/dev/null | grep -oE '[0-9]+' || echo "")
-ACTUAL_TOOLS=$(grep -c '@mcp.tool' src/apple_mail_mcp/server.py || echo "0")
+# Count tool decorators. Tools register via the @_tool(...) wrapper (#217), not
+# a bare @mcp.tool() — a literal `grep @mcp.tool` returns 0 and the gate
+# misfires. Match both forms at column 0, mirroring check_client_server_parity.sh.
+ACTUAL_TOOLS=$(awk '/^@_tool\(/ || /^@mcp\.tool\(/ {c++} END{print c+0}' src/apple_mail_mcp/server.py)
 
 if [ -n "$README_TOOL_CLAIM" ]; then
     if [ "$README_TOOL_CLAIM" != "$ACTUAL_TOOLS" ]; then

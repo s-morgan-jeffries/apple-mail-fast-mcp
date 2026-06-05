@@ -3,7 +3,7 @@
 An MCP server bridging Claude and Apple Mail via AppleScript on macOS.
 
 **Stack:** Python 3.10+, FastMCP, AppleScript (via `osascript`)
-**Version:** v0.9.1 | **Tests:** 1249 unit / 27 e2e / 54 integration | **Coverage:** 92%
+**Version:** v0.9.1 | **Tests:** 1349 unit / 29 e2e / 59 integration | **Coverage:** 92%
 
 ## Commands
 
@@ -17,7 +17,7 @@ make typecheck             # Mypy strict mode
 make check-all             # All checks (lint, typecheck, test, complexity, version-sync, parity)
 make coverage              # Coverage report
 ./scripts/check_complexity.sh          # Cyclomatic complexity check
-./scripts/check_client_server_parity.sh  # Blocking: connector methods must be a tool or allowlisted (docs/guides/CLIENT_SERVER_PARITY.md)
+./scripts/check_client_server_parity.sh  # Verify all connector methods are exposed
 ./scripts/check_version_sync.sh        # Version consistency across files
 ```
 
