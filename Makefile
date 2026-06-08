@@ -86,8 +86,15 @@ eval-descriptions:
 # models (needs an OPENROUTER_API_KEY env var or the apple-mail-mcp-evals /
 # openrouter Keychain entry; costs money). The Claude column is produced
 # separately via a Claude Code subagent. See evals/agent_tool_usability/. (#219)
+#
+# Models use each family's latest non-dated slug where one exists
+# (mistralai/mistral-large, deepseek/deepseek-chat), so the eval tracks the
+# current model instead of pinning a dated id that later 404s (#358). The exact
+# version served is recorded per-result as `resolved_model`, and run_eval
+# pre-checks availability (fails loud before spending credits). qwen-2.5-72b /
+# llama-3.3-70b have no non-dated alias, so their line slug is used as-is.
 eval-tools:
 	uv run --with openai python evals/agent_tool_usability/run_eval.py \
-		--model mistralai/mistral-large-2411 qwen/qwen-2.5-72b-instruct \
-		meta-llama/llama-3.3-70b-instruct deepseek/deepseek-chat-v3-0324 \
+		--model mistralai/mistral-large qwen/qwen-2.5-72b-instruct \
+		meta-llama/llama-3.3-70b-instruct deepseek/deepseek-chat \
 		--runs 5

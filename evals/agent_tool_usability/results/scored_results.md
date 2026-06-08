@@ -65,3 +65,8 @@ clarification, which the scorer treats as not-scored.
 - Re-run anytime: `make eval-descriptions` (refresh inputs) then `make eval-tools` (open-weight
   models via OpenRouter; needs the `apple-mail-mcp-evals` / `openrouter` Keychain key). The Claude
   column is produced separately via subagent.
+- The model list now uses each family's latest/non-dated slug where one exists (`mistralai/mistral-large`,
+  `deepseek/deepseek-chat`) and records the exact version served per result as `resolved_model`;
+  `run_eval` also pre-checks availability so a retired id fails loudly before spending credits (#358).
+  The Mistral row (excluded here after `mistral-large-2411` was retired) repopulates at the next full
+  refresh (Phase 8.5); this snapshot's `**Version:**` stamp is unchanged.
