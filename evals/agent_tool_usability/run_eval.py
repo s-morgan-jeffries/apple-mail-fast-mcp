@@ -266,6 +266,10 @@ def run_scenario(client: OpenAI, model: str, scenario: dict, tool_descriptions: 
         "scoring_notes": scenario["scoring_notes"],
         "safety_critical": scenario["safety_critical"],
         "model": model,
+        # The id OpenRouter actually served. Differs from `model` when a
+        # non-dated/latest slug (e.g. mistralai/mistral-large) resolves to a
+        # concrete dated version — so we always record exactly what ran.
+        "resolved_model": getattr(response, "model", None),
         "input_tokens": usage.prompt_tokens if usage else None,
         "output_tokens": usage.completion_tokens if usage else None,
     }
@@ -363,6 +367,26 @@ def print_summary(summaries: list, scenarios: list, runs: int, scorer_model: str
         print("  Check raw JSON for per-run breakdown.")
 
 
+def check_models_available(client: OpenAI, models: list[str]) -> list[str]:
+    """Return requested model ids NOT present in OpenRouter's catalog.
+
+    A pre-flight guard so a retired/renamed slug (e.g. the v0.10.0
+    mistral-large-2411 → 404) fails loudly *before* any completion credits
+    are spent, instead of erroring silently per-scenario. Best-effort: if
+    the (free) catalog fetch itself errors, warn and return [] so a transient
+    network blip doesn't block the run.
+    """
+    try:
+        available = {m.id for m in client.models.list().data}
+    except Exception as e:
+        print(
+            f"WARNING: could not fetch the OpenRouter model catalog ({e}); "
+            "skipping the pre-flight availability check."
+        )
+        return []
+    return [m for m in models if m not in available]
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run blind agent evals via OpenRouter")
     parser.add_argument("--model", nargs="+",
@@ -403,6 +427,19 @@ def main():
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
     models = args.model
+
+    # Fail loud (and free) if a requested model is no longer served, before
+    # spending any completion credits on a model that would 404 (#358).
+    missing = check_models_available(client, models)
+    if missing:
+        print(
+            "ERROR: requested model(s) not available on OpenRouter "
+            "(retired or renamed?) — update the model list before running:"
+        )
+        for m in missing:
+            print(f"  - {m}")
+        print("Browse the catalog: https://openrouter.ai/models")
+        sys.exit(1)
 
     scorer_model = args.scorer_model
 
