@@ -3286,6 +3286,9 @@ class AppleMailConnector:
         message_id: str,
         save_directory: Path,
         attachment_indices: list[int] | None = None,
+        *,
+        account: str | None = None,
+        mailbox: str | None = None,
     ) -> dict[str, Any]:
         """
         Save attachments from a message to a directory.
@@ -3296,6 +3299,14 @@ class AppleMailConnector:
         pre-checked out before saving, and a post-write net deletes any file
         that still lands over the cap (covering sizes Mail under-reports for
         not-yet-downloaded attachments).
+
+        IMAP fast path (#371): when ``account`` + ``mailbox`` are supplied,
+        the message is fetched once over IMAP and its attachment bytes are
+        written straight to disk — avoiding the O(accounts × mailboxes)
+        AppleScript cross-scan (whose unindexed ``message id`` lookup is
+        ~20s/mailbox and times out on Gmail's many labels). Falls back to
+        AppleScript transparently when IMAP isn't configured. Attachment
+        ordering matches ``get_attachment_content`` (same fetch+parse path).
 
         Args:
             message_id: Message ID
@@ -3336,6 +3347,27 @@ class AppleMailConnector:
         # selected attachment by index to a precomputed, contained POSIX
         # path. (Concatenating `name of att` into the path inside AppleScript
         # was a path-traversal → arbitrary-file-write vector.)
+        # IMAP fast path (#371): one fetch instead of the AppleScript
+        # cross-scan. Mirrors get_attachment_content's dispatch.
+        if (
+            account is not None
+            and mailbox is not None
+            and not self._imap_breaker_open(account)
+        ):
+            try:
+                imap_result = self._imap_save_attachments(
+                    account=account,
+                    mailbox=mailbox,
+                    message_id=message_id,
+                    save_directory=save_directory,
+                    attachment_indices=attachment_indices,
+                )
+                self._imap_clear_breaker(account)
+                return imap_result
+            except _IMAP_FALLBACK_EXCS as exc:
+                self._log_imap_fallback(account, exc)
+                # fall through to AppleScript
+
         attachments = self._get_attachments_applescript(message_id)
 
         # Pre-check byte caps (#236): drop oversized attachments before saving.
@@ -3398,6 +3430,72 @@ class AppleMailConnector:
 
         # Post-write net (#236): delete any file that landed over the cap
         # (e.g. Mail under-reported size pre-download) and report it.
+        removed, post_rejected = _prune_oversized_written(
+            targets,
+            per_cap=self.max_attachment_bytes,
+            total_cap=self.max_total_attachment_bytes,
+        )
+        rejected.extend(post_rejected)
+        return {"saved": max(0, saved - removed), "rejected": rejected}
+
+    def _imap_save_attachments(
+        self,
+        *,
+        account: str,
+        mailbox: str,
+        message_id: str,
+        save_directory: Path,
+        attachment_indices: list[int] | None,
+    ) -> dict[str, Any]:
+        """IMAP path for save_attachments (#371): fetch the raw message once
+        and write the selected attachment bytes to disk. Reuses
+        ``fetch_raw_message`` + ``parse_original_message`` (same machinery as
+        ``_imap_get_attachment_content``) and the same #236 byte-cap /
+        path-safety helpers as the AppleScript path — the only new step is
+        the direct ``write_bytes``.
+
+        Propagates ``_IMAP_FALLBACK_EXCS`` unchanged for the caller's
+        fallback.
+        """
+        host, port, email = self._resolve_imap_config(account)
+        password = self._get_imap_password_with_fallback(account, email)
+        imap = ImapConnector(host, port, email, password, pool=self._imap_pool)
+        raw = imap.fetch_raw_message(message_id, mailbox)
+        parsed = parse_original_message(raw).attachments
+
+        # Shape the parsed parts like _get_attachments_applescript output so
+        # the shared cap/target helpers apply unchanged. Exact byte sizes
+        # here (not Mail's pre-download estimate) make the pre-check precise.
+        attachments: list[dict[str, Any]] = [
+            {
+                "name": filename,
+                "mime_type": f"{maintype}/{subtype}",
+                "size": len(payload),
+                "downloaded": True,
+            }
+            for (filename, maintype, subtype, payload) in parsed
+        ]
+
+        allowed, rejected = _select_attachments_within_caps(
+            attachments,
+            attachment_indices,
+            per_cap=self.max_attachment_bytes,
+            total_cap=self.max_total_attachment_bytes,
+        )
+        if not allowed:
+            return {"saved": 0, "rejected": rejected}
+
+        targets = _compute_attachment_save_targets(
+            [a["name"] for a in attachments], save_directory, allowed
+        )
+        saved = 0
+        for as_idx, path in targets:
+            # _compute_attachment_save_targets returns 1-based indices.
+            path.write_bytes(parsed[as_idx - 1][3])
+            saved += 1
+
+        # Post-write net for symmetry with the AppleScript path (inert here —
+        # IMAP sizes are exact, so nothing should exceed the pre-check).
         removed, post_rejected = _prune_oversized_written(
             targets,
             per_cap=self.max_attachment_bytes,

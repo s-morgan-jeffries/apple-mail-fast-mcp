@@ -2062,6 +2062,20 @@ class TestSaveAttachments:
         assert result["rejected"] == []
         mock_logger.log_operation.assert_called_once()
 
+    def test_account_mailbox_pass_through_for_imap_fast_path(
+        self, mock_mail: MagicMock, mock_logger: MagicMock, tmp_path: Any
+    ) -> None:
+        # #371: account/mailbox unlock the IMAP fast path in the connector.
+        mock_mail.save_attachments.return_value = {"saved": 1, "rejected": []}
+
+        save_attachments(
+            "1", str(tmp_path), account="Gmail", mailbox="INBOX"
+        )
+
+        kwargs = mock_mail.save_attachments.call_args.kwargs
+        assert kwargs["account"] == "Gmail"
+        assert kwargs["mailbox"] == "INBOX"
+
     def test_surfaces_rejected_attachments(
         self, mock_mail: MagicMock, mock_logger: MagicMock, tmp_path: Any
     ) -> None:

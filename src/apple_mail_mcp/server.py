@@ -1564,6 +1564,8 @@ def save_attachments(
     message_id: str,
     save_directory: str,
     attachment_indices: IntList | None = None,
+    account: str | None = None,
+    mailbox: str | None = None,
 ) -> dict[str, Any]:
     """
     Save attachments from a message to a directory.
@@ -1572,6 +1574,14 @@ def save_attachments(
         message_id: Message ID from search results
         save_directory: Directory path to save attachments to
         attachment_indices: Specific attachment indices to save (0-based), None for all
+        account: Mail.app account name or UUID. Supply it (with ``mailbox``)
+            to take the faster IMAP path — one fetch instead of an
+            account×mailbox AppleScript scan. Pass the same values you read
+            the message with so attachment ordering matches (#371). Strongly
+            recommended on Gmail, where the AppleScript fallback's unindexed
+            cross-scan can take minutes and time out.
+        mailbox: Folder the message lives in (e.g. "INBOX"), used with
+            ``account`` for the IMAP fast path.
 
     Returns:
         Dict with ``success``, ``saved`` (count written), ``directory``, and
@@ -1620,6 +1630,8 @@ def save_attachments(
             message_id=message_id,
             save_directory=save_path,
             attachment_indices=attachment_indices,
+            account=account,
+            mailbox=mailbox,
         )
 
         operation_logger.log_operation(

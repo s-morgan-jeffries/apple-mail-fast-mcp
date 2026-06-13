@@ -5135,6 +5135,155 @@ class TestNonJsonPathsThreadTimeout:
         assert "with timeout of 127 seconds" in self._script_from(mock_run)
 
 
+def _raw_with_attachments(atts: list[tuple[str, str, bytes]]) -> bytes:
+    """Build raw RFC 822 bytes with the given attachments.
+
+    ``atts`` is a list of ``(filename, subtype, payload_bytes)``.
+    """
+    from email.message import EmailMessage
+
+    m = EmailMessage()
+    m["From"] = "s@example.com"
+    m["To"] = "r@example.com"
+    m["Subject"] = "with attachments"
+    m["Message-ID"] = "<att-test@example.com>"
+    m.set_content("body")
+    for filename, subtype, data in atts:
+        m.add_attachment(
+            data, maintype="application", subtype=subtype, filename=filename
+        )
+    return m.as_bytes()
+
+
+class TestSaveAttachmentsImapFastPath:
+    """#371: save_attachments(account, mailbox) uses the IMAP fast path
+    (one fetch_raw_message) instead of the O(accounts × mailboxes)
+    AppleScript cross-scan that hangs on Gmail."""
+
+    @pytest.fixture
+    def connector(self) -> AppleMailConnector:
+        return AppleMailConnector(timeout=30)
+
+    def _imap_patches(self, mock_imap: MagicMock) -> list:
+        return [
+            patch(
+                "apple_mail_mcp.mail_connector.ImapConnector",
+                return_value=mock_imap,
+            ),
+            patch.object(
+                AppleMailConnector,
+                "_get_imap_password_with_fallback",
+                return_value="pw",
+            ),
+            patch.object(
+                AppleMailConnector,
+                "_resolve_imap_config",
+                return_value=("h", 993, "e@x.com"),
+            ),
+        ]
+
+    def test_imap_path_writes_bytes_without_applescript(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        import contextlib
+
+        raw = _raw_with_attachments(
+            [("offer.pdf", "pdf", b"PDF-OFFER"), ("agreement.pdf", "pdf", b"PDF-AGREE")]
+        )
+        mock_imap = MagicMock()
+        mock_imap.fetch_raw_message.return_value = raw
+        with contextlib.ExitStack() as stack:
+            for p in self._imap_patches(mock_imap):
+                stack.enter_context(p)
+            with patch.object(
+                AppleMailConnector, "_run_applescript"
+            ) as mock_as:
+                result = connector.save_attachments(
+                    "att-test@example.com",
+                    tmp_path,
+                    account="Gmail",
+                    mailbox="INBOX",
+                )
+            mock_as.assert_not_called()  # no AppleScript cross-scan
+
+        assert result["saved"] == 2
+        assert (tmp_path / "offer.pdf").read_bytes() == b"PDF-OFFER"
+        assert (tmp_path / "agreement.pdf").read_bytes() == b"PDF-AGREE"
+        mock_imap.fetch_raw_message.assert_called_once_with(
+            "att-test@example.com", "INBOX"
+        )
+
+    def test_imap_path_respects_attachment_indices(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        import contextlib
+
+        raw = _raw_with_attachments([("a.pdf", "pdf", b"AAA"), ("b.pdf", "pdf", b"BBB")])
+        mock_imap = MagicMock()
+        mock_imap.fetch_raw_message.return_value = raw
+        with contextlib.ExitStack() as stack:
+            for p in self._imap_patches(mock_imap):
+                stack.enter_context(p)
+            with patch.object(AppleMailConnector, "_run_applescript"):
+                result = connector.save_attachments(
+                    "att-test@example.com",
+                    tmp_path,
+                    attachment_indices=[1],
+                    account="Gmail",
+                    mailbox="INBOX",
+                )
+        assert result["saved"] == 1
+        assert not (tmp_path / "a.pdf").exists()
+        assert (tmp_path / "b.pdf").read_bytes() == b"BBB"
+
+    def test_imap_failure_falls_back_to_applescript(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        import contextlib
+
+        mock_imap = MagicMock()
+        mock_imap.fetch_raw_message.side_effect = OSError("conn reset")
+        with contextlib.ExitStack() as stack:
+            for p in self._imap_patches(mock_imap):
+                stack.enter_context(p)
+            with patch.object(
+                AppleMailConnector,
+                "_get_attachments_applescript",
+                return_value=[],
+            ) as mock_get_as:
+                result = connector.save_attachments(
+                    "att-test@example.com",
+                    tmp_path,
+                    account="Gmail",
+                    mailbox="INBOX",
+                )
+            mock_get_as.assert_called_once()  # fell through to AppleScript
+        assert result["saved"] == 0
+
+    def test_imap_path_enforces_per_attachment_cap(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        import contextlib
+
+        raw = _raw_with_attachments([("big.bin", "octet-stream", b"x" * 100)])
+        mock_imap = MagicMock()
+        mock_imap.fetch_raw_message.return_value = raw
+        connector.max_attachment_bytes = 10  # tiny cap
+        with contextlib.ExitStack() as stack:
+            for p in self._imap_patches(mock_imap):
+                stack.enter_context(p)
+            with patch.object(AppleMailConnector, "_run_applescript"):
+                result = connector.save_attachments(
+                    "att-test@example.com",
+                    tmp_path,
+                    account="Gmail",
+                    mailbox="INBOX",
+                )
+        assert result["saved"] == 0
+        assert result["rejected"][0]["reason"] == "per_attachment_cap"
+        assert not (tmp_path / "big.bin").exists()
+
+
 class TestAutoTemplateVars:
     """auto_template_vars() builds the auto-fill dict for render_template."""
 

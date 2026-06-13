@@ -509,6 +509,73 @@ class TestMailIntegration:
             # Documented divergence — IMAP path always reports False.
             assert att["downloaded"] is False
 
+    def test_save_attachments_via_imap_fast_path(
+        self, connector: AppleMailConnector, test_account: str, tmp_path: Path
+    ) -> None:
+        """#371: save_attachments(account, mailbox) writes attachment bytes
+        via the IMAP fast path (one fetch, no AppleScript cross-scan).
+        APPENDs a synthetic message with a known attachment, saves it, and
+        verifies the file bytes match exactly. Skips without IMAP.
+        """
+        import uuid as _uuid
+        from datetime import datetime, timezone
+        from email.message import EmailMessage
+        from email.utils import format_datetime
+
+        from imapclient import IMAPClient
+
+        from apple_mail_mcp.exceptions import (
+            MailKeychainAccessDeniedError,
+            MailKeychainEntryNotFoundError,
+        )
+        from apple_mail_mcp.keychain import get_imap_password
+
+        host, port, email = connector._resolve_imap_config(test_account)
+        try:
+            pw = get_imap_password(test_account, email)
+        except (MailKeychainEntryNotFoundError, MailKeychainAccessDeniedError):
+            pytest.skip(
+                f"No Keychain entry for {test_account!r} — run setup-imap."
+            )
+
+        suffix = _uuid.uuid4().hex[:8]
+        box = f"ZZZ-AMM-ATT-{suffix}"
+        msg_id_local = f"{_uuid.uuid4().hex}@apple-mail-fast-mcp-test.invalid"
+        payload = b"%PDF-1.4 fake pdf " + _uuid.uuid4().hex.encode()
+
+        assert connector.create_mailbox(account=test_account, name=box)
+        try:
+            m = EmailMessage()
+            m["From"] = "sender@apple-mail-fast-mcp-test.invalid"
+            m["To"] = "rcpt@apple-mail-fast-mcp-test.invalid"
+            m["Subject"] = "AMM #371 save_attachments fast path"
+            m["Date"] = format_datetime(datetime.now(tz=timezone.utc))
+            m["Message-ID"] = f"<{msg_id_local}>"
+            m.set_content("body")
+            m.add_attachment(
+                payload, maintype="application", subtype="pdf", filename="doc.pdf"
+            )
+
+            ac = IMAPClient(host, port=port, ssl=True, timeout=30)
+            ac.login(email, pw)
+            try:
+                ac.append(box, m.as_bytes())
+            finally:
+                ac.logout()
+
+            result = connector.save_attachments(
+                msg_id_local, tmp_path, account=test_account, mailbox=box
+            )
+            assert result["saved"] == 1
+            assert (tmp_path / "doc.pdf").read_bytes() == payload
+        finally:
+            try:
+                connector.delete_mailbox(
+                    account=test_account, name=box, delete_messages=True
+                )
+            except Exception:
+                pass
+
 
 class TestDraftsLifecycleIntegration:
     """Integration tests for the drafts lifecycle (#134).

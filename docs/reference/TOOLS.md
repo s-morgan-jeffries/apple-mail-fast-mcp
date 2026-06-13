@@ -547,6 +547,10 @@ Save attachments from a message to a directory.
 | `message_id` | string | Yes | - | Message ID to save attachments from |
 | `save_directory` | string | Yes | - | Directory path to save attachments |
 | `attachment_indices` | list[int] | No | None | Specific attachment indices (None = all) |
+| `account` | string | No | None | Mail.app account name or UUID. With `mailbox`, takes the IMAP fast path (one fetch). Pass the same values you read the message with so attachment ordering matches. |
+| `mailbox` | string | No | None | Folder the message lives in (e.g. "INBOX"), used with `account` for the IMAP fast path. |
+
+**Performance (#371):** pass `account` + `mailbox` to fetch the message once over IMAP and write the bytes straight to disk. Without them, `save_attachments` falls back to an O(accounts × mailboxes) AppleScript scan whose unindexed `message id` lookup is ~20s/mailbox — on Gmail (dozens of labels) that can run for minutes and time out. Mirrors `get_attachment_content`'s fast path.
 
 **Returns:**
 
