@@ -67,15 +67,38 @@ by walking the account subtree cost ~1.9 s (60k+ files). Metadata is instant; bo
 is not. A production path needs either (a) a derived shard path from `ROWID`, or (b) a
 `ROWID → path` index built once and watched. **Don't ship body fetch via `rglob`.**
 
+## Finding 4 — Writes & sync freshness (coherence model)
+
+The Envelope Index is in **WAL mode** (`-wal`/`-shm` present); Mail.app is its **sole writer**.
+Implications for a read-only accelerator:
+
+- **Writes are unchanged & safe.** We only read (`mode=ro`); we never write the local DB, so no
+  dual-write/corruption hazard. All mutations stay on AppleScript/IMAP.
+- **Read-after-write coherence.** AppleScript writes go *through* Mail.app, which updates the
+  Envelope Index as part of the op → a later local-DB read sees it once the WAL txn commits
+  (near-immediate; exact lag unmeasured — a safe bench-mailbox measurement is a follow-up).
+  **Our IMAP fast-path writes bypass Mail.app**, so the Envelope Index — *and the current
+  AppleScript read path* — won't reflect them until Mail.app re-syncs. This wrinkle already
+  exists for AppleScript today; local-DB inherits it, doesn't worsen it.
+- **Freshness == the AppleScript path.** The local store is only as fresh as Mail.app's last
+  sync (seconds with Mail.app running + IMAP IDLE/push; stale if Mail.app is closed). This is
+  *identical* to the AppleScript path's freshness — both read Mail.app's local store. Only the
+  **IMAP path is server-authoritative.** → Dispatch rule: local-DB may front the **AppleScript**
+  path (strict win: same freshness, ~5,000× faster) but must **not** front the **IMAP** path
+  when an account needs server-fresh reads.
+- **WAL read gotcha.** Open `mode=ro` (reads the `-wal`); do **not** use `immutable=1` — it
+  skips the WAL and yields stale reads.
+
 ## Answers to the issue's open questions
 
 - **Full Disk Access tradeoff.** Real: today we need only Automation; this adds FDA (the spike
   was blocked until granted). FDA to the host app is broad. → **Gate behind an explicit opt-in
   flag** (e.g. `--local-db` / env), default off; degrade to AppleScript/IMAP when unavailable.
   Composes with `--read-only` (#217) for a "fast, read-only" deployment posture.
-- **Cache/invalidation.** Envelope Index is Mail's own live DB — reads are always current; open
-  `mode=ro` per query (cheap: 0.4 ms). A `ROWID→path` cache for bodies needs invalidation
-  (FSEvents watcher or TTL). EWS/Exchange accounts may have no `.emlx` (per che) → fall back.
+- **Cache/invalidation.** Envelope Index is Mail's own live DB — no metadata cache needed; open
+  `mode=ro` per query (cheap: 0.4 ms) and you read Mail's current local state (freshness caveats
+  in Finding 4). A `ROWID→path` cache for bodies needs invalidation (FSEvents watcher or TTL).
+  EWS/Exchange accounts may have no `.emlx` (per che) → fall back.
 - **Schema-stability risk.** We read `V10` + a handful of columns (`messages`, `subjects`,
   `addresses`, `mailboxes`, `message_global_data`). Apple bumps `V<n>` across major macOS
   releases and can rename columns. → Version-detect the `V*` dir, feature-probe columns at
