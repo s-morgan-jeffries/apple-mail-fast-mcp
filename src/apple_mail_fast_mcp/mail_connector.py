@@ -22,6 +22,7 @@ from .draft_builder import (
     build_forward_body,
     build_reply_body,
     derive_reply_recipients,
+    extract_attachment_payloads,
     forward_subject,
     parse_original_message,
     reply_subject,
@@ -2482,7 +2483,10 @@ class AppleMailConnector:
         password = self._get_imap_password_with_fallback(account, email)
         imap = ImapConnector(host, port, email, password, pool=self._imap_pool)
         raw = imap.fetch_raw_message(message_id, mailbox)
-        atts = parse_original_message(raw).attachments
+        # Enumerate to match the BODYSTRUCTURE metadata list get_attachments
+        # reports — NOT iter_attachments, which diverges and broke the
+        # 0-based attachment_index contract (wrong/missing part).
+        atts = extract_attachment_payloads(raw)
         if not 0 <= attachment_index < len(atts):
             raise MailAttachmentIndexError(
                 f"attachment_index {attachment_index} out of range: message "
@@ -3461,7 +3465,8 @@ class AppleMailConnector:
         password = self._get_imap_password_with_fallback(account, email)
         imap = ImapConnector(host, port, email, password, pool=self._imap_pool)
         raw = imap.fetch_raw_message(message_id, mailbox)
-        parsed = parse_original_message(raw).attachments
+        # Match the BODYSTRUCTURE metadata list (see _imap_get_attachment_content).
+        parsed = extract_attachment_payloads(raw)
 
         # Shape the parsed parts like _get_attachments_applescript output so
         # the shared cap/target helpers apply unchanged. Exact byte sizes

@@ -503,3 +503,141 @@ def test_build_draft_with_empty_rfc822_forward_does_not_raise():
         if p.get_content_type() == "message/rfc822"
     ]
     assert len(rfc822) == 1  # an honest (empty) placeholder, not a crash
+
+
+# --- byte-fetch attachment enumeration (IMAP index-contract fix) ---------
+#
+# get_attachment_content / save_attachments (IMAP) index into this list; it
+# MUST agree, in count and order, with the BODYSTRUCTURE metadata walk that
+# get_attachments / get_messages report (imap_connector
+# ._bodystructure_extract_attachments). email.iter_attachments() does NOT —
+# it drops body-referenced inline parts and skips parts nested under a
+# multipart/alternative — which broke the shared 0-based index contract
+# (out-of-range, or the WRONG part's bytes). Cases below mirror the real
+# iCloud divergences found by dogfooding.
+
+
+def _names_types(atts):
+    return [(name, f"{mt}/{st}") for (name, mt, st, _b) in atts]
+
+
+def test_extract_payloads_plain_attachment_is_unchanged():
+    """Control: an ordinary text-body + attachment message is enumerated the
+    same as before (one attachment, real bytes)."""
+    from email.message import EmailMessage
+
+    from apple_mail_fast_mcp.draft_builder import extract_attachment_payloads
+
+    m = EmailMessage()
+    m["Subject"] = "c1"
+    m.set_content("body")
+    m.add_attachment(b"%PDF-1.4 data", maintype="application", subtype="pdf",
+                     filename="a.pdf")
+    atts = extract_attachment_payloads(m.as_bytes())
+    assert _names_types(atts) == [("a.pdf", "application/pdf")]
+    assert atts[0][3] == b"%PDF-1.4 data"
+
+
+def test_extract_payloads_includes_inline_image_with_filename():
+    """A multipart/related inline cid image WITH a filename is a real,
+    savable attachment (metadata reports it; iter_attachments drops it)."""
+    from email.message import EmailMessage
+
+    from apple_mail_fast_mcp.draft_builder import extract_attachment_payloads
+
+    m = EmailMessage()
+    m["Subject"] = "c2"
+    m.set_content("plain")
+    m.add_alternative("<img src=cid:x>", subtype="html")
+    m.get_payload()[1].add_related(b"\x89PNGdata", maintype="image",
+                                   subtype="png", cid="<x>", filename="logo.png")
+
+    # iter_attachments misses it; the real fix must not.
+    assert list(email.message_from_bytes(m.as_bytes(), policy=policy.default)
+                .iter_attachments()) == []
+    atts = extract_attachment_payloads(m.as_bytes())
+    assert _names_types(atts) == [("logo.png", "image/png")]
+    assert atts[0][3] == b"\x89PNGdata"
+
+
+def test_extract_payloads_descends_under_multipart_alternative():
+    """The real 'byte-fetch=0' case: PDFs nested in a multipart/mixed that is
+    itself an alternative. iter_attachments returns nothing because it never
+    descends past the alternative; the fix must find both."""
+    from email.mime.application import MIMEApplication
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    from apple_mail_fast_mcp.draft_builder import extract_attachment_payloads
+
+    outer = MIMEMultipart("alternative")
+    mixed = MIMEMultipart("mixed")
+    mixed.attach(MIMEText("<p>hi</p>", "html"))
+    pdf1 = MIMEApplication(b"%PDF one", _subtype="pdf")
+    pdf1.add_header("Content-Disposition", "inline", filename="a.pdf")
+    mixed.attach(pdf1)
+    pdf2 = MIMEApplication(b"%PDF two", _subtype="pdf")
+    pdf2.add_header("Content-Disposition", "attachment", filename="b.pdf")
+    mixed.attach(pdf2)
+    outer.attach(mixed)
+    raw = outer.as_bytes()
+
+    assert list(email.message_from_bytes(raw, policy=policy.default)
+                .iter_attachments()) == []
+    atts = extract_attachment_payloads(raw)
+    assert _names_types(atts) == [
+        ("a.pdf", "application/pdf"), ("b.pdf", "application/pdf"),
+    ]
+    assert atts[0][3] == b"%PDF one"
+    assert atts[1][3] == b"%PDF two"
+
+
+def test_extract_payloads_preserves_document_order():
+    """Index order follows MIME document order (inline image before the
+    trailing attachment), so attachment_index lines up with the metadata."""
+    from email.message import EmailMessage
+
+    from apple_mail_fast_mcp.draft_builder import extract_attachment_payloads
+
+    m = EmailMessage()
+    m["Subject"] = "c3"
+    m.set_content("plain")
+    m.add_alternative("<img src=cid:y>", subtype="html")
+    m.get_payload()[1].add_related(b"PNG", maintype="image", subtype="png",
+                                   cid="<y>", filename="inline.png")
+    m.add_attachment(b"%PDF real", maintype="application", subtype="pdf",
+                     filename="real.pdf")
+    atts = extract_attachment_payloads(m.as_bytes())
+    assert _names_types(atts) == [
+        ("inline.png", "image/png"), ("real.pdf", "application/pdf"),
+    ]
+
+
+def test_extract_payloads_rfc822_counted_once_not_descended():
+    """A forwarded message/rfc822 is one attachment (emitted whole with real
+    bytes); its OWN inner attachments are not surfaced as separate top-level
+    entries — matching the BODYSTRUCTURE leaf treatment."""
+    from email.message import EmailMessage
+
+    from apple_mail_fast_mcp.draft_builder import extract_attachment_payloads
+
+    inner = EmailMessage()
+    inner["Subject"] = "orig"
+    inner.set_content("hi")
+    inner.add_attachment(b"%PDF inner", maintype="application", subtype="pdf",
+                         filename="inner.pdf")
+
+    m = EmailMessage()
+    m["Subject"] = "c4"
+    m.set_content("body")
+    m.add_attachment(b"%PDF cover", maintype="application", subtype="pdf",
+                     filename="cover.pdf")
+    m.add_attachment(inner)
+
+    atts = extract_attachment_payloads(m.as_bytes())
+    types = [f"{mt}/{st}" for (_n, mt, st, _b) in atts]
+    assert types == ["application/pdf", "message/rfc822"]  # rfc822 NOT descended
+    # The forwarded message carries real bytes (PR #42), not b"".
+    assert atts[1][3]
+    sub = email.message_from_bytes(atts[1][3], policy=policy.default)
+    assert sub["Subject"] == "orig"

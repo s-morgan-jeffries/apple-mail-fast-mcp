@@ -16,10 +16,11 @@ import email
 import mimetypes
 import re
 from dataclasses import dataclass, field
-from email.message import EmailMessage
+from email.message import EmailMessage, MIMEPart
 from email.policy import default as _default_policy
 from email.utils import formataddr, formatdate, getaddresses, make_msgid, parseaddr
 from pathlib import Path
+from typing import Any
 
 # A single forwarded attachment carried over from the original message:
 # (filename, maintype, subtype, payload_bytes).
@@ -274,6 +275,94 @@ class OriginalMessage:
     attachments: list[ForwardedAttachment] = field(default_factory=list)
 
 
+def _attachment_payload_bytes(part: MIMEPart[Any, Any]) -> bytes:
+    """Decode one attachment part to its raw bytes.
+
+    Ordinary parts decode via ``get_payload(decode=True)``. A ``message/*``
+    part (a forwarded email) holds a sub-Message, not a transfer-encoded
+    string, so decode returns ``None`` — serialize the sub-message, but only
+    when the transfer encoding is one RFC 2046 §5.2.1 permits for ``message/*``
+    (7bit/8bit/binary/none). A non-conformant base64/quoted-printable message
+    part is parsed from its *still-encoded* text and would serialize to corrupt
+    bytes, so degrade to ``b""``. (rfc822 empty-bytes fix)
+    """
+    decoded = part.get_payload(decode=True)
+    if isinstance(decoded, (bytes, bytearray)):
+        return bytes(decoded)
+    if part.get_content_maintype() == "message":
+        cte = (part.get("Content-Transfer-Encoding") or "").strip().lower()
+        sub = part.get_payload()
+        if (
+            cte in ("", "7bit", "8bit", "binary")
+            and isinstance(sub, list)
+            and sub
+            and hasattr(sub[0], "as_bytes")
+        ):
+            return sub[0].as_bytes()
+    return b""
+
+
+def _walk_attachment_parts(
+    part: MIMEPart[Any, Any], out: list[MIMEPart[Any, Any]]
+) -> None:
+    """Collect attachment parts in MIME document order.
+
+    Applies the same inclusion predicate as the IMAP BODYSTRUCTURE metadata
+    walk (``imap_connector._bodystructure_extract_attachments``): a leaf counts
+    if its disposition is ``attachment``, or ``inline`` with a filename, or it
+    is ``message/rfc822``. A ``message/rfc822`` part is emitted whole and NOT
+    descended into — its own sub-parts belong to the forwarded email, not the
+    outer message — matching the metadata walk's leaf treatment.
+    """
+    if part.get_content_type() == "message/rfc822":
+        out.append(part)
+        return
+    if part.get_content_maintype() == "multipart":
+        for child in part.iter_parts():
+            _walk_attachment_parts(child, out)
+        return
+    disp = part.get_content_disposition()
+    if disp == "attachment" or (disp == "inline" and part.get_filename()):
+        out.append(part)
+
+
+def extract_attachment_payloads(raw: bytes) -> list[ForwardedAttachment]:
+    """Enumerate a message's attachments AS BYTES, matching the order and
+    membership of the IMAP BODYSTRUCTURE metadata list that ``get_attachments``
+    / ``get_messages`` report.
+
+    The byte-fetch tools (``get_attachment_content`` / ``save_attachments``)
+    index into this with a 0-based ``attachment_index`` that callers take from
+    the metadata list — so the two MUST agree. ``email.iter_attachments()``
+    does not: it drops body-referenced inline parts (multipart/related inline
+    images with filenames) and skips parts nested under a multipart/
+    alternative, so it diverges from the metadata list and broke the index
+    contract (out-of-range, or — worse — a different part's bytes). The
+    concrete divergences were found by dogfooding real iCloud messages.
+
+    Distinct from :func:`parse_original_message`, which deliberately keeps
+    stdlib ``iter_attachments`` semantics for the reply/forward draft path.
+    """
+    msg = email.message_from_bytes(raw, policy=_default_policy)
+    parts: list[MIMEPart[Any, Any]] = []
+    _walk_attachment_parts(msg, parts)
+    out: list[ForwardedAttachment] = []
+    for part in parts:
+        maintype, _, subtype = part.get_content_type().partition("/")
+        # Membership/order match the metadata list (that's the index
+        # contract); the name default differs by design — a nameless part
+        # lists as "" in metadata but needs a usable save name here.
+        out.append(
+            (
+                part.get_filename() or "attachment",
+                maintype,
+                subtype,
+                _attachment_payload_bytes(part),
+            )
+        )
+    return out
+
+
 def parse_original_message(raw: bytes) -> OriginalMessage:
     """Parse a raw RFC 822 message into the pieces needed for a reply or
     forward. Prefers the ``text/plain`` body; falls back to a crude
@@ -290,43 +379,20 @@ def parse_original_message(raw: bytes) -> OriginalMessage:
         if html is not None:
             text = _html_to_text(html.get_content())
 
+    # NOTE: the reply/forward path keeps stdlib iter_attachments semantics
+    # (carry only non-inline attachments into the new draft). The byte-fetch
+    # path uses extract_attachment_payloads instead — it must match the IMAP
+    # metadata list's membership/order for the attachment_index contract.
     attachments: list[ForwardedAttachment] = []
     for part in msg.iter_attachments():
-        decoded = part.get_payload(decode=True)
-        if isinstance(decoded, (bytes, bytearray)):
-            payload = bytes(decoded)
-        elif part.get_content_maintype() == "message":
-            # message/rfc822 (a forwarded email) and other message/* parts
-            # carry a sub-Message as payload, not a transfer-encoded string,
-            # so get_payload(decode=True) returns None. Serialize the
-            # sub-message so the forwarded mail travels as real .eml bytes —
-            # otherwise get_attachment_content / save_attachments returned a
-            # success-shaped 0-byte attachment. (A message/* payload is a
-            # single-element [sub_Message] list under the stdlib parser.)
-            #
-            # Trust that parse only for the transfer encodings RFC 2046
-            # §5.2.1 permits for message/* (7bit/8bit/binary/none). A
-            # non-conformant base64/quoted-printable message part is parsed
-            # from its *still-encoded* text (the stdlib doesn't decode
-            # message/* before sub-parsing), so as_bytes() would emit corrupt
-            # bytes — degrade to b"" rather than return wrong-but-non-empty
-            # data masquerading as the forwarded message.
-            cte = (part.get("Content-Transfer-Encoding") or "").strip().lower()
-            sub = part.get_payload()
-            if (
-                cte in ("", "7bit", "8bit", "binary")
-                and isinstance(sub, list)
-                and sub
-                and hasattr(sub[0], "as_bytes")
-            ):
-                payload = sub[0].as_bytes()
-            else:
-                payload = b""
-        else:
-            payload = b""
         maintype, _, subtype = part.get_content_type().partition("/")
         attachments.append(
-            (part.get_filename() or "attachment", maintype, subtype, payload)
+            (
+                part.get_filename() or "attachment",
+                maintype,
+                subtype,
+                _attachment_payload_bytes(part),
+            )
         )
 
     refs_raw = msg.get("References", "") or ""
