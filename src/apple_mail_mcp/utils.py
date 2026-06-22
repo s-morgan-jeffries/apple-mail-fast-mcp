@@ -133,6 +133,52 @@ def validate_email(email: str) -> bool:
     return bool(re.match(pattern, email))
 
 
+def extract_address(sender: str) -> str:
+    """Parse a ``search_messages`` sender string to a bare, lowercased address.
+
+    Sender rows are formatted as ``"Name <email>"`` or a bare ``email`` (see
+    ``imap_connector._format_sender``). Returns ``""`` when no address can be
+    extracted (e.g. a name-only string or empty sender). (#378)
+    """
+    s = sender.strip()
+    if "<" in s and ">" in s:
+        s = s[s.index("<") + 1 : s.index(">")].strip()
+    if "@" not in s:
+        return ""
+    return s.lower()
+
+
+def address_domain(address: str) -> str:
+    """Return the lowercased domain of an email address, or ``"" if none. (#378)"""
+    if "@" not in address:
+        return ""
+    return address.rsplit("@", 1)[1].lower()
+
+
+def rank_senders(
+    rows: list[dict[str, Any]], by: str, limit: int
+) -> list[dict[str, Any]]:
+    """Aggregate ``search_messages`` rows into a ranked sender list. (#378)
+
+    Groups by full address (``by="address"``) or domain (``by="domain"``),
+    counts occurrences, and returns the top ``limit`` as
+    ``[{<key>: value, "count": n}, ...]`` sorted by count desc (ties broken by
+    key for stable output). Rows whose sender yields no address are skipped.
+    """
+    key_name = "domain" if by == "domain" else "address"
+    counts: dict[str, int] = {}
+    for row in rows:
+        addr = extract_address(str(row.get("sender", "")))
+        if not addr:
+            continue
+        key = address_domain(addr) if by == "domain" else addr
+        if not key:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [{key_name: k, "count": n} for k, n in ranked[:limit]]
+
+
 def sanitize_input(value: Any) -> str:
     """
     Sanitize user input for safety.

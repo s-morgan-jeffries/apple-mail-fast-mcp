@@ -35,6 +35,7 @@ from apple_mail_mcp.server import (
     delete_template,
     get_attachment_content,
     get_messages,
+    get_statistics,
     get_template,
     get_thread,
     list_accounts,
@@ -1967,6 +1968,110 @@ class TestGetThread:
         mock_mail.get_thread.side_effect = RuntimeError("boom")
 
         result = get_thread("1")
+
+        assert result["success"] is False
+        assert result["error_type"] == "unknown"
+        assert "boom" in result["error"]
+
+
+class TestGetStatistics:
+    """#378: consolidated inbox-stats aggregation over search_messages."""
+
+    def _rows(self) -> list[dict]:
+        # 4 messages: 2 read, 2 unread, 1 flagged; 3 from example.com.
+        return [
+            {"sender": "Alice <alice@example.com>", "read_status": True, "flagged": False},
+            {"sender": "alice@example.com", "read_status": False, "flagged": True},
+            {"sender": "Bob <bob@other.org>", "read_status": True, "flagged": False},
+            {"sender": "carol@example.com", "read_status": False, "flagged": False},
+        ]
+
+    def test_success_aggregates_counts_and_top_senders(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        mock_mail.search_messages.return_value = self._rows()
+
+        result = get_statistics(account="Gmail", mailbox="INBOX")
+
+        assert result["success"] is True
+        s = result["statistics"]
+        assert s["account"] == "Gmail"
+        assert s["mailbox"] == "INBOX"
+        assert s["total"] == 4
+        assert s["unread"] == 2
+        assert s["flagged"] == 1
+        assert s["read_ratio"] == 0.5
+        assert s["scanned"] == 4
+        assert s["window_fully_covered"] is True
+        # alice@example.com appears twice -> top
+        assert s["top_senders"][0] == {"address": "alice@example.com", "count": 2}
+        mock_logger.log_operation.assert_called_once()
+
+    def test_passes_window_and_scan_limit_to_search(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        mock_mail.search_messages.return_value = []
+
+        get_statistics(
+            account="Gmail", mailbox="INBOX", received_within_hours=48, scan_limit=250
+        )
+
+        kwargs = mock_mail.search_messages.call_args.kwargs
+        assert kwargs["account"] == "Gmail"
+        assert kwargs["mailbox"] == "INBOX"
+        assert kwargs["received_within_hours"] == 48
+        assert kwargs["limit"] == 250
+
+    def test_by_domain_grouping(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        mock_mail.search_messages.return_value = self._rows()
+
+        result = get_statistics(account="Gmail", by="domain")
+
+        top = result["statistics"]["top_senders"]
+        assert top[0] == {"domain": "example.com", "count": 3}
+
+    def test_scan_limit_hit_marks_not_fully_covered(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        rows = self._rows() * 25  # 100 rows
+        mock_mail.search_messages.return_value = rows
+
+        result = get_statistics(account="Gmail", scan_limit=100)
+
+        assert result["statistics"]["scanned"] == 100
+        assert result["statistics"]["window_fully_covered"] is False
+
+    def test_empty_window_no_div_by_zero(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        mock_mail.search_messages.return_value = []
+
+        result = get_statistics(account="Gmail")
+
+        s = result["statistics"]
+        assert s["total"] == 0
+        assert s["unread"] == 0
+        assert s["read_ratio"] == 0.0
+        assert s["top_senders"] == []
+        assert s["window_fully_covered"] is True
+
+    def test_top_senders_limit_respected(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        mock_mail.search_messages.return_value = self._rows()
+
+        result = get_statistics(account="Gmail", top_senders_limit=1)
+
+        assert len(result["statistics"]["top_senders"]) == 1
+
+    def test_unexpected_exception_maps_to_unknown(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        mock_mail.search_messages.side_effect = RuntimeError("boom")
+
+        result = get_statistics(account="Gmail")
 
         assert result["success"] is False
         assert result["error_type"] == "unknown"

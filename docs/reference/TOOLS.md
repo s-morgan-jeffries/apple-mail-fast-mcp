@@ -4,7 +4,7 @@ Complete reference for all MCP tools provided by the Apple Mail MCP server.
 
 ## Overview
 
-**Total Tools:** 23 (9 read-only, 14 mutating — see Classification below). See the [CHANGELOG](../../CHANGELOG.md) for the version history.
+**Total Tools:** 25 (11 read-only, 14 mutating — see Classification below). See the [CHANGELOG](../../CHANGELOG.md) for the version history.
 
 ## Tool annotations (`readOnlyHint` / `destructiveHint` / `idempotentHint`)
 
@@ -270,6 +270,59 @@ full = get_messages(ids)
 
 ---
 
+
+---
+
+### get_statistics
+
+Aggregate inbox statistics over a mailbox and time window — message volume, read/unread/flagged counts, read ratio, and top senders (by address or domain). A read-only roll-up computed from a single `search_messages` pass; per-folder unread counts live on `list_mailboxes` and are not duplicated here.
+
+Stats are computed over at most `scan_limit` of the most recent messages in the window. `window_fully_covered` is `false` when the window held more than that — so the numbers are a recent sample, not a silent truncation.
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `account` | string | Yes | - | Account name (e.g. "Gmail"). |
+| `mailbox` | string | No | "INBOX" | Mailbox to summarize. |
+| `received_within_hours` | integer | No | 720 | Window size in hours (720 ≈ 30 days). |
+| `date_from` | string | No | None | ISO date lower bound (composes with the window). |
+| `date_to` | string | No | None | ISO date upper bound. |
+| `by` | string | No | "address" | Group top senders by `"address"` or `"domain"`. |
+| `top_senders_limit` | integer | No | 10 | How many top senders to return. |
+| `scan_limit` | integer | No | 500 | Max messages aggregated (bounds cost). |
+
+**Returns:**
+
+```json
+{
+  "success": true,
+  "statistics": {
+    "account": "Gmail", "mailbox": "INBOX",
+    "window": {"from": null, "to": null, "within_hours": 720},
+    "scanned": 312, "window_fully_covered": true,
+    "total": 312, "unread": 47, "flagged": 5, "read_ratio": 0.849,
+    "top_senders": [
+      {"address": "newsletter@example.com", "count": 28},
+      {"address": "alice@work.com", "count": 12}
+    ]
+  }
+}
+```
+
+**Examples:**
+
+```python
+# Last 30 days of INBOX, who emails me most
+get_statistics(account="Gmail")
+
+# Group by sending domain over the last week
+get_statistics(account="Gmail", by="domain", received_within_hours=168)
+```
+
+**Error Codes:**
+
+- `unknown`: Unexpected error occurred
 
 ---
 

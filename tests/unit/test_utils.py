@@ -7,10 +7,12 @@ import pytest
 from apple_mail_mcp.exceptions import MailAppleScriptError
 from apple_mail_mcp.utils import (
     DEFAULT_MAX_BODY_BYTES,
+    address_domain,
     applescript_account_clause,
     coerce_json_dict,
     coerce_json_list,
     escape_applescript_string,
+    extract_address,
     format_applescript_list,
     get_flag_index,
     is_account_uuid,
@@ -22,6 +24,7 @@ from apple_mail_mcp.utils import (
     parse_applescript_json,
     parse_applescript_list,
     parse_rfc822_ids,
+    rank_senders,
     sanitize_input,
     validate_email,
     walk_thread_graph,
@@ -644,3 +647,81 @@ class TestMakeBodySafe:
             safe, _, _ = make_body_safe(content, DEFAULT_MAX_BODY_BYTES)
             # The assertion that the original bug would have failed.
             json.dumps({"content": safe}).encode("utf-8")
+
+
+class TestExtractAddress:
+    """#378: parse a `search_messages` sender string to a bare address."""
+
+    @pytest.mark.parametrize(
+        "sender, expected",
+        [
+            ("Alice Smith <alice@example.com>", "alice@example.com"),
+            ("alice@example.com", "alice@example.com"),
+            ("<bob@example.com>", "bob@example.com"),
+            ('"Doe, Jane" <jane@x.org>', "jane@x.org"),
+            ("  spaced@x.com  ", "spaced@x.com"),
+            ("UPPER@Example.COM", "upper@example.com"),  # normalized lowercase
+        ],
+    )
+    def test_parses_and_normalizes(self, sender, expected):
+        assert extract_address(sender) == expected
+
+    @pytest.mark.parametrize("sender", ["", "   ", "no-at-sign", "Name Only"])
+    def test_unparseable_returns_empty(self, sender):
+        assert extract_address(sender) == ""
+
+
+class TestAddressDomain:
+    @pytest.mark.parametrize(
+        "address, expected",
+        [
+            ("alice@example.com", "example.com"),
+            ("BOB@Example.COM", "example.com"),
+            ("plain", ""),
+            ("", ""),
+        ],
+    )
+    def test_domain(self, address, expected):
+        assert address_domain(address) == expected
+
+
+class TestRankSenders:
+    """#378: aggregate search rows into a ranked sender list."""
+
+    def _rows(self):
+        return [
+            {"sender": "Alice <alice@example.com>"},
+            {"sender": "alice@example.com"},
+            {"sender": "Bob <bob@other.org>"},
+            {"sender": "Alice <alice@example.com>"},
+            {"sender": "carol@example.com"},
+        ]
+
+    def test_by_address_counts_and_sorts_desc(self):
+        out = rank_senders(self._rows(), by="address", limit=10)
+        assert out[0] == {"address": "alice@example.com", "count": 3}
+        # remaining two each have count 1
+        counts = {r["address"]: r["count"] for r in out}
+        assert counts == {
+            "alice@example.com": 3,
+            "bob@other.org": 1,
+            "carol@example.com": 1,
+        }
+
+    def test_by_domain_rolls_up(self):
+        out = rank_senders(self._rows(), by="domain", limit=10)
+        counts = {r["domain"]: r["count"] for r in out}
+        assert counts == {"example.com": 4, "other.org": 1}
+        assert out[0] == {"domain": "example.com", "count": 4}
+
+    def test_limit_truncates_to_top_n(self):
+        out = rank_senders(self._rows(), by="address", limit=1)
+        assert out == [{"address": "alice@example.com", "count": 3}]
+
+    def test_empty_rows(self):
+        assert rank_senders([], by="address", limit=10) == []
+
+    def test_unparseable_senders_skipped(self):
+        rows = [{"sender": ""}, {"sender": "no-at"}, {"sender": "x@y.com"}]
+        out = rank_senders(rows, by="address", limit=10)
+        assert out == [{"address": "x@y.com", "count": 1}]

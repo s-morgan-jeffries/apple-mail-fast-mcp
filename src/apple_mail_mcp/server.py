@@ -56,6 +56,7 @@ from .utils import (
     coerce_json_dict,
     coerce_json_list,
     make_body_safe,
+    rank_senders,
 )
 
 # Configure logging
@@ -1549,6 +1550,115 @@ def get_thread(message_id: str) -> dict[str, Any]:
         }
     except Exception as e:
         logger.error(f"Error getting thread: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "error_type": "unknown",
+        }
+
+
+@_tool(
+    {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
+)
+def get_statistics(
+    account: str,
+    mailbox: str = "INBOX",
+    received_within_hours: int | None = 720,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    by: str = "address",
+    top_senders_limit: int = 10,
+    scan_limit: int = 500,
+) -> dict[str, Any]:
+    """Aggregate inbox statistics over a mailbox and time window.
+
+    A read-only analytics roll-up computed from a single ``search_messages``
+    pass — message volume, read/unread/flagged counts, read ratio, and the
+    top senders (by full address or domain). This is the consolidated
+    inbox-stats tool; per-folder unread counts live on ``list_mailboxes``
+    and are not duplicated here.
+
+    The window defaults to the last ~30 days (``received_within_hours=720``);
+    pass ``date_from``/``date_to`` for an explicit range. Stats are computed
+    over at most ``scan_limit`` of the most recent messages in the window —
+    ``window_fully_covered`` is ``False`` when the window held more than that,
+    so the numbers are a recent-sample rather than a silent truncation.
+
+    Args:
+        account: Mail.app account name (e.g. "Gmail"). Required.
+        mailbox: Mailbox to summarize (default "INBOX").
+        received_within_hours: Window size in hours (default 720 ≈ 30 days).
+        date_from: ISO date lower bound (composes with the window).
+        date_to: ISO date upper bound.
+        by: Group top senders by "address" (default) or "domain".
+        top_senders_limit: How many top senders to return (default 10).
+        scan_limit: Max messages aggregated (default 500; bounds cost).
+
+    Returns:
+        ``{"success": True, "statistics": {account, mailbox, window, scanned,
+        window_fully_covered, total, unread, flagged, read_ratio,
+        top_senders: [{address|domain, count}, ...]}}``.
+
+    Example:
+        >>> get_statistics(account="Gmail")
+        {"success": True, "statistics": {"total": 312, "unread": 47, ...}}
+    """
+    try:
+        safety_err = check_test_mode_safety("get_statistics", account=account)
+        if safety_err:
+            return safety_err
+
+        rate_err = check_rate_limit(
+            "get_statistics", {"account": account, "mailbox": mailbox}
+        )
+        if rate_err:
+            return rate_err
+
+        logger.info(
+            f"Computing statistics for {account}/{mailbox} "
+            f"(within_hours={received_within_hours}, scan_limit={scan_limit})"
+        )
+
+        rows = mail.search_messages(
+            account=account,
+            mailbox=mailbox,
+            date_from=date_from,
+            date_to=date_to,
+            received_within_hours=received_within_hours,
+            limit=scan_limit,
+        )
+
+        total = len(rows)
+        unread = sum(1 for r in rows if not r.get("read_status", False))
+        flagged = sum(1 for r in rows if r.get("flagged", False))
+        read_ratio = round((total - unread) / total, 3) if total else 0.0
+
+        statistics = {
+            "account": account,
+            "mailbox": mailbox,
+            "window": {
+                "from": date_from,
+                "to": date_to,
+                "within_hours": received_within_hours,
+            },
+            "scanned": total,
+            # Equal to scan_limit ⇒ the window may hold more (recent sample).
+            "window_fully_covered": total < scan_limit,
+            "total": total,
+            "unread": unread,
+            "flagged": flagged,
+            "read_ratio": read_ratio,
+            "top_senders": rank_senders(rows, by=by, limit=top_senders_limit),
+        }
+
+        operation_logger.log_operation(
+            "get_statistics", {"account": account, "mailbox": mailbox}, "success"
+        )
+
+        return {"success": True, "statistics": statistics}
+
+    except Exception as e:
+        logger.error(f"Error computing statistics: {e}")
         return {
             "success": False,
             "error": str(e),

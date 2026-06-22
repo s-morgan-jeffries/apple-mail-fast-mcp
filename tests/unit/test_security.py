@@ -225,7 +225,7 @@ class TestCheckRateLimit:
         expected_ops = {
             "list_accounts", "list_rules", "list_mailboxes", "get_messages",
             "get_thread", "save_attachments", "get_attachment_content",
-            "search_messages",
+            "search_messages", "get_statistics",
             "update_message", "create_mailbox", "update_mailbox",
             "delete_mailbox", "delete_messages",
             "create_draft", "update_draft", "delete_draft",

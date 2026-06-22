@@ -29,6 +29,7 @@ EXPECTED_TOOLS = {
     "search_messages",
     "get_messages",
     "get_thread",
+    "get_statistics",
     # Drafts lifecycle (#134)
     "create_draft",
     "update_draft",
@@ -155,6 +156,12 @@ INVOCATION_CASES: list[tuple[str, dict[str, Any], str, Any]] = [
         "get_thread",
         [{"id": "msg-1", "subject": "Q3", "sender": "a@b",
           "date_received": "Mon", "read_status": True, "flagged": False}],
+    ),
+    (
+        "get_statistics",
+        {"account": "TestAccount"},
+        "search_messages",
+        [{"sender": "a@example.com", "read_status": True, "flagged": False}],
     ),
     (
         "create_draft",
