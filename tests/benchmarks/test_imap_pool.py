@@ -23,8 +23,8 @@ from __future__ import annotations
 
 import pytest
 
-from apple_mail_mcp.imap_connector import ImapConnectionPool
-from apple_mail_mcp.mail_connector import AppleMailConnector
+from apple_mail_fast_mcp.imap_connector import ImapConnectionPool
+from apple_mail_fast_mcp.mail_connector import AppleMailConnector
 
 from .conftest import (
     BenchmarkResult,
@@ -42,11 +42,11 @@ def _skip_if_no_imap(
     names in order; uses whichever has at least one message. Matches
     the `benchmark_mailbox` fixture pattern in test_search.py.
     """
-    from apple_mail_mcp.exceptions import (
+    from apple_mail_fast_mcp.exceptions import (
         MailKeychainAccessDeniedError,
         MailKeychainEntryNotFoundError,
     )
-    from apple_mail_mcp.keychain import get_imap_password
+    from apple_mail_fast_mcp.keychain import get_imap_password
 
     try:
         _, _, email = connector._resolve_imap_config(test_account)

@@ -8,8 +8,8 @@ from unittest.mock import MagicMock
 import pytest
 from imapclient.exceptions import IMAPClientError, LoginError
 
-from apple_mail_mcp.cli import run_setup_imap
-from apple_mail_mcp.exceptions import (
+from apple_mail_fast_mcp.cli import run_setup_imap
+from apple_mail_fast_mcp.exceptions import (
     MailKeychainAccessDeniedError,
     MailKeychainEntryNotFoundError,
 )
@@ -118,7 +118,7 @@ class TestAccountValidation:
         capsys: pytest.CaptureFixture[str],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from apple_mail_mcp import cli as cli_mod
+        from apple_mail_fast_mcp import cli as cli_mod
 
         set_calls: list[tuple[str, str, str]] = []
         monkeypatch.setattr(
@@ -152,7 +152,7 @@ class TestSetupHappyPath:
         capsys: pytest.CaptureFixture[str],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from apple_mail_mcp import cli as cli_mod
+        from apple_mail_fast_mcp import cli as cli_mod
 
         set_calls: list[tuple[str, str, str]] = []
         monkeypatch.setattr(
@@ -199,7 +199,7 @@ class TestSetupHappyPath:
         the right Apple ID but the resolver swapped in an SMTP-only From
         alias the IMAP server rejected. (#201)
         """
-        from apple_mail_mcp import cli as cli_mod
+        from apple_mail_fast_mcp import cli as cli_mod
 
         set_calls: list[tuple[str, str, str]] = []
         monkeypatch.setattr(
@@ -250,7 +250,7 @@ class TestSetupFailurePaths:
         capsys: pytest.CaptureFixture[str],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from apple_mail_mcp import cli as cli_mod
+        from apple_mail_fast_mcp import cli as cli_mod
 
         set_calls: list[Any] = []
         monkeypatch.setattr(
@@ -295,7 +295,7 @@ class TestSetupFailurePaths:
         capsys: pytest.CaptureFixture[str],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from apple_mail_mcp import cli as cli_mod
+        from apple_mail_fast_mcp import cli as cli_mod
 
         set_calls: list[tuple[str, str, str]] = []
         delete_calls: list[tuple[str, str]] = []
@@ -335,7 +335,7 @@ class TestSetupFailurePaths:
         capsys: pytest.CaptureFixture[str],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from apple_mail_mcp import cli as cli_mod
+        from apple_mail_fast_mcp import cli as cli_mod
 
         delete_calls: list[Any] = []
         monkeypatch.setattr(
@@ -370,7 +370,7 @@ class TestSetupFailurePaths:
         capsys: pytest.CaptureFixture[str],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from apple_mail_mcp import cli as cli_mod
+        from apple_mail_fast_mcp import cli as cli_mod
 
         monkeypatch.setattr(
             cli_mod, "set_imap_password", lambda a, e, p: None,
@@ -401,7 +401,7 @@ class TestSetupFailurePaths:
         capsys: pytest.CaptureFixture[str],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from apple_mail_mcp import cli as cli_mod
+        from apple_mail_fast_mcp import cli as cli_mod
 
         def raise_denied(*a: Any, **k: Any) -> None:
             raise MailKeychainAccessDeniedError("user canceled")
@@ -434,7 +434,7 @@ class TestUninstall:
         capsys: pytest.CaptureFixture[str],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from apple_mail_mcp import cli as cli_mod
+        from apple_mail_fast_mcp import cli as cli_mod
 
         delete_calls: list[tuple[str, str]] = []
         monkeypatch.setattr(
@@ -458,7 +458,7 @@ class TestUninstall:
         capsys: pytest.CaptureFixture[str],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from apple_mail_mcp import cli as cli_mod
+        from apple_mail_fast_mcp import cli as cli_mod
 
         def raise_not_found(*a: Any, **k: Any) -> None:
             raise MailKeychainEntryNotFoundError("missing")
@@ -481,7 +481,7 @@ class TestUninstall:
         mock_connector: MagicMock,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from apple_mail_mcp import cli as cli_mod
+        from apple_mail_fast_mcp import cli as cli_mod
 
         monkeypatch.setattr(
             cli_mod, "delete_imap_password", lambda a, e: None,
@@ -509,7 +509,7 @@ class TestServerMainDispatch:
     def test_no_args_starts_mcp_server(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from apple_mail_mcp import server as server_mod
+        from apple_mail_fast_mcp import server as server_mod
 
         run_calls: list[Any] = []
         monkeypatch.setattr(
@@ -522,7 +522,7 @@ class TestServerMainDispatch:
     def test_setup_imap_subcommand_does_not_start_server(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from apple_mail_mcp import server as server_mod
+        from apple_mail_fast_mcp import server as server_mod
 
         # mcp.run() must NOT be called when a subcommand was given.
         def fail_if_called() -> None:
@@ -531,7 +531,7 @@ class TestServerMainDispatch:
         monkeypatch.setattr(server_mod.mcp, "run", fail_if_called)
         # cli.run_setup_imap is imported lazily inside main(); patch at that
         # spot via the cli module attribute.
-        import apple_mail_mcp.cli as cli_mod
+        import apple_mail_fast_mcp.cli as cli_mod
 
         captured: dict[str, Any] = {}
 
@@ -552,7 +552,7 @@ class TestServerMainDispatch:
         }
 
     def test_setup_imap_requires_account(self) -> None:
-        from apple_mail_mcp import server as server_mod
+        from apple_mail_fast_mcp import server as server_mod
 
         with pytest.raises(SystemExit):
             server_mod.main(["setup-imap"])
@@ -574,8 +574,8 @@ class TestLoginOverride:
         mock_imap_client: MagicMock,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from apple_mail_mcp import cli as cli_mod
-        from apple_mail_mcp import imap_overrides
+        from apple_mail_fast_mcp import cli as cli_mod
+        from apple_mail_fast_mcp import imap_overrides
 
         monkeypatch.setattr(cli_mod, "set_imap_password", lambda a, e, p: None)
         # iCloud account whose Mail.app login resolves to a gmail address.
@@ -599,8 +599,8 @@ class TestLoginOverride:
         mock_imap_client: MagicMock,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from apple_mail_mcp import cli as cli_mod
-        from apple_mail_mcp import imap_overrides
+        from apple_mail_fast_mcp import cli as cli_mod
+        from apple_mail_fast_mcp import imap_overrides
 
         monkeypatch.setattr(cli_mod, "set_imap_password", lambda a, e, p: None)
         rc = run_setup_imap(
@@ -619,8 +619,8 @@ class TestLoginOverride:
         mock_connector: MagicMock,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from apple_mail_mcp import cli as cli_mod
-        from apple_mail_mcp import imap_overrides
+        from apple_mail_fast_mcp import cli as cli_mod
+        from apple_mail_fast_mcp import imap_overrides
 
         imap_overrides.set_login_override("iCloud", "someone@icloud.com")
         monkeypatch.setattr(cli_mod, "delete_imap_password", lambda a, e: None)
@@ -639,8 +639,8 @@ class TestLoginOverride:
         mock_imap_client: MagicMock,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from apple_mail_mcp import cli as cli_mod
-        from apple_mail_mcp import imap_overrides
+        from apple_mail_fast_mcp import cli as cli_mod
+        from apple_mail_fast_mcp import imap_overrides
 
         monkeypatch.setattr(cli_mod, "set_imap_password", lambda a, e, p: None)
         monkeypatch.setattr(cli_mod, "delete_imap_password", lambda a, e: None)
@@ -665,7 +665,7 @@ class TestLoginOverride:
     ) -> None:
         """The #341 shape: iCloud host, non-Apple login, no --email, login
         rejected → the error suggests re-running with --email."""
-        from apple_mail_mcp import cli as cli_mod
+        from apple_mail_fast_mcp import cli as cli_mod
 
         monkeypatch.setattr(cli_mod, "set_imap_password", lambda a, e, p: None)
         monkeypatch.setattr(cli_mod, "delete_imap_password", lambda a, e: None)

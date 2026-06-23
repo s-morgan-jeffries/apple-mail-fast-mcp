@@ -18,7 +18,7 @@ echo "  pyproject.toml: $PYPROJECT_VERSION (authoritative)"
 ERRORS=0
 
 # Check __init__.py
-INIT_VERSION=$(grep '__version__' src/apple_mail_mcp/__init__.py | sed 's/__version__ = "\(.*\)"/\1/')
+INIT_VERSION=$(grep '__version__' src/apple_mail_fast_mcp/__init__.py | sed 's/__version__ = "\(.*\)"/\1/')
 echo "  __init__.py:    $INIT_VERSION"
 if [ "$INIT_VERSION" != "$PYPROJECT_VERSION" ]; then
     echo "  ERROR: __init__.py version mismatch!"

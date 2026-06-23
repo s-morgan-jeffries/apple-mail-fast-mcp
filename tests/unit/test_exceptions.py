@@ -2,7 +2,7 @@
 
 import pytest
 
-from apple_mail_mcp.exceptions import (
+from apple_mail_fast_mcp.exceptions import (
     MailError,
     MailKeychainAccessDeniedError,
     MailKeychainEntryNotFoundError,

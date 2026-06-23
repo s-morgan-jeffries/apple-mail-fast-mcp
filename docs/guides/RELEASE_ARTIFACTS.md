@@ -13,7 +13,7 @@ Because they're resource-gated, they're easy to defer "just this once" — and a
 
 Each artifact carries the **release version it was produced for**:
 
-- `baseline.json` — a `"_version"` key, written by `--capture-baseline` (from `apple_mail_mcp.__version__`).
+- `baseline.json` — a `"_version"` key, written by `--capture-baseline` (from `apple_mail_fast_mcp.__version__`).
 - `scored_results.md` — its `**Version:** vX.Y.Z` line (hand-authored when the snapshot is written).
 
 `check_release_artifacts.sh` (run in release Phase 9; `./scripts/check_release_artifacts.sh [version]`, default version from `pyproject.toml`) **fails** when a stamp doesn't match the release being cut — so a stale artifact can't ship unnoticed.

@@ -104,9 +104,9 @@ Anchor itself is always included.
 
 | Path | Change |
 |---|---|
-| `src/apple_mail_mcp/mail_connector.py` | New `get_thread(message_id)` method; helper `_normalize_subject`; helper `_parse_rfc822_ids`; two new AppleScript bodies (resolve-anchor, collect-candidates) |
-| `src/apple_mail_mcp/server.py` | New `@mcp.tool() get_thread`; error mapping (`MailMessageNotFoundError` → `not_found`) |
-| `src/apple_mail_mcp/security.py` | Add `get_thread` to `OPERATION_TIERS["cheap_reads"]` |
+| `src/apple_mail_fast_mcp/mail_connector.py` | New `get_thread(message_id)` method; helper `_normalize_subject`; helper `_parse_rfc822_ids`; two new AppleScript bodies (resolve-anchor, collect-candidates) |
+| `src/apple_mail_fast_mcp/server.py` | New `@mcp.tool() get_thread`; error mapping (`MailMessageNotFoundError` → `not_found`) |
+| `src/apple_mail_fast_mcp/security.py` | Add `get_thread` to `OPERATION_TIERS["cheap_reads"]` |
 | `tests/unit/test_mail_connector.py` | Unit tests for `_normalize_subject`, `_parse_rfc822_ids`, graph walk, empty-headers case, script-shape guards |
 | `tests/unit/test_server.py` | `TestGetThread` — success, not-found, error-type mapping |
 | `tests/unit/test_security.py` | Extend tier-assignment test |

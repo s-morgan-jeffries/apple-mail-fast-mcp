@@ -21,7 +21,7 @@
 - `await mcp.call_tool(name, args)` → `ToolResult` with `.structured_content` (our tool's raw `dict[str, Any]` return) and `.content` (a list of `TextContent` with the JSON-serialized form).
 - Tools that use elicitation (`send_email`, `forward_message`, `delete_messages`, `move_messages`, etc.) log "Elicitation not supported by client, proceeding without confirmation" when called with no real client context — they proceed to invoke the connector. Happy-path invocation works.
 
-**Existing expected tool names** (from `@mcp.tool()` decorators in `src/apple_mail_mcp/server.py`):
+**Existing expected tool names** (from `@mcp.tool()` decorators in `src/apple_mail_fast_mcp/server.py`):
 
 ```
 list_mailboxes, search_messages, get_message, send_email, mark_as_read,
@@ -62,7 +62,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from apple_mail_mcp import server
+from apple_mail_fast_mcp import server
 
 pytestmark = pytest.mark.e2e
 
@@ -311,7 +311,7 @@ git commit -m "Add invocation test scaffolding with list_mailboxes case"
 
 **Step 1: Replace `INVOCATION_CASES` with the full list**
 
-Consult `src/apple_mail_mcp/server.py` for the exact parameter name of each tool. Replace `INVOCATION_CASES` with:
+Consult `src/apple_mail_fast_mcp/server.py` for the exact parameter name of each tool. Replace `INVOCATION_CASES` with:
 
 ```python
 INVOCATION_CASES: list[tuple[str, dict[str, Any], str, Any]] = [
@@ -411,7 +411,7 @@ INVOCATION_CASES: list[tuple[str, dict[str, Any], str, Any]] = [
 ]
 ```
 
-**Important:** Some tool parameter names may differ (e.g., `mailbox_name` vs. `name`, `attachment_paths` vs. `attachments`, `output_directory` vs. `save_directory`). Before running, re-read the `@mcp.tool()` decorators in `src/apple_mail_mcp/server.py` and adjust `call_args` keys to match each tool's signature exactly. FastMCP will raise `ValidationError` on mismatched parameter names.
+**Important:** Some tool parameter names may differ (e.g., `mailbox_name` vs. `name`, `attachment_paths` vs. `attachments`, `output_directory` vs. `save_directory`). Before running, re-read the `@mcp.tool()` decorators in `src/apple_mail_fast_mcp/server.py` and adjust `call_args` keys to match each tool's signature exactly. FastMCP will raise `ValidationError` on mismatched parameter names.
 
 Also double-check the connector method name (the `mail.XXX(...)` call inside each tool). In most cases it matches the tool name, but verify before running.
 

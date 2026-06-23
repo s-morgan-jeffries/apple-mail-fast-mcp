@@ -4,7 +4,7 @@
 set -euo pipefail
 
 THRESHOLD=20
-SRC_DIR="src/apple_mail_mcp"
+SRC_DIR="src/apple_mail_fast_mcp"
 
 # Resolve how to invoke radon. Prefer it directly on PATH; otherwise fall
 # back to `uv run`, which provisions it from the project's dev dependencies.

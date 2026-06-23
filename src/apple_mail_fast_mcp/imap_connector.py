@@ -1278,7 +1278,7 @@ class ImapConnector:
         every body in an ``Apple-Mail-URLShareWrapper``
         ``<blockquote type="cite">`` that renders as a quote on iOS
         (Mail.app bug FB11734014, issue #245). The caller builds
-        ``raw_message`` via :func:`apple_mail_mcp.draft_builder.build_draft_mime`.
+        ``raw_message`` via :func:`apple_mail_fast_mcp.draft_builder.build_draft_mime`.
         """
         with self._session() as client:
             folder = self._find_drafts_folder(

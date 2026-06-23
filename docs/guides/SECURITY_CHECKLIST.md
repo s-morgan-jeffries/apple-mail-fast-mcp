@@ -6,13 +6,13 @@ For *why* these concerns matter — the trust boundaries and the STRIDE analysis
 
 ## Input sanitization
 
-Any string that originates from an MCP tool argument, an environment variable, or any other external source must pass through [`sanitize_input`](../../src/apple_mail_mcp/utils.py#L156) before further processing. It strips null bytes, truncates oversized strings (currently 10000 chars), and coerces non-strings to strings.
+Any string that originates from an MCP tool argument, an environment variable, or any other external source must pass through [`sanitize_input`](../../src/apple_mail_fast_mcp/utils.py#L156) before further processing. It strips null bytes, truncates oversized strings (currently 10000 chars), and coerces non-strings to strings.
 
 This protects against null-byte injection in shell or AppleScript contexts and bounds memory use for pathological inputs. It does **not** make a string safe for interpolation — see *AppleScript escaping* and *Path-traversal-safe name validation* below.
 
 ## AppleScript escaping
 
-Any sanitized string that gets interpolated into AppleScript source must additionally pass through [`escape_applescript_string`](../../src/apple_mail_mcp/utils.py#L44), which escapes backslashes and quotes. The combined idiom is:
+Any sanitized string that gets interpolated into AppleScript source must additionally pass through [`escape_applescript_string`](../../src/apple_mail_fast_mcp/utils.py#L44), which escapes backslashes and quotes. The combined idiom is:
 
 ```python
 safe = escape_applescript_string(sanitize_input(user_value))
@@ -31,7 +31,7 @@ id_list = ", ".join(
 
 ## Path-traversal-safe name validation
 
-Any user-supplied string used as a filename stem must pass a strict regex *before* being handed to `Path()`. The canonical example is [`_validate_name`](../../src/apple_mail_mcp/templates.py#L180) in the templates module:
+Any user-supplied string used as a filename stem must pass a strict regex *before* being handed to `Path()`. The canonical example is [`_validate_name`](../../src/apple_mail_fast_mcp/templates.py#L180) in the templates module:
 
 ```python
 _NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
@@ -41,7 +41,7 @@ This rejects `..`, slashes, dots, spaces, control characters, and oversized leng
 
 ## Rate limiting
 
-Every MCP tool wrapper in [`server.py`](../../src/apple_mail_mcp/server.py) must call [`check_rate_limit`](../../src/apple_mail_mcp/security.py#L180) as its first action and return immediately if the call is rate-limited. The tool name must be registered in [`OPERATION_TIERS`](../../src/apple_mail_mcp/security.py#L122) under one of three tiers:
+Every MCP tool wrapper in [`server.py`](../../src/apple_mail_fast_mcp/server.py) must call [`check_rate_limit`](../../src/apple_mail_fast_mcp/security.py#L180) as its first action and return immediately if the call is rate-limited. The tool name must be registered in [`OPERATION_TIERS`](../../src/apple_mail_fast_mcp/security.py#L122) under one of three tiers:
 
 | Tier | Cap | Use for |
 |------|-----|---------|
@@ -53,7 +53,7 @@ There's a unit test in [`test_security.py`](../../tests/unit/test_security.py) (
 
 ## Audit logging
 
-Every server-side tool wrapper must call [`operation_logger.log_operation`](../../src/apple_mail_mcp/security.py#L25) on its success path with the operation name, the params it received, and a status string. Failure paths log via the per-`error_type` return shape; the audit log captures the successful actions.
+Every server-side tool wrapper must call [`operation_logger.log_operation`](../../src/apple_mail_fast_mcp/security.py#L25) on its success path with the operation name, the params it received, and a status string. Failure paths log via the per-`error_type` return shape; the audit log captures the successful actions.
 
 This produces a per-process record of what the server actually did — useful for debugging, for confirming that destructive operations were preceded by elicitation, and for users who want to inspect what an LLM caused to happen on their behalf.
 

@@ -41,7 +41,7 @@ The six `async def` tools elicit user confirmation for destructive or visible-to
 
 ## Per-tool inventory
 
-Mechanical extraction from `src/apple_mail_mcp/server.py` and `tests/unit/`. Line counts include the tool's full decorator-to-final-return body. Test counts are unit tests that reference the tool by name.
+Mechanical extraction from `src/apple_mail_fast_mcp/server.py` and `tests/unit/`. Line counts include the tool's full decorator-to-final-return body. Test counts are unit tests that reference the tool by name.
 
 | Tool | Line | Body | Tests |
 |------|-----:|-----:|------:|
@@ -225,6 +225,6 @@ Plus existing **#102** (mailbox CRUD) carries forward with the audit's recommend
 
 ## Provenance
 
-- Inventory extracted 2026-05-03 from `src/apple_mail_mcp/server.py` (line 125-2168) and `tests/unit/` directory.
+- Inventory extracted 2026-05-03 from `src/apple_mail_fast_mcp/server.py` (line 125-2168) and `tests/unit/` directory.
 - Audit walkthrough: interactive Q&A session 2026-05-03 covering all 27 tools, rule-by-rule consolidation reasoning recorded above.
 - Open question deferred: the per-tool inventory's "tests" column counts unit tests by name match; some tests may exercise multiple tools and get counted twice. Numbers are directionally correct but not exact.

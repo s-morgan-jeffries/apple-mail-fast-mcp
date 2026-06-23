@@ -5,10 +5,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from apple_mail_mcp.exceptions import (
+from apple_mail_fast_mcp.exceptions import (
     MailMessageNotFoundError,
 )
-from apple_mail_mcp.mail_connector import AppleMailConnector
+from apple_mail_fast_mcp.mail_connector import AppleMailConnector
 
 
 class TestGetAttachments:
@@ -254,7 +254,7 @@ class TestAttachmentSecurity:
 
     def test_validates_file_type_restrictions(self) -> None:
         """Test that dangerous file types are restricted."""
-        from apple_mail_mcp.security import validate_attachment_type
+        from apple_mail_fast_mcp.security import validate_attachment_type
 
         # Dangerous types should be rejected by default
         assert validate_attachment_type("malware.exe") is False
@@ -269,7 +269,7 @@ class TestAttachmentSecurity:
 
     def test_validates_file_size(self) -> None:
         """Test file size validation."""
-        from apple_mail_mcp.security import validate_attachment_size
+        from apple_mail_fast_mcp.security import validate_attachment_size
 
         # Within limit
         assert validate_attachment_size(1024 * 1024, max_size=10 * 1024 * 1024) is True
@@ -279,7 +279,7 @@ class TestAttachmentSecurity:
 
     def test_sanitizes_filename(self) -> None:
         """Test filename sanitization."""
-        from apple_mail_mcp.utils import sanitize_filename
+        from apple_mail_fast_mcp.utils import sanitize_filename
 
         # Remove dangerous characters and path components
         # Path.name extracts just the filename, so "../../../etc/passwd" -> "passwd"
@@ -302,7 +302,7 @@ class TestSaveAttachmentsPathTraversal:
         return AppleMailConnector(timeout=30)
 
     def test_compute_targets_sanitizes_traversal_name(self, tmp_path: Path) -> None:
-        from apple_mail_mcp.mail_connector import _compute_attachment_save_targets
+        from apple_mail_fast_mcp.mail_connector import _compute_attachment_save_targets
 
         names = ["../../../../tmp/evil.sh", "report.pdf"]
         targets = _compute_attachment_save_targets(names, tmp_path.resolve(), None)
@@ -317,7 +317,7 @@ class TestSaveAttachmentsPathTraversal:
         assert [i for i, _ in targets] == [1, 2]
 
     def test_compute_targets_absolute_name_contained(self, tmp_path: Path) -> None:
-        from apple_mail_mcp.mail_connector import _compute_attachment_save_targets
+        from apple_mail_fast_mcp.mail_connector import _compute_attachment_save_targets
 
         targets = _compute_attachment_save_targets(
             ["/etc/cron.d/evil"], tmp_path.resolve(), None
@@ -327,7 +327,7 @@ class TestSaveAttachmentsPathTraversal:
         assert targets[0][1].name == "evil"
 
     def test_compute_targets_dedupes_collisions(self, tmp_path: Path) -> None:
-        from apple_mail_mcp.mail_connector import _compute_attachment_save_targets
+        from apple_mail_fast_mcp.mail_connector import _compute_attachment_save_targets
 
         # Two names that sanitize to the same basename must not collapse to
         # one path (which would silently overwrite/lose an attachment).
@@ -338,7 +338,7 @@ class TestSaveAttachmentsPathTraversal:
         assert len(paths) == 2
 
     def test_compute_targets_respects_indices(self, tmp_path: Path) -> None:
-        from apple_mail_mcp.mail_connector import _compute_attachment_save_targets
+        from apple_mail_fast_mcp.mail_connector import _compute_attachment_save_targets
 
         targets = _compute_attachment_save_targets(
             ["a.pdf", "b.pdf", "c.pdf"], tmp_path.resolve(), [0, 2]
@@ -382,7 +382,7 @@ class TestGetAttachmentContent:
     @staticmethod
     def _raw_with_attachments(tmp_path: Path) -> bytes:
         """Build a real RFC822 message with a text + a binary attachment."""
-        from apple_mail_mcp.draft_builder import build_draft_mime
+        from apple_mail_fast_mcp.draft_builder import build_draft_mime
 
         txt = tmp_path / "notes.txt"
         txt.write_text("hello from a text attachment\n")
@@ -400,7 +400,7 @@ class TestGetAttachmentContent:
     def _imap_patches(self, connector, mock_imap):
         from unittest.mock import patch
         return [
-            patch("apple_mail_mcp.mail_connector.ImapConnector",
+            patch("apple_mail_fast_mcp.mail_connector.ImapConnector",
                   return_value=mock_imap),
             patch.object(AppleMailConnector, "_get_imap_password_with_fallback",
                          return_value="pw"),
@@ -441,7 +441,7 @@ class TestGetAttachmentContent:
     def test_imap_index_out_of_range_raises(self, connector, tmp_path):
         import contextlib
 
-        from apple_mail_mcp.exceptions import MailAttachmentIndexError
+        from apple_mail_fast_mcp.exceptions import MailAttachmentIndexError
         raw = self._raw_with_attachments(tmp_path)
         mock_imap = MagicMock()
         mock_imap.fetch_raw_message.return_value = raw
@@ -456,7 +456,7 @@ class TestGetAttachmentContent:
     def test_imap_oversize_raises_before_returning(self, tmp_path):
         import contextlib
 
-        from apple_mail_mcp.exceptions import MailAttachmentTooLargeError
+        from apple_mail_fast_mcp.exceptions import MailAttachmentTooLargeError
         connector = AppleMailConnector(timeout=30, max_inline_attachment_bytes=4)
         raw = self._raw_with_attachments(tmp_path)
         mock_imap = MagicMock()
@@ -495,7 +495,7 @@ class TestGetAttachmentContent:
     def test_applescript_oversize_rejected_without_save(
         self, mock_meta, monkeypatch
     ):
-        from apple_mail_mcp.exceptions import MailAttachmentTooLargeError
+        from apple_mail_fast_mcp.exceptions import MailAttachmentTooLargeError
         connector = AppleMailConnector(timeout=30, max_inline_attachment_bytes=10)
         mock_meta.return_value = [
             {"name": "big.bin", "mime_type": "application/octet-stream",
@@ -512,7 +512,7 @@ class TestGetAttachmentContent:
 
     @patch.object(AppleMailConnector, "_get_attachments_applescript")
     def test_applescript_index_out_of_range_raises(self, mock_meta, connector):
-        from apple_mail_mcp.exceptions import MailAttachmentIndexError
+        from apple_mail_fast_mcp.exceptions import MailAttachmentIndexError
         mock_meta.return_value = [
             {"name": "only.txt", "mime_type": "text/plain",
              "size": 3, "downloaded": True},

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import patch
 
-from apple_mail_mcp.security import (
+from apple_mail_fast_mcp.security import (
     OPERATION_TIERS,
     TIER_LIMITS,
     OperationLogger,
@@ -136,7 +136,7 @@ class TestRateLimiter:
         def monotonic() -> float:
             return fake_time[0]
 
-        with patch("apple_mail_mcp.security.time") as mock_time:
+        with patch("apple_mail_fast_mcp.security.time") as mock_time:
             mock_time.monotonic = monotonic
             # First, fill to limit at t=0
             limiter = RateLimiter()
@@ -344,7 +344,7 @@ class TestCheckTestModeSafety:
             is None
         )
 
-    @patch("apple_mail_mcp.security.subprocess.run")
+    @patch("apple_mail_fast_mcp.security.subprocess.run")
     def test_uuid_matching_test_account_returns_none(
         self, mock_run: Any, monkeypatch: Any
     ) -> None:
@@ -358,7 +358,7 @@ class TestCheckTestModeSafety:
 
         assert check_test_mode_safety("search_messages", account=uuid) is None
 
-    @patch("apple_mail_mcp.security.subprocess.run")
+    @patch("apple_mail_fast_mcp.security.subprocess.run")
     def test_unrelated_uuid_returns_error(
         self, mock_run: Any, monkeypatch: Any
     ) -> None:
@@ -428,7 +428,7 @@ class TestCheckTestModeSafety:
             is None
         )
 
-    @patch("apple_mail_mcp.security.subprocess.run")
+    @patch("apple_mail_fast_mcp.security.subprocess.run")
     def test_uuid_lookup_failure_falls_back_to_name_only(
         self, mock_run: Any, monkeypatch: Any
     ) -> None:

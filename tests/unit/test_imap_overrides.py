@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from apple_mail_mcp import imap_overrides
+from apple_mail_fast_mcp import imap_overrides
 
 
 @pytest.fixture(autouse=True)

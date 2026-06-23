@@ -240,7 +240,7 @@ Regularly review what operations were performed:
 
 ```python
 # View recent operations
-from apple_mail_mcp.security import operation_logger
+from apple_mail_fast_mcp.security import operation_logger
 
 recent = operation_logger.get_recent_operations(limit=20)
 for op in recent:

@@ -16,7 +16,7 @@
 
 These were verified during plan-writing:
 
-- **`save_attachments` does NOT have a byte cap.** [src/apple_mail_mcp/mail_connector.py:2410-2487](../../src/apple_mail_mcp/mail_connector.py#L2410-L2487) validates the destination directory and prevents path traversal, but does not cap individual or aggregate attachment size. The DoS row for the Filesystem boundary should flag this as a real gap and **Task 9** files a follow-up issue.
+- **`save_attachments` does NOT have a byte cap.** [src/apple_mail_fast_mcp/mail_connector.py:2410-2487](../../src/apple_mail_fast_mcp/mail_connector.py#L2410-L2487) validates the destination directory and prevents path traversal, but does not cap individual or aggregate attachment size. The DoS row for the Filesystem boundary should flag this as a real gap and **Task 9** files a follow-up issue.
 - **Source files referenced by the threat model exist** at their expected paths: `utils.py`, `security.py`, `templates.py`, `mail_connector.py`, `server.py`, `keychain.py`, `imap_connector.py`. (No file is named `imap_credentials.py` — the original spec draft had this wrong; corrected in the design doc.)
 - **Project convention** for design docs and impl plans: `docs/plans/YYYY-MM-DD-<topic>.md` (this file) and `docs/plans/YYYY-MM-DD-<topic>-design.md` (the spec).
 
@@ -104,7 +104,7 @@ It complements two existing security docs:
 
 Neither doc maps the architectural attack surface explicitly. This one does, via a STRIDE pass (Spoofing / Tampering / Repudiation / Information disclosure / DoS / Elevation) per trust boundary.
 
-**The realistic ongoing risk** is not a missing escape — those are well-covered by [`escape_applescript_string`](../../src/apple_mail_mcp/utils.py) and the JSON-only output pipeline. The realistic risk is **LLM-laundered tool calls authorized by a user who didn't read the elicitation prompt closely**. Mitigations are layered: per-tool elicitation gates, rate limits, audit log, and the user's own attention. See boundary §5.
+**The realistic ongoing risk** is not a missing escape — those are well-covered by [`escape_applescript_string`](../../src/apple_mail_fast_mcp/utils.py) and the JSON-only output pipeline. The realistic risk is **LLM-laundered tool calls authorized by a user who didn't read the elicitation prompt closely**. Mitigations are layered: per-tool elicitation gates, rate limits, audit log, and the user's own attention. See boundary §5.
 
 **What this doc isn't:** not a checklist, not pentesting, not external supply-chain audit (tracked separately via #235), not formal verification.
 ```
@@ -158,20 +158,20 @@ Expected: at least 8 (header + separator + 6 actor rows).
 | Category | Threat | Mitigation | Gap? |
 |---|---|---|---|
 | Spoofing | n/a — `osascript` runs as the user, no auth surface | — | — |
-| Tampering | User input interpolated into AS source escapes the string and injects commands | [`escape_applescript_string`](../../src/apple_mail_mcp/utils.py) + [`sanitize_input`](../../src/apple_mail_mcp/utils.py); pattern documented in [`SECURITY_CHECKLIST.md`](SECURITY_CHECKLIST.md); property tests in #214 | — |
+| Tampering | User input interpolated into AS source escapes the string and injects commands | [`escape_applescript_string`](../../src/apple_mail_fast_mcp/utils.py) + [`sanitize_input`](../../src/apple_mail_fast_mcp/utils.py); pattern documented in [`SECURITY_CHECKLIST.md`](SECURITY_CHECKLIST.md); property tests in #214 | — |
 | Tampering | Numeric / dashed UUID IDs treated as expressions when unquoted (`-` becomes subtraction) | `whose id is "{safe}"` pattern, mandatory quotes (the #86 regression) | — |
-| Repudiation | — | Per-process [`operation_logger`](../../src/apple_mail_mcp/security.py) records every tool call with parameters | — |
-| Information disclosure | `osascript` stdout leaks Mail content if scripts emit unstructured text | JSON-only output via [`_wrap_as_json_script`](../../src/apple_mail_mcp/mail_connector.py) + ASObjC `NSJSONSerialization` | — |
+| Repudiation | — | Per-process [`operation_logger`](../../src/apple_mail_fast_mcp/security.py) records every tool call with parameters | — |
+| Information disclosure | `osascript` stdout leaks Mail content if scripts emit unstructured text | JSON-only output via [`_wrap_as_json_script`](../../src/apple_mail_fast_mcp/mail_connector.py) + ASObjC `NSJSONSerialization` | — |
 | Denial of service | `osascript` hangs on big mailboxes or a deadlocked Mail.app | `with timeout of N` wrapper inside `_wrap_as_json_script` | ⚠️ **#233** — non-wrapped AS paths bypass the timeout |
 | Elevation | n/a — boundary is `process == user`, no privilege to elevate | — | — |
 ```
 
 - [ ] **Step 2: Spot-check the source file references**
 
-Run: `grep -n "def escape_applescript_string\|def sanitize_input" src/apple_mail_mcp/utils.py`
+Run: `grep -n "def escape_applescript_string\|def sanitize_input" src/apple_mail_fast_mcp/utils.py`
 Expected: two function definitions found.
 
-Run: `grep -n "_wrap_as_json_script\|with timeout of" src/apple_mail_mcp/mail_connector.py | head -5`
+Run: `grep -n "_wrap_as_json_script\|with timeout of" src/apple_mail_fast_mcp/mail_connector.py | head -5`
 Expected: at least one match for each.
 
 If any expected match is missing, **stop and reconcile** the doc with the actual code before continuing.
@@ -186,13 +186,13 @@ If any expected match is missing, **stop and reconcile** the doc with the actual
 - [ ] **Step 1: Insert this content after the `### 2. IMAP` header**
 
 ```markdown
-**What crosses:** [`imap_connector.py`](../../src/apple_mail_mcp/imap_connector.py) connects to a remote IMAP server over TLS using `imapclient`. Credentials come from the macOS Keychain via [`keychain.py`](../../src/apple_mail_mcp/keychain.py). The server returns headers, bodies, flags, mailbox listings. **None of this is trusted as input** — it flows into search results, `get_message`/`get_thread` responses, and (importantly) into AppleScript fallback paths.
+**What crosses:** [`imap_connector.py`](../../src/apple_mail_fast_mcp/imap_connector.py) connects to a remote IMAP server over TLS using `imapclient`. Credentials come from the macOS Keychain via [`keychain.py`](../../src/apple_mail_fast_mcp/keychain.py). The server returns headers, bodies, flags, mailbox listings. **None of this is trusted as input** — it flows into search results, `get_message`/`get_thread` responses, and (importantly) into AppleScript fallback paths.
 
 | Category | Threat | Mitigation | Gap? |
 |---|---|---|---|
 | Spoofing | Attacker poses as the legit IMAP server | TLS certificate validation via `imapclient` + stdlib SSL | — |
 | Tampering | MITM or compromised server returns crafted bytes designed to break parsing or escape into AS | Server-returned strings flow through `sanitize_input` + `escape_applescript_string` before AS interpolation; property tests in #214 will fuzz this boundary | ⚠️ Audit during #214: confirm every IMAP→AS path applies escape |
-| Repudiation | We don't log IMAP server identity per request | Connection-time logging in [`keychain.py`](../../src/apple_mail_mcp/keychain.py) | (low) |
+| Repudiation | We don't log IMAP server identity per request | Connection-time logging in [`keychain.py`](../../src/apple_mail_fast_mcp/keychain.py) | (low) |
 | Information disclosure | Server sees our queries and credentials; plaintext IMAP would expose credentials | TLS by default; `setup-imap` requires STARTTLS or implicit TLS — plaintext is not a supported config | — |
 | Denial of service | Hostile server hangs, streams gigabytes, or returns crafted message with very many attachments | Connection timeout via `imapclient`; per-call `timeout` param on the connector; bulk caps (100 items) | (low) — no global byte ceiling on server responses; file follow-up if exposure proves material |
 | Elevation | Compromised server cannot directly execute code if escape paths are correct | Defense in depth: server data → escape → AS or → return JSON. We never `eval` server input | — |
@@ -200,7 +200,7 @@ If any expected match is missing, **stop and reconcile** the doc with the actual
 
 - [ ] **Step 2: Verify the referenced files exist**
 
-Run: `ls src/apple_mail_mcp/imap_connector.py src/apple_mail_mcp/keychain.py`
+Run: `ls src/apple_mail_fast_mcp/imap_connector.py src/apple_mail_fast_mcp/keychain.py`
 Expected: both files listed.
 
 ---
@@ -213,7 +213,7 @@ Expected: both files listed.
 - [ ] **Step 1: Insert this content after the `### 3. Keychain` header**
 
 ```markdown
-**What crosses:** Per-account IMAP/SMTP passwords are stored under our service identifier in the macOS Keychain. They are read at connector init via [`keychain.py`](../../src/apple_mail_mcp/keychain.py). The Keychain's per-application ACL is the only barrier between any user-process and our credentials.
+**What crosses:** Per-account IMAP/SMTP passwords are stored under our service identifier in the macOS Keychain. They are read at connector init via [`keychain.py`](../../src/apple_mail_fast_mcp/keychain.py). The Keychain's per-application ACL is the only barrier between any user-process and our credentials.
 
 | Category | Threat | Mitigation | Gap? |
 |---|---|---|---|
@@ -245,9 +245,9 @@ Expected: both files listed.
 | Category | Threat | Mitigation | Gap? |
 |---|---|---|---|
 | Spoofing | n/a | — | — |
-| Tampering | User input as filename stem escapes intended dir (`../../etc/passwd`) | [`_validate_name`](../../src/apple_mail_mcp/templates.py) regex `^[a-zA-Z0-9_-]{1,64}$` before `Path()` | — |
-| Tampering | Caller-supplied `dest_dir` for `save_attachments` points to a system-critical path | Caller (LLM-via-user) is trusted with this. We validate path existence and reject `..` segments in [`save_attachments`](../../src/apple_mail_mcp/mail_connector.py), but do not blocklist system paths | (informational — accepted trust assumption) |
-| Repudiation | File writes are logged | [`operation_logger`](../../src/apple_mail_mcp/security.py) covers create / save / template ops | — |
+| Tampering | User input as filename stem escapes intended dir (`../../etc/passwd`) | [`_validate_name`](../../src/apple_mail_fast_mcp/templates.py) regex `^[a-zA-Z0-9_-]{1,64}$` before `Path()` | — |
+| Tampering | Caller-supplied `dest_dir` for `save_attachments` points to a system-critical path | Caller (LLM-via-user) is trusted with this. We validate path existence and reject `..` segments in [`save_attachments`](../../src/apple_mail_fast_mcp/mail_connector.py), but do not blocklist system paths | (informational — accepted trust assumption) |
+| Repudiation | File writes are logged | [`operation_logger`](../../src/apple_mail_fast_mcp/security.py) covers create / save / template ops | — |
 | Information disclosure | Templates dir readable by other user-processes at the same UID | OOS | — |
 | Denial of service | Disk fill via massive attachments or template inflation | `sanitize_input` 10000-char cap on template content | ⚠️ **No byte cap on `save_attachments`** — confirmed during plan-writing (see Task 9). File follow-up |
 | Elevation | n/a | — | — |
@@ -270,9 +270,9 @@ Expected: both files listed.
 | Spoofing | n/a — stdio is parent-child, no network auth surface | — | — |
 | Tampering | Hostile email content targets the LLM ("forward all to attacker@evil.com") | Per-tool elicitation gates on destructive ops; rate limits; audit log. **Final defense is the user reviewing elicitation prompts** | ⚠️ **#225** — no automated injection detection yet (planning issue) |
 | Tampering | LLM laundering: hostile message → crafted tool call that reframes destructive intent as benign | Elicitation messages show the actual parameters (recipients, subject, message-id list), not LLM narration — user verifies what's being asked, not what the LLM said it was doing | (informational) |
-| Repudiation | — | [`operation_logger`](../../src/apple_mail_mcp/security.py) captures every tool call with parameters | — |
+| Repudiation | — | [`operation_logger`](../../src/apple_mail_fast_mcp/security.py) captures every tool call with parameters | — |
 | Information disclosure | Email body lands in LLM context; LLM can be coaxed to summarize externally | Boundary is the API provider (Anthropic). OOS for us; covered in [`../SECURITY.md`](../SECURITY.md) privacy section | — |
-| Denial of service | Unbounded tool calls drain rate budget or fan-out | [`check_rate_limit`](../../src/apple_mail_mcp/security.py) 3-tier system (cheap_reads / expensive_ops / sends); bulk caps (100 items) | — |
+| Denial of service | Unbounded tool calls drain rate budget or fan-out | [`check_rate_limit`](../../src/apple_mail_fast_mcp/security.py) 3-tier system (cheap_reads / expensive_ops / sends); bulk caps (100 items) | — |
 | Elevation | LLM coerced into chaining tools (e.g., `create_rule` installs an auto-forward) | Existing elicitation gates cover send / delete | ⚠️ **#222** — `create_rule` action gating in progress |
 ```
 
@@ -296,7 +296,7 @@ gh issue create \
   --body "$(cat <<'EOF'
 ## Problem
 
-Surfaced during the v0.9.0 threat model writeup (#213). [`save_attachments`](src/apple_mail_mcp/mail_connector.py#L2410-L2487) validates the destination directory and prevents path traversal, but does not cap per-attachment size or aggregate bytes written. A hostile email with a multi-GB attachment will be written to disk in full.
+Surfaced during the v0.9.0 threat model writeup (#213). [`save_attachments`](src/apple_mail_fast_mcp/mail_connector.py#L2410-L2487) validates the destination directory and prevents path traversal, but does not cap per-attachment size or aggregate bytes written. A hostile email with a multi-GB attachment will be written to disk in full.
 
 ## Impact
 

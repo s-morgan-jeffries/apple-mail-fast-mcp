@@ -17,13 +17,13 @@ from pathlib import Path
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
 
-from apple_mail_mcp.mail_connector import (
+from apple_mail_fast_mcp.mail_connector import (
     _MAILBOX_RESOLVER_HANDLERS,
     AppleMailConnector,
     _wrap_as_json_script,
     _wrap_with_timeout,
 )
-from apple_mail_mcp.utils import parse_applescript_json
+from apple_mail_fast_mcp.utils import parse_applescript_json
 
 # Skip all integration tests by default
 # Run with: pytest --run-integration
@@ -75,7 +75,7 @@ class TestMailIntegration:
         uuid = match["id"]
 
         # Sanity check: it really is a UUID-shaped string.
-        from apple_mail_mcp.utils import is_account_uuid
+        from apple_mail_fast_mcp.utils import is_account_uuid
         assert is_account_uuid(uuid), f"Expected UUID, got {uuid!r}"
 
         by_uuid = connector.list_mailboxes(uuid)
@@ -228,7 +228,7 @@ class TestMailIntegration:
         self, connector: AppleMailConnector
     ) -> None:
         """Nonexistent anchor raises MailMessageNotFoundError."""
-        from apple_mail_mcp.exceptions import MailMessageNotFoundError
+        from apple_mail_fast_mcp.exceptions import MailMessageNotFoundError
         with pytest.raises(MailMessageNotFoundError):
             connector.get_thread("99999999999")
 
@@ -273,8 +273,8 @@ class TestMailIntegration:
         """
         import json as _json
 
-        from apple_mail_mcp.server import get_messages
-        from apple_mail_mcp.utils import DEFAULT_MAX_BODY_BYTES
+        from apple_mail_fast_mcp.server import get_messages
+        from apple_mail_fast_mcp.utils import DEFAULT_MAX_BODY_BYTES
 
         matches = connector.search_messages(
             account=test_account, mailbox="INBOX", limit=3
@@ -305,11 +305,11 @@ class TestMailIntegration:
         fallback would still work but we'd be testing the AppleScript
         path again, which test_get_message above already covers.
         """
-        from apple_mail_mcp.exceptions import (
+        from apple_mail_fast_mcp.exceptions import (
             MailKeychainAccessDeniedError,
             MailKeychainEntryNotFoundError,
         )
-        from apple_mail_mcp.keychain import get_imap_password
+        from apple_mail_fast_mcp.keychain import get_imap_password
 
         # Resolve email + skip-if-no-keychain via the same path the
         # connector itself uses for IMAP delegation. Match the skip
@@ -449,7 +449,7 @@ class TestMailIntegration:
         assert isinstance(result["payload"], bytes)
         assert result["size"] == len(result["payload"])
         # Server-layer encode must produce a coherent text/base64 blob.
-        from apple_mail_mcp.utils import attachment_content_encoding
+        from apple_mail_fast_mcp.utils import attachment_content_encoding
 
         content, encoding = attachment_content_encoding(
             result["payload"], result["mime_type"]
@@ -469,11 +469,11 @@ class TestMailIntegration:
         fallback would still work but we'd be testing the AppleScript
         path again, which test_get_attachments above already covers.
         """
-        from apple_mail_mcp.exceptions import (
+        from apple_mail_fast_mcp.exceptions import (
             MailKeychainAccessDeniedError,
             MailKeychainEntryNotFoundError,
         )
-        from apple_mail_mcp.keychain import get_imap_password
+        from apple_mail_fast_mcp.keychain import get_imap_password
 
         try:
             _, _, email = connector._resolve_imap_config(test_account)
@@ -524,11 +524,11 @@ class TestMailIntegration:
 
         from imapclient import IMAPClient
 
-        from apple_mail_mcp.exceptions import (
+        from apple_mail_fast_mcp.exceptions import (
             MailKeychainAccessDeniedError,
             MailKeychainEntryNotFoundError,
         )
-        from apple_mail_mcp.keychain import get_imap_password
+        from apple_mail_fast_mcp.keychain import get_imap_password
 
         host, port, email = connector._resolve_imap_config(test_account)
         try:
@@ -657,11 +657,11 @@ class TestDraftsLifecycleIntegration:
         exercised; the AppleScript fallback returns a numeric id which the
         fresh/reply tests above already cover).
         """
-        from apple_mail_mcp.exceptions import (
+        from apple_mail_fast_mcp.exceptions import (
             MailKeychainAccessDeniedError,
             MailKeychainEntryNotFoundError,
         )
-        from apple_mail_mcp.keychain import get_imap_password
+        from apple_mail_fast_mcp.keychain import get_imap_password
 
         try:
             _, _, email = connector._resolve_imap_config(test_account)
@@ -719,11 +719,11 @@ class TestDraftsLifecycleIntegration:
         """
         import time as _time
 
-        from apple_mail_mcp.exceptions import (
+        from apple_mail_fast_mcp.exceptions import (
             MailKeychainAccessDeniedError,
             MailKeychainEntryNotFoundError,
         )
-        from apple_mail_mcp.keychain import get_imap_password
+        from apple_mail_fast_mcp.keychain import get_imap_password
 
         try:
             _, _, email = connector._resolve_imap_config(test_account)
@@ -770,13 +770,13 @@ class TestDraftsLifecycleIntegration:
         import email as _email
         from email import policy as _policy
 
-        from apple_mail_mcp.exceptions import (
+        from apple_mail_fast_mcp.exceptions import (
             MailKeychainAccessDeniedError,
             MailKeychainEntryNotFoundError,
             MailMessageNotFoundError,
         )
-        from apple_mail_mcp.imap_connector import ImapConnector
-        from apple_mail_mcp.keychain import get_imap_password
+        from apple_mail_fast_mcp.imap_connector import ImapConnector
+        from apple_mail_fast_mcp.keychain import get_imap_password
 
         try:
             host, port, email = connector._resolve_imap_config(test_account)
@@ -862,7 +862,7 @@ class TestDraftsLifecycleIntegration:
         mailbox and handles cleanup."""
         from imapclient import IMAPClient
 
-        from apple_mail_mcp.keychain import get_imap_password
+        from apple_mail_fast_mcp.keychain import get_imap_password
 
         host, port, email = connector._resolve_imap_config(test_account)
         pw = get_imap_password(test_account, email)
@@ -876,11 +876,11 @@ class TestDraftsLifecycleIntegration:
     def _skip_without_keychain(
         self, connector: AppleMailConnector, test_account: str
     ) -> None:
-        from apple_mail_mcp.exceptions import (
+        from apple_mail_fast_mcp.exceptions import (
             MailKeychainAccessDeniedError,
             MailKeychainEntryNotFoundError,
         )
-        from apple_mail_mcp.keychain import get_imap_password
+        from apple_mail_fast_mcp.keychain import get_imap_password
 
         try:
             _, _, email = connector._resolve_imap_config(test_account)
@@ -907,9 +907,9 @@ class TestDraftsLifecycleIntegration:
         from datetime import datetime, timezone
         from email.utils import format_datetime
 
-        from apple_mail_mcp.exceptions import MailMessageNotFoundError
-        from apple_mail_mcp.imap_connector import ImapConnector
-        from apple_mail_mcp.keychain import get_imap_password
+        from apple_mail_fast_mcp.exceptions import MailMessageNotFoundError
+        from apple_mail_fast_mcp.imap_connector import ImapConnector
+        from apple_mail_fast_mcp.keychain import get_imap_password
 
         self._skip_without_keychain(connector, test_account)
 
@@ -1061,11 +1061,11 @@ class TestDraftsLifecycleIntegration:
         path and inspects the actual socket timeout, then runs a real
         operation under it.
         """
-        from apple_mail_mcp.imap_connector import (
+        from apple_mail_fast_mcp.imap_connector import (
             OPERATION_TIMEOUT_S,
             ImapConnector,
         )
-        from apple_mail_mcp.keychain import get_imap_password
+        from apple_mail_fast_mcp.keychain import get_imap_password
 
         self._skip_without_keychain(connector, test_account)
 
@@ -1135,7 +1135,7 @@ class TestDraftsLifecycleIntegration:
 
         import time as _time
 
-        from apple_mail_mcp.exceptions import MailDraftNotFoundError
+        from apple_mail_fast_mcp.exceptions import MailDraftNotFoundError
 
         result = connector.create_draft(
             seed="new",
@@ -1183,7 +1183,7 @@ class TestDraftsLifecycleIntegration:
     ) -> None:
         import time
 
-        from apple_mail_mcp.exceptions import MailDraftNotFoundError
+        from apple_mail_fast_mcp.exceptions import MailDraftNotFoundError
 
         result = connector.create_draft(
             seed="new",
@@ -1219,7 +1219,7 @@ class TestDraftsLifecycleIntegration:
 
         from imapclient import IMAPClient
 
-        from apple_mail_mcp.keychain import get_imap_password
+        from apple_mail_fast_mcp.keychain import get_imap_password
 
         fixture = f"ZZZ-AMM-DEL-INT-{_uuid.uuid4().hex[:8]}"
         assert connector.create_mailbox(account=test_account, name=fixture)
@@ -1264,7 +1264,7 @@ class TestDraftsLifecycleIntegration:
 
         from imapclient import IMAPClient
 
-        from apple_mail_mcp.keychain import get_imap_password
+        from apple_mail_fast_mcp.keychain import get_imap_password
 
         suffix = _uuid.uuid4().hex[:8]
         src = f"ZZZ-AMM-MV-SRC-{suffix}"
@@ -1350,7 +1350,7 @@ class TestDraftsLifecycleIntegration:
 
         from imapclient import IMAPClient
 
-        from apple_mail_mcp.keychain import get_imap_password
+        from apple_mail_fast_mcp.keychain import get_imap_password
 
         host, port, email = connector._resolve_imap_config(test_account)
         if "gmail" not in host.lower():
@@ -1444,7 +1444,7 @@ class TestDraftsLifecycleIntegration:
 
         from imapclient import IMAPClient
 
-        from apple_mail_mcp.keychain import get_imap_password
+        from apple_mail_fast_mcp.keychain import get_imap_password
 
         suffix = _uuid.uuid4().hex[:8]
         src = f"ZZZ-AMM-DEL-SRC-{suffix}"
@@ -1560,7 +1560,7 @@ class TestDraftsLifecycleIntegration:
 
         from imapclient import IMAPClient
 
-        from apple_mail_mcp.keychain import get_imap_password
+        from apple_mail_fast_mcp.keychain import get_imap_password
 
         suffix = _uuid.uuid4().hex[:8]
         src = f"ZZZ-AMM-READ-SRC-{suffix}"
@@ -1661,7 +1661,7 @@ class TestDraftsLifecycleIntegration:
 
         from imapclient import IMAPClient
 
-        from apple_mail_mcp.keychain import get_imap_password
+        from apple_mail_fast_mcp.keychain import get_imap_password
 
         suffix = _uuid.uuid4().hex[:8]
         src = f"ZZZ-AMM-FLAG-SRC-{suffix}"
@@ -1761,7 +1761,7 @@ class TestDraftsLifecycleIntegration:
 
         from imapclient import IMAPClient
 
-        from apple_mail_mcp.keychain import get_imap_password
+        from apple_mail_fast_mcp.keychain import get_imap_password
 
         suffix = _uuid.uuid4().hex[:8]
         src = f"ZZZ-AMM-OR316-{suffix}"
@@ -1833,7 +1833,7 @@ class TestDraftsLifecycleIntegration:
 
         from imapclient import IMAPClient
 
-        from apple_mail_mcp.keychain import get_imap_password
+        from apple_mail_fast_mcp.keychain import get_imap_password
 
         suffix = _uuid.uuid4().hex[:8]
         src = f"ZZZ-AMM-DUAL-EMIT-{suffix}"
@@ -1931,7 +1931,7 @@ class TestDraftsLifecycleIntegration:
 
         from imapclient import IMAPClient
 
-        from apple_mail_mcp.keychain import get_imap_password
+        from apple_mail_fast_mcp.keychain import get_imap_password
 
         suffix = _uuid.uuid4().hex[:8]
         src = f"ZZZ-AMM-RFC-FLAG-{suffix}"
@@ -2117,7 +2117,7 @@ class TestErrorHandling:
 
     def test_nonexistent_account(self, connector: AppleMailConnector) -> None:
         """Test error when account doesn't exist."""
-        from apple_mail_mcp.exceptions import MailAccountNotFoundError
+        from apple_mail_fast_mcp.exceptions import MailAccountNotFoundError
 
         with pytest.raises(MailAccountNotFoundError):
             connector.list_mailboxes("NonExistentAccount12345")
@@ -2126,7 +2126,7 @@ class TestErrorHandling:
         self, connector: AppleMailConnector, test_account: str
     ) -> None:
         """Test error when mailbox doesn't exist."""
-        from apple_mail_mcp.exceptions import MailMailboxNotFoundError
+        from apple_mail_fast_mcp.exceptions import MailMailboxNotFoundError
 
         with pytest.raises(MailMailboxNotFoundError):
             connector.search_messages(
@@ -2276,7 +2276,7 @@ class TestTemplateIntegration:
         """
         from email.utils import parseaddr
 
-        from apple_mail_mcp.templates import Template, TemplateStore
+        from apple_mail_fast_mcp.templates import Template, TemplateStore
 
         monkeypatch.setenv("APPLE_MAIL_MCP_HOME", str(tmp_path))
         store = TemplateStore()

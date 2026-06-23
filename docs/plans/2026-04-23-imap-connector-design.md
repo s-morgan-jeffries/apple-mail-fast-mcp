@@ -21,12 +21,12 @@ From conversational brainstorming (in order they were answered):
 3. **Host/port derivation:** out of scope. `ImapConnector` takes fully-resolved `(host, port, email, password)`. The integration test hardcodes `imap.mail.me.com:993` the same way the spike does. `#40`'s factory handles the Mail.app-account-name → host correlation.
 4. **Connection lifecycle:** per-call. Each `search_messages` call opens an IMAPClient, LOGINs, operates, LOGOUTs. Stateless connector. Pooling is tracked separately in #75.
 5. **Return shape:** `ImapConnector.search_messages` returns `list[dict]` byte-for-byte matching the return of `mail_connector.search_messages` (not the MCP-tool `{"success": True, ...}` wrapper — that's the outer method's job). Specifically each dict has keys `id`, `subject`, `sender`, `date_received`, `read_status`, `flagged`.
-6. **Error hierarchy:** `MailKeychainError` (base) with `MailKeychainEntryNotFoundError` and `MailKeychainAccessDeniedError` subclasses. All inherit from the existing `MailError` in [`exceptions.py`](../../src/apple_mail_mcp/exceptions.py:6). No custom IMAP exception types — let `OSError`, `socket.timeout`, `imapclient.exceptions.LoginError`, `imapclient.exceptions.IMAPClientError` propagate as-is per the invariants-doc catch set.
+6. **Error hierarchy:** `MailKeychainError` (base) with `MailKeychainEntryNotFoundError` and `MailKeychainAccessDeniedError` subclasses. All inherit from the existing `MailError` in [`exceptions.py`](../../src/apple_mail_fast_mcp/exceptions.py:6). No custom IMAP exception types — let `OSError`, `socket.timeout`, `imapclient.exceptions.LoginError`, `imapclient.exceptions.IMAPClientError` propagate as-is per the invariants-doc catch set.
 
 ## Module layout
 
 ```
-src/apple_mail_mcp/
+src/apple_mail_fast_mcp/
 ├── keychain.py         # NEW  — Keychain password lookup
 ├── imap_connector.py   # NEW  — IMAPClient wrapper; search_messages only
 ├── exceptions.py       # EDIT — add MailKeychainError + 2 subclasses
@@ -119,7 +119,7 @@ class ImapConnector:
 
 ### Parameter semantics
 
-Parameters are identical to `mail_connector.search_messages` *minus* `account` (already resolved at construction). Default behavior is identical: `None` means "no filter"; `limit=None` means "no limit." Date strings are ISO 8601 `YYYY-MM-DD`, validated via the same regex used in [`mail_connector.py:23`](../../src/apple_mail_mcp/mail_connector.py#L23) — reuse the constant rather than duplicate the pattern.
+Parameters are identical to `mail_connector.search_messages` *minus* `account` (already resolved at construction). Default behavior is identical: `None` means "no filter"; `limit=None` means "no limit." Date strings are ISO 8601 `YYYY-MM-DD`, validated via the same regex used in [`mail_connector.py:23`](../../src/apple_mail_fast_mcp/mail_connector.py#L23) — reuse the constant rather than duplicate the pattern.
 
 ### IMAP SEARCH mapping
 
@@ -178,7 +178,7 @@ No IDLE, no pooling, no retry. All of those are out of scope.
 
 ## Exceptions
 
-Add to [`src/apple_mail_mcp/exceptions.py`](../../src/apple_mail_mcp/exceptions.py):
+Add to [`src/apple_mail_fast_mcp/exceptions.py`](../../src/apple_mail_fast_mcp/exceptions.py):
 
 ```python
 class MailKeychainError(MailError):
@@ -272,4 +272,4 @@ No attempt to exercise FETCH against a populated mailbox in this PR — the spik
 - [`docs/research/imap-auth-options-decision.md`](../research/imap-auth-options-decision.md) — auth path and graceful-degradation invariants.
 - [`docs/research/imap-hybrid-approach.md`](../research/imap-hybrid-approach.md) — background architecture research (delegation-auth section superseded).
 - [`scripts/spike_imap_icloud.py`](../../scripts/spike_imap_icloud.py) — the spike this module productionizes.
-- [`src/apple_mail_mcp/mail_connector.py:221`](../../src/apple_mail_mcp/mail_connector.py#L221) — the `search_messages` that this IMAP implementation mirrors on return shape.
+- [`src/apple_mail_fast_mcp/mail_connector.py:221`](../../src/apple_mail_fast_mcp/mail_connector.py#L221) — the `search_messages` that this IMAP implementation mirrors on return shape.

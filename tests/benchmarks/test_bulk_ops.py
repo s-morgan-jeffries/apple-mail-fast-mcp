@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from apple_mail_mcp.mail_connector import AppleMailConnector
+from apple_mail_fast_mcp.mail_connector import AppleMailConnector
 
 from .conftest import (
     BenchmarkResult,
@@ -142,8 +142,8 @@ def test_update_message_move_50_msgs_imap(
     IMAP search path; passing AppleScript internal numeric IDs would
     silently no-op the IMAP MOVE (server can't resolve them via SEARCH
     HEADER Message-ID)."""
-    from apple_mail_mcp.exceptions import MailKeychainEntryNotFoundError
-    from apple_mail_mcp.keychain import get_imap_password
+    from apple_mail_fast_mcp.exceptions import MailKeychainEntryNotFoundError
+    from apple_mail_fast_mcp.keychain import get_imap_password
 
     # Skip cleanly when IMAP isn't configured.
     try:

@@ -2,8 +2,8 @@
 
 import pytest
 
-from apple_mail_mcp.mail_connector import AppleMailConnector
-from apple_mail_mcp.security import rate_limiter
+from apple_mail_fast_mcp.mail_connector import AppleMailConnector
+from apple_mail_fast_mcp.security import rate_limiter
 
 
 @pytest.fixture(autouse=True)

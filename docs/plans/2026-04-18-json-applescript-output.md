@@ -40,7 +40,7 @@
 ## Task 1: `parse_applescript_json` helper + tests
 
 **Files:**
-- Modify: `src/apple_mail_mcp/utils.py` (add function at end, with `import json` at top)
+- Modify: `src/apple_mail_fast_mcp/utils.py` (add function at end, with `import json` at top)
 - Modify: `tests/unit/test_utils.py` (add `TestParseAppleScriptJson` class)
 
 **Step 1: Write failing tests**
@@ -51,8 +51,8 @@ At the end of `tests/unit/test_utils.py`, add:
 import json
 import pytest
 
-from apple_mail_mcp.exceptions import MailAppleScriptError
-from apple_mail_mcp.utils import parse_applescript_json
+from apple_mail_fast_mcp.exceptions import MailAppleScriptError
+from apple_mail_fast_mcp.utils import parse_applescript_json
 
 
 class TestParseAppleScriptJson:
@@ -91,7 +91,7 @@ Expected: all 7 tests fail with `ImportError` or `AttributeError` (function does
 
 **Step 3: Implement**
 
-At the top of `src/apple_mail_mcp/utils.py`, add `import json` next to the existing `import re`. At the bottom of the file, add:
+At the top of `src/apple_mail_fast_mcp/utils.py`, add `import json` next to the existing `import re`. At the bottom of the file, add:
 
 ```python
 def parse_applescript_json(result: str) -> Any:
@@ -130,7 +130,7 @@ Expected: 7 passed.
 **Step 5: Commit**
 
 ```bash
-git add src/apple_mail_mcp/utils.py tests/unit/test_utils.py
+git add src/apple_mail_fast_mcp/utils.py tests/unit/test_utils.py
 git commit -m "Add parse_applescript_json helper for JSON-emitting scripts (#23)"
 ```
 
@@ -139,14 +139,14 @@ git commit -m "Add parse_applescript_json helper for JSON-emitting scripts (#23)
 ## Task 2: `_wrap_as_json_script` helper on the connector
 
 **Files:**
-- Modify: `src/apple_mail_mcp/mail_connector.py` (add module-level function below the `AppleMailConnector` class, or as a private method — plan uses module-level for easier testing)
+- Modify: `src/apple_mail_fast_mcp/mail_connector.py` (add module-level function below the `AppleMailConnector` class, or as a private method — plan uses module-level for easier testing)
 
 **Step 1: Write the failing test**
 
 In `tests/unit/test_mail_connector.py` add a new class at the end:
 
 ```python
-from apple_mail_mcp.mail_connector import _wrap_as_json_script
+from apple_mail_fast_mcp.mail_connector import _wrap_as_json_script
 
 
 class TestWrapAsJsonScript:
@@ -174,7 +174,7 @@ Expected: ImportError — `_wrap_as_json_script` doesn't exist yet.
 
 **Step 3: Implement**
 
-In `src/apple_mail_mcp/mail_connector.py`, after the `import` block and before `class AppleMailConnector`, add:
+In `src/apple_mail_fast_mcp/mail_connector.py`, after the `import` block and before `class AppleMailConnector`, add:
 
 ```python
 def _wrap_as_json_script(body: str) -> str:
@@ -220,7 +220,7 @@ Expected: 3 passed.
 **Step 5: Commit**
 
 ```bash
-git add src/apple_mail_mcp/mail_connector.py tests/unit/test_mail_connector.py
+git add src/apple_mail_fast_mcp/mail_connector.py tests/unit/test_mail_connector.py
 git commit -m "Add _wrap_as_json_script connector helper (#23)"
 ```
 
@@ -229,7 +229,7 @@ git commit -m "Add _wrap_as_json_script connector helper (#23)"
 ## Task 3: Refactor `search_messages` to JSON
 
 **Files:**
-- Modify: `src/apple_mail_mcp/mail_connector.py:163-255`
+- Modify: `src/apple_mail_fast_mcp/mail_connector.py:163-255`
 - Modify: `tests/unit/test_mail_connector.py:90-103` (`test_search_messages_basic`)
 
 **Step 1: Update the test mock first (RED)**
@@ -276,7 +276,7 @@ Expected: both fail. The existing code does `line.split("\n")` then `line.split(
 
 **Step 3: Refactor the method**
 
-Replace the body of `search_messages` in `src/apple_mail_mcp/mail_connector.py` (lines 210-255). The new script uses a native AppleScript list of records and `_wrap_as_json_script`:
+Replace the body of `search_messages` in `src/apple_mail_fast_mcp/mail_connector.py` (lines 210-255). The new script uses a native AppleScript list of records and `_wrap_as_json_script`:
 
 ```python
         tell_body = f"""
@@ -325,7 +325,7 @@ If it fails because the test asserts on a substring that's still present in the 
 **Step 5: Commit**
 
 ```bash
-git add src/apple_mail_mcp/mail_connector.py tests/unit/test_mail_connector.py
+git add src/apple_mail_fast_mcp/mail_connector.py tests/unit/test_mail_connector.py
 git commit -m "Refactor search_messages to emit JSON (#23)"
 ```
 
@@ -334,7 +334,7 @@ git commit -m "Refactor search_messages to emit JSON (#23)"
 ## Task 4: Refactor `get_message` to JSON
 
 **Files:**
-- Modify: `src/apple_mail_mcp/mail_connector.py:257-319`
+- Modify: `src/apple_mail_fast_mcp/mail_connector.py:257-319`
 - Modify: `tests/unit/test_mail_connector.py:128-141` (`test_get_message`)
 
 **Step 1: Update the mock (RED)**
@@ -460,7 +460,7 @@ Expected: existing `test_get_message_not_found` still raises `MailMessageNotFoun
 **Step 5: Commit**
 
 ```bash
-git add src/apple_mail_mcp/mail_connector.py tests/unit/test_mail_connector.py
+git add src/apple_mail_fast_mcp/mail_connector.py tests/unit/test_mail_connector.py
 git commit -m "Refactor get_message to emit JSON (#23)"
 ```
 
@@ -469,7 +469,7 @@ git commit -m "Refactor get_message to emit JSON (#23)"
 ## Task 5: Refactor `get_attachments` to JSON
 
 **Files:**
-- Modify: `src/apple_mail_mcp/mail_connector.py:530-596`
+- Modify: `src/apple_mail_fast_mcp/mail_connector.py:530-596`
 - Modify: `tests/unit/test_attachments.py:115-139` (`test_get_attachments_list`, `test_get_attachments_empty`)
 
 **Step 1: Update mocks (RED)**
@@ -554,7 +554,7 @@ Expected: all tests pass.
 **Step 5: Commit**
 
 ```bash
-git add src/apple_mail_mcp/mail_connector.py tests/unit/test_attachments.py
+git add src/apple_mail_fast_mcp/mail_connector.py tests/unit/test_attachments.py
 git commit -m "Refactor get_attachments to emit JSON (#23)"
 ```
 
@@ -563,7 +563,7 @@ git commit -m "Refactor get_attachments to emit JSON (#23)"
 ## Task 6: Refactor `list_mailboxes` to JSON (finishes the TODO)
 
 **Files:**
-- Modify: `src/apple_mail_mcp/mail_connector.py:128-161`
+- Modify: `src/apple_mail_fast_mcp/mail_connector.py:128-161`
 - Modify: `tests/unit/test_mail_connector.py:80-88` (`test_list_mailboxes`)
 
 **Step 1: Update the test (RED)**
@@ -635,7 +635,7 @@ Expected: all pass.
 **Step 5: Commit**
 
 ```bash
-git add src/apple_mail_mcp/mail_connector.py tests/unit/test_mail_connector.py
+git add src/apple_mail_fast_mcp/mail_connector.py tests/unit/test_mail_connector.py
 git commit -m "Refactor list_mailboxes to emit JSON, remove TODO placeholder (#23)"
 ```
 
@@ -644,7 +644,7 @@ git commit -m "Refactor list_mailboxes to emit JSON, remove TODO placeholder (#2
 ## Task 7: Refactor `list_accounts` to JSON (finishes the half-baked pseudo-JSON)
 
 **Files:**
-- Modify: `src/apple_mail_mcp/mail_connector.py:86-126`
+- Modify: `src/apple_mail_fast_mcp/mail_connector.py:86-126`
 - Modify: `tests/unit/test_mail_connector.py` (add new test — no existing test for this)
 
 **Step 1: Write the new test (RED)**
@@ -714,7 +714,7 @@ Expected: pass.
 **Step 5: Commit**
 
 ```bash
-git add src/apple_mail_mcp/mail_connector.py tests/unit/test_mail_connector.py
+git add src/apple_mail_fast_mcp/mail_connector.py tests/unit/test_mail_connector.py
 git commit -m "Refactor list_accounts to emit proper JSON (#23)"
 ```
 
@@ -888,6 +888,6 @@ PR body should:
 - `make test` — unit tests green; new `parse_applescript_json` and per-method pipe-tolerance tests pass.
 - `make test-e2e` — 20 E2E tests still pass (connector is mocked; dispatch layer unaffected).
 - `make check-all` — all gates green; coverage ≥ 90%.
-- `grep -r 'split("|")' src/apple_mail_mcp/` returns no matches.
-- `grep -r '{"raw":' src/apple_mail_mcp/` returns no matches (both placeholder shapes gone).
+- `grep -r 'split("|")' src/apple_mail_fast_mcp/` returns no matches.
+- `grep -r '{"raw":' src/apple_mail_fast_mcp/` returns no matches (both placeholder shapes gone).
 - Manual osascript smoke or `make test-integration` if the user runs it locally confirms real Mail.app produces valid JSON.

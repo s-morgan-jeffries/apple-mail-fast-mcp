@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from apple_mail_mcp.mail_connector import AppleMailConnector
+from apple_mail_fast_mcp.mail_connector import AppleMailConnector
 
 from .conftest import (
     BenchmarkResult,

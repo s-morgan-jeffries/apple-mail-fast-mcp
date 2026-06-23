@@ -17,7 +17,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from apple_mail_mcp import server
+from apple_mail_fast_mcp import server
 
 # ---------------------------------------------------------------------------
 # Classification — the source of truth that the tests below assert against.

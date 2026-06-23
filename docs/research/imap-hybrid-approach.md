@@ -163,7 +163,7 @@ POP3-only is extremely rare in 2026. All major providers support IMAP:
 Not to be implemented until a future milestone, but the shape:
 
 ```
-src/apple_mail_mcp/
+src/apple_mail_fast_mcp/
 ├── server.py              # FastMCP tools (unchanged)
 ├── mail_connector.py      # Delegates read ops to IMAP when available
 ├── applescript_connector.py  # Renamed from current mail_connector logic

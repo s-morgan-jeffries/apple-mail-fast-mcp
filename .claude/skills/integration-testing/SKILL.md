@@ -53,7 +53,7 @@ make test-integration
 
 ```python
 import pytest
-from apple_mail_mcp.mail_connector import AppleMailConnector
+from apple_mail_fast_mcp.mail_connector import AppleMailConnector
 
 # Skip unless explicitly enabled
 pytestmark = pytest.mark.skipif(

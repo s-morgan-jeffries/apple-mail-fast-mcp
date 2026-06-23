@@ -3,7 +3,7 @@
 # Detects: missing escaping, string concatenation with user input, unsafe patterns.
 set -euo pipefail
 
-CONNECTOR="src/apple_mail_mcp/mail_connector.py"
+CONNECTOR="src/apple_mail_fast_mcp/mail_connector.py"
 ERRORS=0
 
 echo "Checking AppleScript safety patterns..."

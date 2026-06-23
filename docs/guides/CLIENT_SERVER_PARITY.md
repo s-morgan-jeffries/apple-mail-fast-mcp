@@ -1,6 +1,6 @@
 # Client/Server Parity
 
-This project enforces that every **public** method on `AppleMailConnector` (in [`mail_connector.py`](../../src/apple_mail_mcp/mail_connector.py)) is either exposed as an MCP tool in [`server.py`](../../src/apple_mail_mcp/server.py) or explicitly marked intentionally-internal. The gate is [`scripts/check_client_server_parity.sh`](../../scripts/check_client_server_parity.sh), run as part of `make check-all` and in CI.
+This project enforces that every **public** method on `AppleMailConnector` (in [`mail_connector.py`](../../src/apple_mail_fast_mcp/mail_connector.py)) is either exposed as an MCP tool in [`server.py`](../../src/apple_mail_fast_mcp/server.py) or explicitly marked intentionally-internal. The gate is [`scripts/check_client_server_parity.sh`](../../scripts/check_client_server_parity.sh), run as part of `make check-all` and in CI.
 
 ## What it enforces
 

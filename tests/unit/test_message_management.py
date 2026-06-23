@@ -4,11 +4,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from apple_mail_mcp.exceptions import (
+from apple_mail_fast_mcp.exceptions import (
     MailAppleScriptError,
     MailMailboxNotFoundError,
 )
-from apple_mail_mcp.mail_connector import AppleMailConnector
+from apple_mail_fast_mcp.mail_connector import AppleMailConnector
 
 
 class TestMoveMessages:
@@ -400,7 +400,7 @@ class TestMessageManagementSecurity:
 
     def test_validates_mailbox_name(self) -> None:
         """Test mailbox name validation."""
-        from apple_mail_mcp.utils import sanitize_mailbox_name
+        from apple_mail_fast_mcp.utils import sanitize_mailbox_name
 
         # Should remove dangerous characters
         assert sanitize_mailbox_name("Valid Name") == "Valid Name"
@@ -409,7 +409,7 @@ class TestMessageManagementSecurity:
 
     def test_flag_color_validation(self) -> None:
         """Test flag color validation."""
-        from apple_mail_mcp.utils import validate_flag_color
+        from apple_mail_fast_mcp.utils import validate_flag_color
 
         valid_colors = ["none", "orange", "red", "yellow", "blue", "green", "purple", "gray"]
         for color in valid_colors:

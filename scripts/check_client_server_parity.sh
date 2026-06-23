@@ -5,8 +5,8 @@
 # gate (exit 1). See docs/guides/CLIENT_SERVER_PARITY.md.
 set -euo pipefail
 
-CONNECTOR="src/apple_mail_mcp/mail_connector.py"
-SERVER="src/apple_mail_mcp/server.py"
+CONNECTOR="src/apple_mail_fast_mcp/mail_connector.py"
+SERVER="src/apple_mail_fast_mcp/server.py"
 
 echo "Checking client-server parity..."
 

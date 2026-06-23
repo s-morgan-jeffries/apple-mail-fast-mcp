@@ -8,7 +8,7 @@
 
 Apple Mail MCP's connector communicates with AppleScript by returning pipe-delimited strings and parsing them in Python with `line.split("|")`. Every field is positional. If any field value contains `|` — common in email subjects and bodies — parsing breaks silently with no error. The project documents this as its biggest technical debt (see `.claude/skills/applescript-mail/SKILL.md`).
 
-Five methods in `src/apple_mail_mcp/mail_connector.py` are affected:
+Five methods in `src/apple_mail_fast_mcp/mail_connector.py` are affected:
 
 | Method | Current state |
 |---|---|
@@ -79,7 +79,7 @@ Each of the 5 methods uses this helper, writing only the Mail-specific middle.
 
 ### Python-side parse
 
-New utility in `src/apple_mail_mcp/utils.py`:
+New utility in `src/apple_mail_fast_mcp/utils.py`:
 
 ```python
 def parse_applescript_json(result: str) -> Any:

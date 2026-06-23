@@ -11,7 +11,7 @@ from __future__ import annotations
 import email
 from email import policy
 
-from apple_mail_mcp.draft_builder import build_draft_mime
+from apple_mail_fast_mcp.draft_builder import build_draft_mime
 
 
 def test_builds_plain_text_draft_without_quote_wrapper():
@@ -174,7 +174,7 @@ def test_body_html_with_attachment_nests_alternative_in_mixed(tmp_path):
 
 # --- Reply/forward extensions (issue #245 follow-up) ---------------------
 
-from apple_mail_mcp.draft_builder import (  # noqa: E402
+from apple_mail_fast_mcp.draft_builder import (  # noqa: E402
     build_forward_body,
     build_reply_body,
     derive_reply_recipients,
@@ -298,7 +298,7 @@ def test_build_forward_body_has_header_block():
 
 
 def test_parse_original_message_extracts_fields_and_attachment():
-    from apple_mail_mcp.draft_builder import build_draft_mime, parse_original_message
+    from apple_mail_fast_mcp.draft_builder import build_draft_mime, parse_original_message
     # Build a representative original (with an attachment) and round-trip it.
     _mid, raw = build_draft_mime(
         sender="Lazar <lazar@hadleigh.co.uk>",
@@ -323,7 +323,7 @@ def test_parse_original_message_extracts_fields_and_attachment():
 def test_parse_original_html_only_falls_back_to_text():
     from email.message import EmailMessage
 
-    from apple_mail_mcp.draft_builder import parse_original_message
+    from apple_mail_fast_mcp.draft_builder import parse_original_message
     m = EmailMessage()
     m["From"] = "x@y.com"
     m["Subject"] = "HTML only"

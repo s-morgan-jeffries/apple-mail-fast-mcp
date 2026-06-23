@@ -64,7 +64,7 @@ audit:
 	@./scripts/check_readme_claims.sh
 
 coverage:
-	uv run pytest tests/ -m "not integration and not e2e and not benchmark" --cov=apple_mail_mcp --cov-report=term-missing -q
+	uv run pytest tests/ -m "not integration and not e2e and not benchmark" --cov=apple_mail_fast_mcp --cov-report=term-missing -q
 
 check-all: lint typecheck test complexity
 	@./scripts/check_version_sync.sh

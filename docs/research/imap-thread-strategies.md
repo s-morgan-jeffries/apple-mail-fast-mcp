@@ -6,7 +6,7 @@
 
 ## Background
 
-`get_thread`'s IMAP path (shipped in #66, source: `find_thread_members` in [src/apple_mail_mcp/imap_connector.py](../../src/apple_mail_mcp/imap_connector.py)) uses a per-mailbox header-search BFS. For each mailbox in the anchor's account, it issues `SEARCH HEADER X Y` for every (known thread id) × (`Message-ID` | `In-Reply-To` | `References`) pair. This is correct everywhere — the only IMAP commands required are `LIST`, `SELECT`, `SEARCH HEADER`, and `FETCH ENVELOPE FLAGS`, all of which RFC 3501 mandates. But it scales poorly:
+`get_thread`'s IMAP path (shipped in #66, source: `find_thread_members` in [src/apple_mail_fast_mcp/imap_connector.py](../../src/apple_mail_fast_mcp/imap_connector.py)) uses a per-mailbox header-search BFS. For each mailbox in the anchor's account, it issues `SEARCH HEADER X Y` for every (known thread id) × (`Message-ID` | `In-Reply-To` | `References`) pair. This is correct everywhere — the only IMAP commands required are `LIST`, `SELECT`, `SEARCH HEADER`, and `FETCH ENVELOPE FLAGS`, all of which RFC 3501 mandates. But it scales poorly:
 
 - **M** = number of mailboxes / labels on the account
 - **N** = number of known thread ids (anchor + every entry in its `References` chain)
@@ -104,7 +104,7 @@ Worth flagging since the optimization plans below build on it:
 
 - The header-search BFS exploits the well-formed-replies-copy-References invariant — searching on `<anchor-id>` against the `References` header naturally captures every descendant regardless of tree depth, in one pass.
 - It's already correct cross-mailbox without merging logic.
-- It already gracefully skips mailboxes that reject `SELECT` (e.g. Gmail smart labels), per [imap_connector.py:733-741](../../src/apple_mail_mcp/imap_connector.py#L733-L741).
+- It already gracefully skips mailboxes that reject `SELECT` (e.g. Gmail smart labels), per [imap_connector.py:733-741](../../src/apple_mail_fast_mcp/imap_connector.py#L733-L741).
 - It composes with the rest of the IMAP fallback story (#75 pool + #118 breaker + AppleScript fallback) without changes.
 
 So whatever we do, the BFS stays as the **universal fallback** for capability-rejecting servers.

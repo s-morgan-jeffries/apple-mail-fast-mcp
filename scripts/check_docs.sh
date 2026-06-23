@@ -16,7 +16,7 @@ import re
 import sys
 from pathlib import Path
 
-import apple_mail_mcp.server as server
+import apple_mail_fast_mcp.server as server
 
 ROOT = Path.cwd()
 errors: list[str] = []

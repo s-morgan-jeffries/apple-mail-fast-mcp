@@ -17,13 +17,13 @@ from pathlib import Path
 from hypothesis import given
 from hypothesis import strategies as st
 
-from apple_mail_mcp.drafts import _DRAFT_ID_RE, _validate_draft_id
-from apple_mail_mcp.exceptions import (
+from apple_mail_fast_mcp.drafts import _DRAFT_ID_RE, _validate_draft_id
+from apple_mail_fast_mcp.exceptions import (
     MailDraftInvalidIdError,
     MailTemplateInvalidNameError,
 )
-from apple_mail_mcp.templates import _NAME_RE, _validate_name
-from apple_mail_mcp.utils import escape_applescript_string, sanitize_input
+from apple_mail_fast_mcp.templates import _NAME_RE, _validate_name
+from apple_mail_fast_mcp.utils import escape_applescript_string, sanitize_input
 
 
 class TestSanitizeInputProperties:

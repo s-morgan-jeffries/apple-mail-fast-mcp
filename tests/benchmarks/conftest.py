@@ -27,9 +27,9 @@ from typing import Any
 
 import pytest
 
-from apple_mail_mcp import __version__
-from apple_mail_mcp.exceptions import MailAppleScriptError
-from apple_mail_mcp.mail_connector import AppleMailConnector
+from apple_mail_fast_mcp import __version__
+from apple_mail_fast_mcp.exceptions import MailAppleScriptError
+from apple_mail_fast_mcp.mail_connector import AppleMailConnector
 
 REGRESSION_RATIO = 5.0
 DEFAULT_RUNS = 5
@@ -253,11 +253,11 @@ def bench_source(
     --account <acct>` first."""
     from imapclient import IMAPClient
 
-    from apple_mail_mcp.exceptions import (
+    from apple_mail_fast_mcp.exceptions import (
         MailKeychainAccessDeniedError,
         MailKeychainEntryNotFoundError,
     )
-    from apple_mail_mcp.keychain import get_imap_password
+    from apple_mail_fast_mcp.keychain import get_imap_password
 
     mailboxes = connector.list_mailboxes(test_account)
     names = {mb["name"] for mb in mailboxes}
@@ -439,7 +439,7 @@ def gmail_bench_source(
     is paid once per test run."""
     from imapclient import IMAPClient
 
-    from apple_mail_mcp.keychain import get_imap_password
+    from apple_mail_fast_mcp.keychain import get_imap_password
 
     mailboxes = connector.list_mailboxes(test_account_gmail)
     names = {mb["name"] for mb in mailboxes}

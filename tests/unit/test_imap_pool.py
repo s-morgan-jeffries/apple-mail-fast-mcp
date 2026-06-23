@@ -25,7 +25,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from imapclient.exceptions import IMAPClientError, LoginError
 
-from apple_mail_mcp.imap_connector import (
+from apple_mail_fast_mcp.imap_connector import (
     CONNECT_TIMEOUT_S,
     OPERATION_TIMEOUT_S,
     POOL_IDLE_TIMEOUT_S,
@@ -56,7 +56,7 @@ def short_idle_pool() -> ImapConnectionPool:
 
 
 class TestSessionReuse:
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_two_consecutive_calls_share_one_client(
         self, mock_cls: MagicMock, pool: ImapConnectionPool
     ) -> None:
@@ -81,7 +81,7 @@ class TestOperationTimeout:
     socket read timeout is raised to OPERATION_TIMEOUT_S for SEARCH/FETCH so
     a slow server-side search isn't killed mid-operation."""
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_connect_short_then_operation_timeout_raised_post_login(
         self, mock_cls: MagicMock, pool: ImapConnectionPool
     ) -> None:
@@ -102,7 +102,7 @@ class TestOperationTimeout:
         names = [c[0] for c in client.mock_calls]
         assert names.index("login") < names.index("socket().settimeout")
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_reused_session_keeps_single_timeout_application(
         self, mock_cls: MagicMock, pool: ImapConnectionPool
     ) -> None:
@@ -119,7 +119,7 @@ class TestOperationTimeout:
         client.login.assert_called_once()
         client.socket().settimeout.assert_called_once_with(OPERATION_TIMEOUT_S)
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_different_accounts_get_independent_clients(
         self, mock_cls: MagicMock, pool: ImapConnectionPool
     ) -> None:
@@ -137,7 +137,7 @@ class TestOperationTimeout:
         clients[0].login.assert_called_once_with("a@e.com", "pw")
         clients[1].login.assert_called_once_with("b@e.com", "pw")
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_same_host_different_email_are_separate(
         self, mock_cls: MagicMock, pool: ImapConnectionPool
     ) -> None:
@@ -160,7 +160,7 @@ class TestOperationTimeout:
 
 
 class TestIdleReconnect:
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_stale_entry_is_dropped_and_reopened(
         self, mock_cls: MagicMock,
         short_idle_pool: ImapConnectionPool,
@@ -185,7 +185,7 @@ class TestIdleReconnect:
         clients[0].logout.assert_called_once()
         clients[1].logout.assert_not_called()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_within_idle_window_reuses(
         self, mock_cls: MagicMock,
         pool: ImapConnectionPool,
@@ -209,7 +209,7 @@ class TestIdleReconnect:
 
 
 class TestErrorInvalidation:
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_login_error_drops_entry(
         self, mock_cls: MagicMock, pool: ImapConnectionPool
     ) -> None:
@@ -231,7 +231,7 @@ class TestErrorInvalidation:
         assert mock_cls.call_count == 2
         clients[0].logout.assert_called_once()  # invalidation tries to be polite
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_imap_client_error_drops_entry(
         self, mock_cls: MagicMock, pool: ImapConnectionPool
     ) -> None:
@@ -249,7 +249,7 @@ class TestErrorInvalidation:
 
         assert mock_cls.call_count == 2
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_oserror_drops_entry(
         self, mock_cls: MagicMock, pool: ImapConnectionPool
     ) -> None:
@@ -268,7 +268,7 @@ class TestErrorInvalidation:
 
         assert mock_cls.call_count == 2
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_logout_failure_during_invalidation_is_swallowed(
         self, mock_cls: MagicMock, pool: ImapConnectionPool
     ) -> None:
@@ -289,7 +289,7 @@ class TestErrorInvalidation:
 
         assert mock_cls.call_count == 2
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_non_invalidating_exception_keeps_entry_cached(
         self, mock_cls: MagicMock, pool: ImapConnectionPool
     ) -> None:
@@ -318,7 +318,7 @@ class TestErrorInvalidation:
 
 
 class TestPerConnectionLocking:
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_same_key_serializes_across_threads(
         self, mock_cls: MagicMock, pool: ImapConnectionPool
     ) -> None:
@@ -366,7 +366,7 @@ class TestPerConnectionLocking:
         assert b_done.is_set()
         assert not observed_overlap.is_set()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_different_keys_run_concurrently(
         self, mock_cls: MagicMock, pool: ImapConnectionPool
     ) -> None:
@@ -417,7 +417,7 @@ class TestPerConnectionLocking:
 
 
 class TestClose:
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_close_logs_out_every_cached_client(
         self, mock_cls: MagicMock, pool: ImapConnectionPool
     ) -> None:
@@ -434,7 +434,7 @@ class TestClose:
         clients[0].logout.assert_called_once()
         clients[1].logout.assert_called_once()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_close_swallows_individual_logout_errors(
         self, mock_cls: MagicMock, pool: ImapConnectionPool
     ) -> None:
@@ -458,7 +458,7 @@ class TestClose:
         pool.close()
         pool.close()  # second call must not raise on empty cache
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_close_waits_for_in_flight_session_holder(
         self, mock_cls: MagicMock, pool: ImapConnectionPool
     ) -> None:
@@ -527,7 +527,7 @@ class TestClose:
 
 
 class TestImapConnectorWithPool:
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_no_pool_keeps_per_call_lifecycle(
         self, mock_cls: MagicMock
     ) -> None:
@@ -546,7 +546,7 @@ class TestImapConnectorWithPool:
         assert client.login.call_count == 2
         assert client.logout.call_count == 2
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_with_pool_amortizes_login_across_calls(
         self, mock_cls: MagicMock
     ) -> None:
@@ -572,7 +572,7 @@ class TestImapConnectorWithPool:
         pool.close()
         client.logout.assert_called_once()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_pool_invalidates_on_imap_client_error_through_connector(
         self, mock_cls: MagicMock
     ) -> None:

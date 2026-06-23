@@ -21,7 +21,7 @@ description: Use when the user wants to release a new version. Orchestrates the 
 ## Phase 4: Bump Version
 Update ALL files (pyproject.toml is authoritative):
 1. `pyproject.toml` — `version = "X.Y.Z"`
-2. `src/apple_mail_mcp/__init__.py` — `__version__ = "X.Y.Z"`
+2. `src/apple_mail_fast_mcp/__init__.py` — `__version__ = "X.Y.Z"`
 3. `.claude/CLAUDE.md` — `**Version:** vX.Y.Z`
 4. `README.md` — all version references
 

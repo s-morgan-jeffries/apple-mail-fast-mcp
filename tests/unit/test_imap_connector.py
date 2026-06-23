@@ -8,8 +8,8 @@ import pytest
 from imapclient.exceptions import IMAPClientError
 from imapclient.response_types import Address, Envelope
 
-from apple_mail_mcp.exceptions import MailMessageNotFoundError
-from apple_mail_mcp.imap_connector import (
+from apple_mail_fast_mcp.exceptions import MailMessageNotFoundError
+from apple_mail_fast_mcp.imap_connector import (
     _MSGID_SEARCH_CHUNK,
     CONNECT_TIMEOUT_S,
     OPERATION_TIMEOUT_S,
@@ -84,7 +84,7 @@ class TestConstructor:
 
 
 class TestSearchHappyPath:
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_no_filters_opens_connection_and_searches_all(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -123,7 +123,7 @@ class TestSearchHappyPath:
         names = [c[0] for c in mock_client.mock_calls]
         assert names.index("login") < names.index("socket().settimeout")
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_empty_search_result_skips_fetch(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -136,7 +136,7 @@ class TestSearchHappyPath:
         mock_client.logout.assert_called_once()
         assert result == []
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_custom_mailbox(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -147,7 +147,7 @@ class TestSearchHappyPath:
 
         mock_client.select_folder.assert_called_once_with("Archive", readonly=True)
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_logout_called_on_exception(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -161,7 +161,7 @@ class TestSearchHappyPath:
 
 
 class TestTextFilters:
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_sender_contains_maps_to_from(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -173,7 +173,7 @@ class TestTextFilters:
 
         mock_client.search.assert_called_once_with(["FROM", "alice"])
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_subject_contains_maps_to_subject(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -185,7 +185,7 @@ class TestTextFilters:
 
         mock_client.search.assert_called_once_with(["SUBJECT", "invoice"])
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_sender_and_subject_combined(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -201,7 +201,7 @@ class TestTextFilters:
 
 
 class TestFlagFilters:
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_read_status_true_maps_to_seen(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -210,7 +210,7 @@ class TestFlagFilters:
         ImapConnector("h", 993, "u@e.com", "pw").search_messages(read_status=True)
         mock_client.search.assert_called_once_with(["SEEN"])
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_read_status_false_maps_to_unseen(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -219,7 +219,7 @@ class TestFlagFilters:
         ImapConnector("h", 993, "u@e.com", "pw").search_messages(read_status=False)
         mock_client.search.assert_called_once_with(["UNSEEN"])
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_is_flagged_true_maps_to_flagged(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -228,7 +228,7 @@ class TestFlagFilters:
         ImapConnector("h", 993, "u@e.com", "pw").search_messages(is_flagged=True)
         mock_client.search.assert_called_once_with(["FLAGGED"])
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_is_flagged_false_maps_to_unflagged(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -239,7 +239,7 @@ class TestFlagFilters:
 
 
 class TestDateFilters:
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_date_from_iso_converted_to_imap_format(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -250,7 +250,7 @@ class TestDateFilters:
         )
         mock_client.search.assert_called_once_with(["SINCE", "22-Apr-2026"])
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_date_to_is_inclusive_of_full_day(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -272,7 +272,7 @@ class TestDateFilters:
         with pytest.raises(ValueError, match="ISO 8601"):
             conn.search_messages(date_to="not-a-date")
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_date_range(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -287,7 +287,7 @@ class TestDateFilters:
 
 
 class TestLimit:
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_limit_slices_uids_from_end(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -301,7 +301,7 @@ class TestLimit:
         assert fetch_uids == list(range(91, 101))
         assert len(result) == 10
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_limit_none_fetches_all(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -356,7 +356,7 @@ class TestLimitWithHasAttachmentFilter:
         }
         return mock_client
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_limit_counts_matches_not_candidates(self, mock_cls):
         """Attachments only on the two OLDEST messages; limit=2 must still
         find both (old behavior: scan newest 2, return [])."""
@@ -365,7 +365,7 @@ class TestLimitWithHasAttachmentFilter:
         result = conn.search_messages(has_attachment=True, limit=2)
         assert [r["subject"] for r in result] == ["Subject 1", "Subject 2"]
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_limit_returns_newest_matches_when_more_exist(self, mock_cls):
         """More matches than limit → keep the newest `limit` matches,
         returned oldest-first like every other search result."""
@@ -376,7 +376,7 @@ class TestLimitWithHasAttachmentFilter:
         result = conn.search_messages(has_attachment=True, limit=2)
         assert [r["subject"] for r in result] == ["Subject 8", "Subject 9"]
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_filter_scan_short_circuits_in_chunks(self, mock_cls):
         """250 candidates, the newest 5 all match, limit=5 → only the
         newest chunk is fetched; older chunks are never paid for."""
@@ -392,7 +392,7 @@ class TestLimitWithHasAttachmentFilter:
         fetched_uids = client.fetch.call_args[0][0]
         assert len(fetched_uids) <= 100  # bounded chunk, not all 250
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_matches_collected_across_multiple_chunks(self, mock_cls):
         """Matches deep in the mailbox force the walk through ALL chunks:
         250 candidates, matches at uids 10 and 120 only, limit=2 → three
@@ -412,7 +412,7 @@ class TestLimitWithHasAttachmentFilter:
         )
         assert fetched_uids == list(range(1, 251))  # complete, no overlap
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_has_attachment_false_symmetric(self, mock_cls):
         """has_attachment=False with limit collects non-attachment
         matches across the whole candidate set."""
@@ -423,7 +423,7 @@ class TestLimitWithHasAttachmentFilter:
         result = conn.search_messages(has_attachment=False, limit=2)
         assert [r["subject"] for r in result] == ["Subject 1", "Subject 2"]
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_uid_expunged_between_search_and_fetch_is_skipped(self, mock_cls):
         """A UID the server omits from the FETCH response (expunged by
         another session, RFC 3501 / #314) is skipped within the chunked
@@ -441,7 +441,7 @@ class TestLimitWithHasAttachmentFilter:
         result = conn.search_messages(has_attachment=True, limit=5)
         assert [r["subject"] for r in result] == ["Subject 3"]
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_no_limit_with_filter_fetches_all_once(self, mock_cls):
         """Filter without limit keeps the single-FETCH fast path."""
         client = self._setup(
@@ -471,7 +471,7 @@ _MULTIPART_WITH_ATTACHMENT = (_LEAF_TEXT, _LEAF_PDF_ATTACHMENT, b"mixed")
 
 
 class TestHasAttachment:
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_has_attachment_true_filters_to_messages_with_attachments(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -501,7 +501,7 @@ class TestHasAttachment:
         ids = [m["id"] for m in result]
         assert ids == ["2@e.com"]
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_has_attachment_false_filters_to_messages_without(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -526,7 +526,7 @@ class TestHasAttachment:
         ids = [m["id"] for m in result]
         assert ids == ["1@e.com"]
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_has_attachment_none_does_not_fetch_bodystructure(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -538,7 +538,7 @@ class TestHasAttachment:
         fetch_keys = mock_client.fetch.call_args[0][1]
         assert b"BODYSTRUCTURE" not in fetch_keys
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_has_attachment_set_includes_bodystructure_in_fetch(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -561,7 +561,7 @@ class TestHasAttachment:
         attachment, consistent with _bodystructure_extract_attachments —
         otherwise has_attachment search and the attachment list disagree.
         Uses the real IMAPClient list-at-0 multipart shape."""
-        from apple_mail_mcp.imap_connector import (
+        from apple_mail_fast_mcp.imap_connector import (
             _bodystructure_extract_attachments,
             _bodystructure_has_attachment,
         )
@@ -575,7 +575,7 @@ class TestHasAttachment:
 
 
 class TestEnvelopeTranslation:
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_strips_angle_brackets_from_message_id(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -589,7 +589,7 @@ class TestEnvelopeTranslation:
         [msg] = ImapConnector("h", 993, "u@e.com", "pw").search_messages()
         assert msg["id"] == "abc@example.com"
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_emits_both_id_and_rfc_message_id_dual_emit(self, mock_cls):
         """#148: every IMAP-path row carries `rfc_message_id` alongside
         `id`. On this path the two are intentionally identical (both
@@ -608,7 +608,7 @@ class TestEnvelopeTranslation:
         assert msg["rfc_message_id"] == "dual@example.com"
         assert msg["id"] == msg["rfc_message_id"]
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_empty_sender_returns_empty_string(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -631,7 +631,7 @@ class TestEnvelopeTranslation:
         [msg] = ImapConnector("h", 993, "u@e.com", "pw").search_messages()
         assert msg["sender"] == ""
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_seen_flag_maps_to_read_status(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -646,7 +646,7 @@ class TestEnvelopeTranslation:
         assert msg["read_status"] is True
         assert msg["flagged"] is False
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_flagged_flag_maps_to_flagged(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -661,7 +661,7 @@ class TestEnvelopeTranslation:
         assert msg["flagged"] is True
         assert msg["read_status"] is False
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_date_iso_format(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -678,7 +678,7 @@ class TestEnvelopeTranslation:
         [msg] = ImapConnector("h", 993, "u@e.com", "pw").search_messages()
         assert msg["date_received"] == "2026-04-22T14:30:00"
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_subject_bytes_decoded_utf8(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -696,7 +696,7 @@ class TestEnvelopeTranslation:
 
 
 class TestFindThreadMembers:
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_returns_empty_when_no_search_hits(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -710,7 +710,7 @@ class TestFindThreadMembers:
         assert result == []
         mock_client.logout.assert_called_once()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_returns_anchor_and_reply_sorted_chronologically(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -746,7 +746,7 @@ class TestFindThreadMembers:
         # Chronological sort
         assert result[0]["date_received"] < result[1]["date_received"]
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_iterates_all_mailboxes_in_account(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -767,7 +767,7 @@ class TestFindThreadMembers:
         ]
         assert selected_folders == ["INBOX", "Archive", "Sent"]
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_dedups_messages_found_in_multiple_mailboxes(self, mock_cls):
         """A Gmail-like account may surface the same message in INBOX and
         All Mail. Output must not duplicate it."""
@@ -794,7 +794,7 @@ class TestFindThreadMembers:
         assert len(result) == 1
         assert result[0]["id"] == "anchor@x"
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_skips_mailbox_that_fails_to_select(self, mock_cls):
         from imapclient.exceptions import IMAPClientError
 
@@ -826,7 +826,7 @@ class TestFindThreadMembers:
         assert len(result) == 1
         mock_client.logout.assert_called_once()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_searches_for_each_known_id(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -851,7 +851,7 @@ class TestFindThreadMembers:
         assert "parent@x" in searched_ids
         assert "grandparent@x" in searched_ids
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_logout_called_on_exception(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -903,7 +903,7 @@ class TestGetMessage:
         client.fetch.return_value = fetched
         return client
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_search_uses_bracketed_message_id_header_criteria(
         self, mock_cls: MagicMock
     ) -> None:
@@ -920,7 +920,7 @@ class TestGetMessage:
             ["HEADER", "Message-ID", "<abc@example.com>"]
         )
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_search_preserves_already_bracketed_id(
         self, mock_cls: MagicMock
     ) -> None:
@@ -935,7 +935,7 @@ class TestGetMessage:
             ["HEADER", "Message-ID", "<abc@example.com>"]
         )
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_select_folder_honors_mailbox_param(
         self, mock_cls: MagicMock
     ) -> None:
@@ -947,7 +947,7 @@ class TestGetMessage:
             "Archive", readonly=True
         )
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_returns_dict_with_applescript_compatible_keys(
         self, mock_cls: MagicMock
     ) -> None:
@@ -966,7 +966,7 @@ class TestGetMessage:
         assert result["content"] == "hello world"
         assert result["read_status"] is True
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_default_fetch_keys_include_body_text(
         self, mock_cls: MagicMock
     ) -> None:
@@ -984,7 +984,7 @@ class TestGetMessage:
         assert b"BODY[TEXT]" in fetch_keys
         assert b"BODY[HEADER]" not in fetch_keys
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_include_content_false_skips_body_fetch(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1000,7 +1000,7 @@ class TestGetMessage:
         # content empty when not requested.
         assert result["content"] == ""
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_headers_only_uses_body_header_not_body_text(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1021,11 +1021,11 @@ class TestGetMessage:
         assert b"BODY[TEXT]" not in fetch_keys
         assert result["content"] == ""
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_no_match_raises_message_not_found(
         self, mock_cls: MagicMock
     ) -> None:
-        from apple_mail_mcp.exceptions import MailMessageNotFoundError
+        from apple_mail_fast_mcp.exceptions import MailMessageNotFoundError
 
         client = MagicMock()
         mock_cls.return_value = client
@@ -1039,7 +1039,7 @@ class TestGetMessage:
         # Logout still called via the finally block.
         client.logout.assert_called_once()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_logout_called_on_exception(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1053,7 +1053,7 @@ class TestGetMessage:
             )
         client.logout.assert_called_once()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_only_first_match_is_fetched(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1193,7 +1193,7 @@ class TestGetAttachments:
         }
         return client
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_real_imapclient_multipart_list_shape_enumerates_pdf(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1202,7 +1202,7 @@ class TestGetAttachments:
         before) misreads a real multipart/mixed as a leaf and drops the
         attachment. Uses a BODYSTRUCTURE captured verbatim from real iCloud,
         and also checks the sibling has-attachment walker agrees."""
-        from apple_mail_mcp.imap_connector import _bodystructure_has_attachment
+        from apple_mail_fast_mcp.imap_connector import _bodystructure_has_attachment
 
         self._setup_client(mock_cls, bodystructure=_BS_REAL_ICLOUD_MIXED_PDF)
 
@@ -1216,7 +1216,7 @@ class TestGetAttachments:
         assert result[0]["size"] == 289236
         assert _bodystructure_has_attachment(_BS_REAL_ICLOUD_MIXED_PDF) is True
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_search_uses_bracketed_message_id(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1231,7 +1231,7 @@ class TestGetAttachments:
             ["HEADER", "Message-ID", "<abc@x>"]
         )
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_fetch_only_requests_bodystructure(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1245,7 +1245,7 @@ class TestGetAttachments:
         fetch_keys = mock_cls.return_value.fetch.call_args[0][1]
         assert list(fetch_keys) == [b"BODYSTRUCTURE"]
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_no_attachments_returns_empty_list(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1256,7 +1256,7 @@ class TestGetAttachments:
         )
         assert result == []
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_single_pdf_attachment(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1274,7 +1274,7 @@ class TestGetAttachments:
             "downloaded": False,  # always False on IMAP path; documented divergence
         }]
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_multiple_attachments(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1289,7 +1289,7 @@ class TestGetAttachments:
         names = {a["name"] for a in result}
         assert names == {"report.pdf", "photo.jpg"}
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_inline_image_with_filename_is_surfaced(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1307,7 +1307,7 @@ class TestGetAttachments:
         assert result[0]["name"] == "sig.png"
         assert result[0]["mime_type"] == "image/png"
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_inline_body_without_filename_is_not_an_attachment(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1322,7 +1322,7 @@ class TestGetAttachments:
 
         assert result == []
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_forwarded_email_surfaces_as_attachment(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1344,7 +1344,7 @@ class TestGetAttachments:
         # the part exists and decide what to do with it.
         assert result[0]["name"] == ""
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_legacy_name_param_without_disposition_is_not_an_attachment(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1362,7 +1362,7 @@ class TestGetAttachments:
 
         assert result == []
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_unicode_filename_is_decoded(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1376,7 +1376,7 @@ class TestGetAttachments:
         assert len(result) == 1
         assert result[0]["name"] == "résumé.pdf"
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_mangled_filename_does_not_crash(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1394,7 +1394,7 @@ class TestGetAttachments:
         assert "�" in result[0]["name"]
         assert result[0]["name"].endswith(".pdf")
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_nested_multipart_attachments_are_surfaced(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1412,11 +1412,11 @@ class TestGetAttachments:
         assert len(result) == 1
         assert result[0]["name"] == "report.pdf"
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_no_match_raises_message_not_found(
         self, mock_cls: MagicMock
     ) -> None:
-        from apple_mail_mcp.exceptions import MailMessageNotFoundError
+        from apple_mail_fast_mcp.exceptions import MailMessageNotFoundError
 
         client = MagicMock()
         mock_cls.return_value = client
@@ -1428,7 +1428,7 @@ class TestGetAttachments:
             )
         client.logout.assert_called_once()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_logout_called_on_exception(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1449,7 +1449,7 @@ class TestGetAttachments:
 
 
 class TestImapDeleteMailbox:
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_delete_empty_mailbox_returns_zero(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1464,7 +1464,7 @@ class TestImapDeleteMailbox:
         client.delete_folder.assert_called_once_with("Empty")
         client.logout.assert_called_once()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_delete_non_empty_refuses_by_default(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1480,7 +1480,7 @@ class TestImapDeleteMailbox:
         client.delete_folder.assert_not_called()
         client.logout.assert_called_once()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_delete_non_empty_with_allow_non_empty_cascades(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1496,7 +1496,7 @@ class TestImapDeleteMailbox:
 
 
 class TestImapRenameMailbox:
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_rename_calls_imap_rename(self, mock_cls: MagicMock) -> None:
         client = MagicMock()
         mock_cls.return_value = client
@@ -1507,7 +1507,7 @@ class TestImapRenameMailbox:
         client.rename_folder.assert_called_once_with("Old", "New")
         client.logout.assert_called_once()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_rename_with_path_change_passes_through(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1527,7 +1527,7 @@ class TestImapMoveMessages:
     """Issue #149: server-side message move via UID MOVE (RFC 6851)
     or UID COPY + STORE \\Deleted + UID EXPUNGE (RFC 4315 UIDPLUS)."""
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_move_uses_uid_move_when_capability_present(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1551,7 +1551,7 @@ class TestImapMoveMessages:
         client.copy.assert_not_called()
         client.uid_expunge.assert_not_called()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_move_falls_back_to_copy_store_expunge_when_only_uidplus(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1576,14 +1576,14 @@ class TestImapMoveMessages:
         )
         client.uid_expunge.assert_called_once_with([201, 202])
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_move_raises_when_neither_move_nor_uidplus(
         self, mock_cls: MagicMock
     ) -> None:
         """Without MOVE or UIDPLUS we'd have to do an unscoped EXPUNGE
         (which removes ALL \\Deleted-flagged messages). Refuse instead;
         orchestrator handles the AppleScript fallback."""
-        from apple_mail_mcp.exceptions import MailImapMoveUnsupportedError
+        from apple_mail_fast_mcp.exceptions import MailImapMoveUnsupportedError
 
         client = MagicMock()
         mock_cls.return_value = client
@@ -1599,7 +1599,7 @@ class TestImapMoveMessages:
         client.copy.assert_not_called()
         client.uid_expunge.assert_not_called()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_move_returns_zero_when_no_uids_resolve(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1619,7 +1619,7 @@ class TestImapMoveMessages:
         client.move.assert_not_called()
         client.copy.assert_not_called()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_move_strips_and_re_adds_brackets_for_search(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1645,7 +1645,7 @@ class TestImapMoveMessages:
              ["HEADER", "Message-ID", "<wrapped@example.com>"]],
         ]
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_move_skips_message_ids_that_dont_resolve(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1796,7 +1796,7 @@ class TestImapDeleteMessages:
             ((b"\\HasNoChildren",), b"/", trash_name),
         ]
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_delete_uses_uid_move_to_trash_when_capability_present(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1819,7 +1819,7 @@ class TestImapDeleteMessages:
         client.copy.assert_not_called()
         client.uid_expunge.assert_not_called()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_delete_falls_back_to_copy_store_expunge_when_only_uidplus(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1844,13 +1844,13 @@ class TestImapDeleteMessages:
         )
         client.uid_expunge.assert_called_once_with([201, 202])
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_delete_raises_when_neither_move_nor_uidplus(
         self, mock_cls: MagicMock
     ) -> None:
         """Without MOVE or UIDPLUS we'd need an unscoped EXPUNGE that
         would clobber other \\Deleted-flagged messages. Refuse."""
-        from apple_mail_mcp.exceptions import MailImapMoveUnsupportedError
+        from apple_mail_fast_mcp.exceptions import MailImapMoveUnsupportedError
 
         client = MagicMock()
         mock_cls.return_value = client
@@ -1865,7 +1865,7 @@ class TestImapDeleteMessages:
         client.move.assert_not_called()
         client.copy.assert_not_called()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_delete_uses_special_use_trash_when_available(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1890,7 +1890,7 @@ class TestImapDeleteMessages:
     @pytest.mark.parametrize(
         "trash_name", ["Trash", "[Gmail]/Trash", "Deleted Messages", "Deleted Items"]
     )
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_delete_falls_back_to_conventional_trash_name_when_special_use_missing(
         self, mock_cls: MagicMock, trash_name: str
     ) -> None:
@@ -1911,13 +1911,13 @@ class TestImapDeleteMessages:
         )
         client.move.assert_called_once_with([7], trash_name)
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_delete_raises_trash_not_found_when_no_trash_anywhere(
         self, mock_cls: MagicMock
     ) -> None:
         """Neither SPECIAL-USE \\Trash nor any conventional name found.
         Orchestrator falls back to AppleScript."""
-        from apple_mail_mcp.exceptions import MailImapTrashNotFoundError
+        from apple_mail_fast_mcp.exceptions import MailImapTrashNotFoundError
 
         client = MagicMock()
         mock_cls.return_value = client
@@ -1934,7 +1934,7 @@ class TestImapDeleteMessages:
             )
         client.move.assert_not_called()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_delete_returns_zero_when_no_uids_resolve(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1951,7 +1951,7 @@ class TestImapDeleteMessages:
         assert deleted == 0
         client.move.assert_not_called()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_delete_resolves_trash_before_selecting_source(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1979,7 +1979,7 @@ class TestImapDeleteMessages:
             f"select_folder (call #{select_idx}) — see #199"
         )
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_delete_strips_and_re_adds_brackets_for_search(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2004,7 +2004,7 @@ class TestImapDeleteMessages:
              ["HEADER", "Message-ID", "<wrapped@example.com>"]],
         ]
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_delete_skips_message_ids_that_dont_resolve(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2029,7 +2029,7 @@ class TestImapSetReadStatus:
     (\\Seen). \\Seen is base IMAP (RFC 3501), universal across servers
     — no capability check needed, no fallback variants."""
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_set_read_status_true_adds_seen_flag(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2050,7 +2050,7 @@ class TestImapSetReadStatus:
         )
         client.remove_flags.assert_not_called()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_set_read_status_false_removes_seen_flag(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2070,7 +2070,7 @@ class TestImapSetReadStatus:
         )
         client.add_flags.assert_not_called()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_set_read_status_returns_zero_when_no_uids_resolve(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2088,7 +2088,7 @@ class TestImapSetReadStatus:
         client.add_flags.assert_not_called()
         client.remove_flags.assert_not_called()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_set_read_status_strips_and_re_adds_brackets_for_search(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2112,7 +2112,7 @@ class TestImapSetReadStatus:
              ["HEADER", "Message-ID", "<wrapped@example.com>"]],
         ]
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_set_read_status_skips_message_ids_that_dont_resolve(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2132,7 +2132,7 @@ class TestImapSetReadStatus:
             [10, 11], [b"\\Seen"], silent=True
         )
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_set_read_status_no_capability_check_required(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2160,7 +2160,7 @@ class TestImapSetFlaggedStatus:
     are Mail.app-specific and out of scope for IMAP. This IMAP path
     only handles the no-color case; flag_color goes via AppleScript."""
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_set_flagged_status_true_adds_flagged_flag(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2181,7 +2181,7 @@ class TestImapSetFlaggedStatus:
         )
         client.remove_flags.assert_not_called()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_set_flagged_status_false_removes_flagged_flag(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2201,7 +2201,7 @@ class TestImapSetFlaggedStatus:
         )
         client.add_flags.assert_not_called()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_set_flagged_status_returns_zero_when_no_uids_resolve(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2219,7 +2219,7 @@ class TestImapSetFlaggedStatus:
         client.add_flags.assert_not_called()
         client.remove_flags.assert_not_called()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_set_flagged_status_strips_and_re_adds_brackets_for_search(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2242,7 +2242,7 @@ class TestImapSetFlaggedStatus:
              ["HEADER", "Message-ID", "<wrapped@example.com>"]],
         ]
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_set_flagged_status_skips_message_ids_that_dont_resolve(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2262,7 +2262,7 @@ class TestImapSetFlaggedStatus:
             [10, 11], [b"\\Flagged"], silent=True
         )
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_set_flagged_status_no_capability_check_required(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2287,7 +2287,7 @@ class TestFindThreadMembersGmail:
     drive it via mocked IMAPClient and assert the right strategy fired
     based on the server's advertised capabilities."""
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_uses_xgm_thrid_when_capability_advertised(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2324,7 +2324,7 @@ class TestFindThreadMembersGmail:
         # All three thread members surfaced (deduped by Message-ID).
         assert len(result) == 3
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_falls_back_to_bfs_when_xgm_ext_not_advertised(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2348,7 +2348,7 @@ class TestFindThreadMembersGmail:
                 "X-GM-THRID query must not run when X-GM-EXT-1 is absent"
             )
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_falls_back_to_bfs_when_no_all_mail_folder(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2372,7 +2372,7 @@ class TestFindThreadMembersGmail:
         # BFS path SELECTed the regular folders.
         assert client.select_folder.called
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_falls_back_to_bfs_when_anchor_not_in_all_mail(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2398,7 +2398,7 @@ class TestFindThreadMembersGmail:
         # Then BFS fired: many more SELECTs followed.
         assert client.select_folder.call_count > 1
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_falls_back_to_bfs_on_xgm_thrid_query_rejection(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2428,7 +2428,7 @@ class TestFindThreadMembersGmail:
         # BFS ran after the Tier 1 fall-through (multiple SELECTs).
         assert client.select_folder.call_count > 1
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_uses_localized_all_mail_via_special_use(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2453,7 +2453,7 @@ class TestFindThreadMembersGmail:
             "[Google Mail]/Tutta la posta", readonly=True,
         )
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_returns_thread_members_in_chronological_order(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2497,7 +2497,7 @@ class TestFindThreadMembersGmail:
         ids = [r["id"] for r in result]
         assert ids == ["old@gmail.com", "mid@gmail.com", "new@gmail.com"]
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_dedups_by_message_id(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2553,7 +2553,7 @@ class TestFindThreadMembersGmailPerMailbox:
     folder listing. Anchor lookup tries INBOX then \\Sent; per-mailbox
     SEARCH X-GM-THRID collects siblings."""
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_uses_per_mailbox_when_all_mail_hidden(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2601,7 +2601,7 @@ class TestFindThreadMembersGmailPerMailbox:
         # Three messages collected (deduped: anchor's UID 42 appears once).
         assert len(result) == 3
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_falls_back_to_sent_when_anchor_not_in_inbox(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2641,7 +2641,7 @@ class TestFindThreadMembersGmailPerMailbox:
         # Single result (deduped from INBOX+Sent).
         assert len(result) == 1
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_returns_none_when_anchor_in_neither_inbox_nor_sent(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2668,7 +2668,7 @@ class TestFindThreadMembersGmailPerMailbox:
         # Tier 3 (BFS) ran with empty results.
         assert result == []
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_xgm_thrid_query_rejection_per_mailbox_continues(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2701,7 +2701,7 @@ class TestFindThreadMembersGmailPerMailbox:
 
         assert len(result) == 2  # INBOX + Sent (Drafts skipped)
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_anchor_select_rejection_in_inbox_falls_through_to_sent(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2745,7 +2745,7 @@ class TestFindThreadMembersGmailPerMailbox:
         assert "[Gmail]/Sent Mail" in select_paths  # fall-through worked
         assert len(result) == 1
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_anchor_search_rejection_in_inbox_falls_through_to_sent(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2778,7 +2778,7 @@ class TestFindThreadMembersGmailPerMailbox:
 
         assert len(result) == 1
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_thrid_fetch_rejection_falls_through_to_bfs(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2801,7 +2801,7 @@ class TestFindThreadMembersGmailPerMailbox:
         # BFS ran (more SELECTs than the single INBOX anchor SELECT).
         assert client.select_folder.call_count > 1
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_thrid_missing_from_fetch_falls_through_to_bfs(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2823,7 +2823,7 @@ class TestFindThreadMembersGmailPerMailbox:
         assert result == []
         assert client.select_folder.call_count > 1
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_noselect_folders_skipped_in_per_mailbox_loop(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2856,7 +2856,7 @@ class TestFindThreadMembersGmailPerMailbox:
         select_paths = [c.args[0] for c in client.select_folder.call_args_list]
         assert "[Gmail]" not in select_paths
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_bytes_folder_name_decoded_in_per_mailbox_loop(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2887,7 +2887,7 @@ class TestFindThreadMembersGmailPerMailbox:
         select_paths = [c.args[0] for c in client.select_folder.call_args_list]
         assert "Receipts" in select_paths
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_envelope_fetch_rejection_in_loop_skips_mailbox(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2920,7 +2920,7 @@ class TestFindThreadMembersGmailPerMailbox:
 
         assert len(result) == 1  # INBOX surfaces, Drafts skipped
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_envelope_none_or_missing_msgid_is_skipped(
         self, mock_cls: MagicMock
     ) -> None:
@@ -2992,7 +2992,7 @@ def _fastmail_folder_listing() -> list:
 class TestFindThreadMembersImapThread:
     """Tier 2 (RFC 5256 THREAD, #123) dispatch."""
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_uses_imap_thread_when_capability_advertised(
         self, mock_cls: MagicMock
     ) -> None:
@@ -3035,7 +3035,7 @@ class TestFindThreadMembersImapThread:
             assert thread_call.kwargs.get("algorithm") == "REFERENCES"
         assert len(result) == 5
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_accepts_thread_refs_alias(
         self, mock_cls: MagicMock
     ) -> None:
@@ -3066,7 +3066,7 @@ class TestFindThreadMembersImapThread:
         ]
         assert all(a == "REFS" for a in algos)
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_skips_when_capability_missing(
         self, mock_cls: MagicMock
     ) -> None:
@@ -3084,7 +3084,7 @@ class TestFindThreadMembersImapThread:
 
         assert client.thread.call_count == 0
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_thread_command_rejection_falls_through_to_bfs(
         self, mock_cls: MagicMock
     ) -> None:
@@ -3118,7 +3118,7 @@ class TestFindThreadMembersImapThread:
         # BFS then ran more SEARCHes — assert the count exceeds Tier 2's.
         assert client.search.call_count > 2
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_returns_none_when_called_without_thread_capability(
         self, mock_cls: MagicMock
     ) -> None:
@@ -3141,7 +3141,7 @@ class TestFindThreadMembersImapThread:
         # No THREAD command was issued.
         assert client.thread.call_count == 0
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_noselect_folders_skipped_in_tier2_loop(
         self, mock_cls: MagicMock
     ) -> None:
@@ -3172,7 +3172,7 @@ class TestFindThreadMembersImapThread:
         assert "Folders" not in select_paths
         assert "INBOX" in select_paths and "Archive" in select_paths
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_bytes_folder_name_decoded_in_tier2_loop(
         self, mock_cls: MagicMock
     ) -> None:
@@ -3201,7 +3201,7 @@ class TestFindThreadMembersImapThread:
         select_paths = [c.args[0] for c in client.select_folder.call_args_list]
         assert "Archive" in select_paths
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_select_rejection_in_tier2_loop_continues(
         self, mock_cls: MagicMock
     ) -> None:
@@ -3236,7 +3236,7 @@ class TestFindThreadMembersImapThread:
         # Sent was attempted but skipped.
         assert len(result) == 1
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_search_rejection_in_tier2_loop_continues(
         self, mock_cls: MagicMock
     ) -> None:
@@ -3265,7 +3265,7 @@ class TestFindThreadMembersImapThread:
 
         assert len(result) == 1
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_thread_with_no_intersecting_clusters_continues(
         self, mock_cls: MagicMock
     ) -> None:
@@ -3298,7 +3298,7 @@ class TestFindThreadMembersImapThread:
         assert client.fetch.call_count == 1  # INBOX skipped pre-FETCH
         assert len(result) == 2
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_envelope_fetch_rejection_in_tier2_loop_continues(
         self, mock_cls: MagicMock
     ) -> None:
@@ -3333,7 +3333,7 @@ class TestFindThreadMembersImapThread:
 
         assert len(result) == 1  # Archive surfaced; INBOX skipped
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_envelope_none_or_missing_msgid_is_skipped(
         self, mock_cls: MagicMock
     ) -> None:
@@ -3385,7 +3385,7 @@ class TestFindThreadMembersImapThread:
         assert len(result) == 1
         assert result[0]["id"] == "a@example.com"
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_empty_collected_falls_through_to_bfs(
         self, mock_cls: MagicMock
     ) -> None:
@@ -3412,7 +3412,7 @@ class TestFindThreadMembersImapThread:
 
 
 class TestAppendDraft:
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_appends_to_special_use_drafts_with_draft_flag(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -3431,7 +3431,7 @@ class TestAppendDraft:
         assert flags is not None and b"\\Draft" in list(flags)
         mock_client.logout.assert_called_once()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_falls_back_to_conventional_drafts_name(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -3453,7 +3453,7 @@ class TestEnvelopeVanishRobustness:
     that UID. search_messages must skip it (return the rest), and get_message
     must report not-found — neither may crash with KeyError: ENVELOPE."""
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_search_skips_uid_with_missing_envelope(
         self, mock_cls: MagicMock
     ) -> None:
@@ -3472,7 +3472,7 @@ class TestEnvelopeVanishRobustness:
             "msg-1@example.com", "msg-3@example.com"
         ]
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_search_skips_uid_absent_from_fetch(
         self, mock_cls: MagicMock
     ) -> None:
@@ -3487,7 +3487,7 @@ class TestEnvelopeVanishRobustness:
 
         assert len(result) == 2
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_get_message_vanished_raises_not_found(
         self, mock_cls: MagicMock
     ) -> None:

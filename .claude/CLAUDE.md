@@ -21,7 +21,7 @@ make coverage              # Coverage report
 ./scripts/check_version_sync.sh        # Version consistency across files
 ```
 
-**Running the server:** `uv run python -m apple_mail_mcp.server` or via Claude Desktop config.
+**Running the server:** `uv run python -m apple_mail_fast_mcp.server` or via Claude Desktop config.
 
 ## API Surface (25 MCP tools)
 
@@ -67,7 +67,7 @@ make coverage              # Coverage report
 ## User Data on Disk
 
 - All persistent user data lives under `~/.apple_mail_mcp/`. Override the location with `APPLE_MAIL_MCP_HOME=/some/path` (the subdirectory layout is appended automatically).
-- Current subdirs: `templates/` (one `<name>.md` file per email template, see `src/apple_mail_mcp/templates.py`).
+- Current subdirs: `templates/` (one `<name>.md` file per email template, see `src/apple_mail_fast_mcp/templates.py`).
 - Names that get used as filename stems must be regex-validated **before** building any path — see `_validate_name` in `templates.py` for the path-traversal-safe pattern. Don't `Path(user_input)` directly.
 - Storage objects should resolve their root at use time, not import time, so env-var overrides and test-time monkeypatching are honored. Example: `_get_template_store()` in `server.py`.
 
@@ -81,7 +81,7 @@ make coverage              # Coverage report
 
 **Hard rule:** If you wrote or modified AppleScript in the connector, integration tests must cover it before merge.
 
-**Integration test safety:** When running tests via `server.py` tools, set `MAIL_TEST_MODE=true` and `MAIL_TEST_ACCOUNT=<test account name>`. The safety gate blocks destructive operations on non-test accounts and blocks sends to non-reserved recipient domains (must be @example.com, .test, .invalid, .localhost, etc.). See `check_test_mode_safety` in [src/apple_mail_mcp/security.py](src/apple_mail_mcp/security.py).
+**Integration test safety:** When running tests via `server.py` tools, set `MAIL_TEST_MODE=true` and `MAIL_TEST_ACCOUNT=<test account name>`. The safety gate blocks destructive operations on non-test accounts and blocks sends to non-reserved recipient domains (must be @example.com, .test, .invalid, .localhost, etc.). See `check_test_mode_safety` in [src/apple_mail_fast_mcp/security.py](src/apple_mail_fast_mcp/security.py).
 
 ## Branch Convention
 
@@ -101,9 +101,9 @@ Load these skills when working in their domains:
 
 ## Key Files
 
-- `src/apple_mail_mcp/mail_connector.py` — Core AppleScript client (~1120 lines)
-- `src/apple_mail_mcp/server.py` — FastMCP server wrapping the connector (~1120 lines)
-- `src/apple_mail_mcp/security.py` — Input validation, audit logging, confirmation flows
-- `src/apple_mail_mcp/utils.py` — Pure functions: escaping, parsing, validation
-- `src/apple_mail_mcp/exceptions.py` — Custom exception hierarchy
+- `src/apple_mail_fast_mcp/mail_connector.py` — Core AppleScript client (~1120 lines)
+- `src/apple_mail_fast_mcp/server.py` — FastMCP server wrapping the connector (~1120 lines)
+- `src/apple_mail_fast_mcp/security.py` — Input validation, audit logging, confirmation flows
+- `src/apple_mail_fast_mcp/utils.py` — Pure functions: escaping, parsing, validation
+- `src/apple_mail_fast_mcp/exceptions.py` — Custom exception hierarchy
 - `docs/reference/TOOLS.md` — Complete API reference

@@ -22,9 +22,9 @@ import os
 
 import pytest
 
-from apple_mail_mcp.exceptions import MailKeychainEntryNotFoundError
-from apple_mail_mcp.imap_connector import ImapConnector
-from apple_mail_mcp.keychain import get_imap_password
+from apple_mail_fast_mcp.exceptions import MailKeychainEntryNotFoundError
+from apple_mail_fast_mcp.imap_connector import ImapConnector
+from apple_mail_fast_mcp.keychain import get_imap_password
 
 ICLOUD_HOST = "imap.mail.me.com"
 ICLOUD_PORT = 993

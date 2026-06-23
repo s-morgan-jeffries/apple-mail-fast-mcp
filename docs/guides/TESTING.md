@@ -59,7 +59,7 @@ Mock at the `_run_applescript()` boundary:
 
 ```python
 from unittest.mock import patch, MagicMock
-from apple_mail_mcp.mail_connector import AppleMailConnector
+from apple_mail_fast_mcp.mail_connector import AppleMailConnector
 
 class TestMyFeature:
     @pytest.fixture

@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from apple_mail_mcp import server
+from apple_mail_fast_mcp import server
 
 pytestmark = pytest.mark.e2e
 
@@ -231,7 +231,7 @@ class TestToolInvocation:
             return None  # None == user accepted
 
         monkeypatch.setattr(
-            "apple_mail_mcp.server._elicit_confirmation", _accept
+            "apple_mail_fast_mcp.server._elicit_confirmation", _accept
         )
 
     @pytest.mark.parametrize(
@@ -288,7 +288,7 @@ class TestStringifiedParamCoercion:
             return None
 
         monkeypatch.setattr(
-            "apple_mail_mcp.server._elicit_confirmation", _accept
+            "apple_mail_fast_mcp.server._elicit_confirmation", _accept
         )
 
     @staticmethod
@@ -415,7 +415,7 @@ class TestCreateDraftFallbackWarning:
             return None
 
         monkeypatch.setattr(
-            "apple_mail_mcp.server._elicit_confirmation", _accept
+            "apple_mail_fast_mcp.server._elicit_confirmation", _accept
         )
 
     async def test_warnings_surface_through_dispatch(

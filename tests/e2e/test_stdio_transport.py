@@ -65,7 +65,7 @@ async def _list_tools_over_stdio() -> set[str]:
     """Spawn the server, complete the MCP handshake, and return the tool names."""
     params = StdioServerParameters(
         command="uv",
-        args=["run", "python", "-m", "apple_mail_mcp.server"],
+        args=["run", "python", "-m", "apple_mail_fast_mcp.server"],
         env=None,
     )
     async with stdio_client(params) as (read, write):

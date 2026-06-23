@@ -20,7 +20,7 @@ import statistics
 import time
 from typing import Any, Callable
 
-from apple_mail_mcp.mail_connector import AppleMailConnector
+from apple_mail_fast_mcp.mail_connector import AppleMailConnector
 
 import spike_localdb_envelope as ldb  # the prototype reader
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from apple_mail_mcp.mail_connector import AppleMailConnector
+from apple_mail_fast_mcp.mail_connector import AppleMailConnector
 
 from .conftest import (
     BenchmarkResult,
@@ -104,7 +104,7 @@ def test_search_messages_with_zero_matches(
     iteration cost of `messages of mailboxRef` itself has changed."""
     name = "search_messages_with_zero_matches"
     # A subject substring that's vanishingly unlikely to appear in real mail.
-    sentinel = "zzzz_apple_mail_mcp_no_match_sentinel_qqqq"
+    sentinel = "zzzz_apple_mail_fast_mcp_no_match_sentinel_qqqq"
     result: BenchmarkResult = measure_median(
         lambda: connector.search_messages(
             account=test_account,
@@ -177,7 +177,7 @@ def test_search_messages_with_zero_matches_gmail(
 ) -> None:
     """Gmail variant of ``test_search_messages_with_zero_matches``."""
     name = "search_messages_with_zero_matches_gmail"
-    sentinel = "zzzz_apple_mail_mcp_no_match_sentinel_qqqq"
+    sentinel = "zzzz_apple_mail_fast_mcp_no_match_sentinel_qqqq"
     result: BenchmarkResult = measure_median(
         lambda: connector.search_messages(
             account=test_account_gmail,

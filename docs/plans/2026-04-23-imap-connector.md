@@ -22,8 +22,8 @@
 - Your existing `apple-mail-mcp.imap.iCloud` Keychain entry from PR #70's spike is reused by the integration test. If it's been deleted, re-create via `security add-generic-password -s "apple-mail-mcp.imap.iCloud" -a s.morgan.jeffries@icloud.com -w <APP_PASSWORD> -T "" -U` before running integration tests.
 
 **What NOT to touch (design doc's "Out of scope"):**
-- `src/apple_mail_mcp/mail_connector.py`
-- `src/apple_mail_mcp/server.py`
+- `src/apple_mail_fast_mcp/mail_connector.py`
+- `src/apple_mail_fast_mcp/server.py`
 - Any existing test file
 - The `research` optional-deps group in `pyproject.toml` (leave `imapclient` there — we're adding it to primary, not moving it)
 
@@ -34,7 +34,7 @@
 ## Task 1: Add `MailKeychain*` exception classes
 
 **Files:**
-- Modify: `src/apple_mail_mcp/exceptions.py`
+- Modify: `src/apple_mail_fast_mcp/exceptions.py`
 - Create: `tests/unit/test_exceptions.py` (new — there is no existing test for exceptions.py; confirm first with `ls tests/unit/test_exceptions.py`)
 
 If `tests/unit/test_exceptions.py` already exists, append to it instead of creating.
@@ -45,7 +45,7 @@ If `tests/unit/test_exceptions.py` already exists, append to it instead of creat
 # tests/unit/test_exceptions.py
 """Exception class hierarchy tests."""
 import pytest
-from apple_mail_mcp.exceptions import (
+from apple_mail_fast_mcp.exceptions import (
     MailError,
     MailKeychainError,
     MailKeychainEntryNotFoundError,
@@ -78,11 +78,11 @@ class TestKeychainExceptions:
 uv run pytest tests/unit/test_exceptions.py -v
 ```
 
-Expected: all tests FAIL with `ImportError: cannot import name 'MailKeychainError' from 'apple_mail_mcp.exceptions'`.
+Expected: all tests FAIL with `ImportError: cannot import name 'MailKeychainError' from 'apple_mail_fast_mcp.exceptions'`.
 
 **Step 3: Implement**
 
-Append to `src/apple_mail_mcp/exceptions.py`:
+Append to `src/apple_mail_fast_mcp/exceptions.py`:
 
 ```python
 class MailKeychainError(MailError):
@@ -123,7 +123,7 @@ Expected: all 5 tests PASS.
 **Step 5: Commit**
 
 ```bash
-git add src/apple_mail_mcp/exceptions.py tests/unit/test_exceptions.py
+git add src/apple_mail_fast_mcp/exceptions.py tests/unit/test_exceptions.py
 git commit -m "Add MailKeychain exception hierarchy (#41)"
 ```
 
@@ -174,7 +174,7 @@ git commit -m "Promote imapclient to primary dependency (#41)"
 ## Task 3: Implement `keychain.py`
 
 **Files:**
-- Create: `src/apple_mail_mcp/keychain.py`
+- Create: `src/apple_mail_fast_mcp/keychain.py`
 - Create: `tests/unit/test_keychain.py`
 
 This task has multiple RED/GREEN cycles. Commit after all tests pass, not per cycle, to keep the first module-introducing commit readable.
@@ -189,12 +189,12 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from apple_mail_mcp.exceptions import (
+from apple_mail_fast_mcp.exceptions import (
     MailKeychainError,
     MailKeychainEntryNotFoundError,
     MailKeychainAccessDeniedError,
 )
-from apple_mail_mcp.keychain import SERVICE_NAME_PREFIX, get_imap_password
+from apple_mail_fast_mcp.keychain import SERVICE_NAME_PREFIX, get_imap_password
 
 
 def _mock_security(returncode: int, stdout: str = "", stderr: str = "") -> MagicMock:
@@ -212,13 +212,13 @@ class TestServiceNamePrefix:
 
 
 class TestHappyPath:
-    @patch("apple_mail_mcp.keychain.subprocess.run")
+    @patch("apple_mail_fast_mcp.keychain.subprocess.run")
     def test_returns_password_stripped_of_trailing_newline(self, mock_run):
         mock_run.return_value = _mock_security(0, stdout="secret123\n")
         result = get_imap_password("iCloud", "user@icloud.com")
         assert result == "secret123"
 
-    @patch("apple_mail_mcp.keychain.subprocess.run")
+    @patch("apple_mail_fast_mcp.keychain.subprocess.run")
     def test_invokes_security_with_correct_args(self, mock_run):
         mock_run.return_value = _mock_security(0, stdout="p\n")
         get_imap_password("iCloud", "user@icloud.com")
@@ -233,14 +233,14 @@ class TestHappyPath:
             "user@icloud.com",
         ]
 
-    @patch("apple_mail_mcp.keychain.subprocess.run")
+    @patch("apple_mail_fast_mcp.keychain.subprocess.run")
     def test_preserves_internal_whitespace(self, mock_run):
         mock_run.return_value = _mock_security(0, stdout="with spaces\n")
         assert get_imap_password("iCloud", "u@i.com") == "with spaces"
 
 
 class TestEntryNotFound:
-    @patch("apple_mail_mcp.keychain.subprocess.run")
+    @patch("apple_mail_fast_mcp.keychain.subprocess.run")
     def test_exit_44_raises_entry_not_found(self, mock_run):
         mock_run.return_value = _mock_security(
             44,
@@ -252,7 +252,7 @@ class TestEntryNotFound:
 
 
 class TestAccessDenied:
-    @patch("apple_mail_mcp.keychain.subprocess.run")
+    @patch("apple_mail_fast_mcp.keychain.subprocess.run")
     def test_exit_128_raises_access_denied(self, mock_run):
         mock_run.return_value = _mock_security(
             128, stderr="User interaction is not allowed."
@@ -260,7 +260,7 @@ class TestAccessDenied:
         with pytest.raises(MailKeychainAccessDeniedError):
             get_imap_password("iCloud", "u@i.com")
 
-    @patch("apple_mail_mcp.keychain.subprocess.run")
+    @patch("apple_mail_fast_mcp.keychain.subprocess.run")
     def test_user_deny_error_code_raises_access_denied(self, mock_run):
         # errSecAuthFailed = -25293 on some paths; errUserCanceled = -128
         # errSecInteractionNotAllowed = -25308. Real-world output varies.
@@ -272,7 +272,7 @@ class TestAccessDenied:
 
 
 class TestOtherFailure:
-    @patch("apple_mail_mcp.keychain.subprocess.run")
+    @patch("apple_mail_fast_mcp.keychain.subprocess.run")
     def test_unknown_failure_raises_keychain_error(self, mock_run):
         mock_run.return_value = _mock_security(
             2, stderr="some other failure"
@@ -284,7 +284,7 @@ class TestOtherFailure:
         assert type(exc_info.value) is MailKeychainError
         assert "some other failure" in str(exc_info.value)
 
-    @patch("apple_mail_mcp.keychain.subprocess.run", side_effect=FileNotFoundError("security"))
+    @patch("apple_mail_fast_mcp.keychain.subprocess.run", side_effect=FileNotFoundError("security"))
     def test_security_binary_missing_raises_keychain_error(self, mock_run):
         with pytest.raises(MailKeychainError):
             get_imap_password("iCloud", "u@i.com")
@@ -296,11 +296,11 @@ class TestOtherFailure:
 uv run pytest tests/unit/test_keychain.py -v
 ```
 
-Expected: `ImportError` on `apple_mail_mcp.keychain` (module doesn't exist yet).
+Expected: `ImportError` on `apple_mail_fast_mcp.keychain` (module doesn't exist yet).
 
 **Step 3: Implement**
 
-Create `src/apple_mail_mcp/keychain.py`:
+Create `src/apple_mail_fast_mcp/keychain.py`:
 
 ```python
 """macOS Keychain password retrieval for IMAP credentials.
@@ -318,7 +318,7 @@ from __future__ import annotations
 
 import subprocess
 
-from apple_mail_mcp.exceptions import (
+from apple_mail_fast_mcp.exceptions import (
     MailKeychainAccessDeniedError,
     MailKeychainEntryNotFoundError,
     MailKeychainError,
@@ -401,7 +401,7 @@ Expected: all tests PASS.
 **Step 5: Commit**
 
 ```bash
-git add src/apple_mail_mcp/keychain.py tests/unit/test_keychain.py
+git add src/apple_mail_fast_mcp/keychain.py tests/unit/test_keychain.py
 git commit -m "Add keychain.py for IMAP password lookup (#41)"
 ```
 
@@ -410,7 +410,7 @@ git commit -m "Add keychain.py for IMAP password lookup (#41)"
 ## Task 4: Implement `ImapConnector` skeleton + constructor
 
 **Files:**
-- Create: `src/apple_mail_mcp/imap_connector.py`
+- Create: `src/apple_mail_fast_mcp/imap_connector.py`
 - Create: `tests/unit/test_imap_connector.py`
 
 **Step 1: Write constructor tests**
@@ -422,7 +422,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from apple_mail_mcp.imap_connector import CONNECT_TIMEOUT_S, ImapConnector
+from apple_mail_fast_mcp.imap_connector import CONNECT_TIMEOUT_S, ImapConnector
 
 
 class TestConstructor:
@@ -453,7 +453,7 @@ uv run pytest tests/unit/test_imap_connector.py::TestConstructor -v
 
 **Step 3: Implement minimal skeleton**
 
-Create `src/apple_mail_mcp/imap_connector.py`:
+Create `src/apple_mail_fast_mcp/imap_connector.py`:
 
 ```python
 """IMAPClient wrapper for read operations.
@@ -516,7 +516,7 @@ uv run pytest tests/unit/test_imap_connector.py::TestConstructor -v
 **Step 5: Commit**
 
 ```bash
-git add src/apple_mail_mcp/imap_connector.py tests/unit/test_imap_connector.py
+git add src/apple_mail_fast_mcp/imap_connector.py tests/unit/test_imap_connector.py
 git commit -m "Add ImapConnector skeleton (#41)"
 ```
 
@@ -527,7 +527,7 @@ git commit -m "Add ImapConnector skeleton (#41)"
 Goal for this task: `search_messages()` with defaults opens an IMAPClient, SELECTs INBOX, SEARCHes ALL, FETCHes envelope+flags, translates envelopes to dicts, LOGOUTs, and returns.
 
 **Files:**
-- Modify: `src/apple_mail_mcp/imap_connector.py`
+- Modify: `src/apple_mail_fast_mcp/imap_connector.py`
 - Modify: `tests/unit/test_imap_connector.py`
 
 **Step 1: Append tests**
@@ -579,7 +579,7 @@ def _fake_fetch_result(uids: list[int]) -> dict[int, dict[bytes, Any]]:
 
 
 class TestSearchHappyPath:
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_no_filters_opens_connection_and_searches_all(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -610,7 +610,7 @@ class TestSearchHappyPath:
 
         assert len(result) == 3
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_empty_search_result_skips_fetch(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -623,7 +623,7 @@ class TestSearchHappyPath:
         mock_client.logout.assert_called_once()
         assert result == []
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_custom_mailbox(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -634,7 +634,7 @@ class TestSearchHappyPath:
 
         mock_client.select_folder.assert_called_once_with("Archive", readonly=True)
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_logout_called_on_exception(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -651,7 +651,7 @@ class TestSearchHappyPath:
 
 **Step 3: Implement**
 
-In `src/apple_mail_mcp/imap_connector.py`, add imports and implement `search_messages`:
+In `src/apple_mail_fast_mcp/imap_connector.py`, add imports and implement `search_messages`:
 
 ```python
 from imapclient import IMAPClient
@@ -758,7 +758,7 @@ Expected: all `TestSearchHappyPath` tests pass; `TestConstructor` still passes.
 **Step 5: Commit**
 
 ```bash
-git add src/apple_mail_mcp/imap_connector.py tests/unit/test_imap_connector.py
+git add src/apple_mail_fast_mcp/imap_connector.py tests/unit/test_imap_connector.py
 git commit -m "Implement search_messages happy path with no filters (#41)"
 ```
 
@@ -769,14 +769,14 @@ git commit -m "Implement search_messages happy path with no filters (#41)"
 Now wire in the parameters that translate directly to IMAP SEARCH criteria: `sender_contains`, `subject_contains`, `read_status`, `is_flagged`.
 
 **Files:**
-- Modify: `src/apple_mail_mcp/imap_connector.py`
+- Modify: `src/apple_mail_fast_mcp/imap_connector.py`
 - Modify: `tests/unit/test_imap_connector.py`
 
 **Step 1: Append tests**
 
 ```python
 class TestTextFilters:
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_sender_contains_maps_to_from(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -788,7 +788,7 @@ class TestTextFilters:
 
         mock_client.search.assert_called_once_with(["FROM", "alice"])
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_subject_contains_maps_to_subject(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -800,7 +800,7 @@ class TestTextFilters:
 
         mock_client.search.assert_called_once_with(["SUBJECT", "invoice"])
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_sender_and_subject_combined(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -816,7 +816,7 @@ class TestTextFilters:
 
 
 class TestFlagFilters:
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_read_status_true_maps_to_seen(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -825,7 +825,7 @@ class TestFlagFilters:
         ImapConnector("h", 993, "u@e.com", "pw").search_messages(read_status=True)
         mock_client.search.assert_called_once_with(["SEEN"])
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_read_status_false_maps_to_unseen(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -834,7 +834,7 @@ class TestFlagFilters:
         ImapConnector("h", 993, "u@e.com", "pw").search_messages(read_status=False)
         mock_client.search.assert_called_once_with(["UNSEEN"])
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_is_flagged_true_maps_to_flagged(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -843,7 +843,7 @@ class TestFlagFilters:
         ImapConnector("h", 993, "u@e.com", "pw").search_messages(is_flagged=True)
         mock_client.search.assert_called_once_with(["FLAGGED"])
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_is_flagged_false_maps_to_unflagged(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -908,7 +908,7 @@ Expected: all pass including new flag/text tests; earlier no-filter tests still 
 **Step 5: Commit**
 
 ```bash
-git add src/apple_mail_mcp/imap_connector.py tests/unit/test_imap_connector.py
+git add src/apple_mail_fast_mcp/imap_connector.py tests/unit/test_imap_connector.py
 git commit -m "Add text and flag search filters to ImapConnector (#41)"
 ```
 
@@ -919,14 +919,14 @@ git commit -m "Add text and flag search filters to ImapConnector (#41)"
 IMAP dates are `dd-Mmm-yyyy`, not ISO. Reuse `_ISO_DATE_RE` from `mail_connector.py` for validation. `date_to` is inclusive of the full day: pass `BEFORE <date_to + 1 day>`.
 
 **Files:**
-- Modify: `src/apple_mail_mcp/imap_connector.py`
+- Modify: `src/apple_mail_fast_mcp/imap_connector.py`
 - Modify: `tests/unit/test_imap_connector.py`
 
 **Step 1: Append tests**
 
 ```python
 class TestDateFilters:
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_date_from_iso_converted_to_imap_format(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -937,7 +937,7 @@ class TestDateFilters:
         )
         mock_client.search.assert_called_once_with(["SINCE", "22-Apr-2026"])
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_date_to_is_inclusive_of_full_day(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -949,19 +949,19 @@ class TestDateFilters:
         # Inclusive upper bound → BEFORE next day
         mock_client.search.assert_called_once_with(["BEFORE", "23-Apr-2026"])
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_invalid_date_from_raises_value_error(self, mock_cls):
         conn = ImapConnector("h", 993, "u@e.com", "pw")
         with pytest.raises(ValueError, match="ISO 8601"):
             conn.search_messages(date_from="04/22/2026")
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_invalid_date_to_raises_value_error(self, mock_cls):
         conn = ImapConnector("h", 993, "u@e.com", "pw")
         with pytest.raises(ValueError, match="ISO 8601"):
             conn.search_messages(date_to="not-a-date")
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_date_range(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -976,7 +976,7 @@ class TestDateFilters:
 
 
 class TestLimit:
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_limit_slices_uids_from_end(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -991,7 +991,7 @@ class TestLimit:
         assert fetch_uids == list(range(91, 101))
         assert len(result) == 10
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_limit_none_fetches_all(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -1014,10 +1014,10 @@ Add at module top in `imap_connector.py`:
 ```python
 from datetime import date as _date, timedelta as _timedelta
 
-from apple_mail_mcp.mail_connector import _ISO_DATE_RE  # reuse existing regex
+from apple_mail_fast_mcp.mail_connector import _ISO_DATE_RE  # reuse existing regex
 ```
 
-If importing `_ISO_DATE_RE` creates a circular-import risk (it shouldn't — `mail_connector` doesn't import `imap_connector`), verify with `uv run python -c "import apple_mail_mcp.imap_connector"`. If circular, duplicate the regex locally with a comment noting why.
+If importing `_ISO_DATE_RE` creates a circular-import risk (it shouldn't — `mail_connector` doesn't import `imap_connector`), verify with `uv run python -c "import apple_mail_fast_mcp.imap_connector"`. If circular, duplicate the regex locally with a comment noting why.
 
 Add a helper and wire it in:
 
@@ -1079,7 +1079,7 @@ Expected: all date + limit tests pass.
 **Step 5: Commit**
 
 ```bash
-git add src/apple_mail_mcp/imap_connector.py tests/unit/test_imap_connector.py
+git add src/apple_mail_fast_mcp/imap_connector.py tests/unit/test_imap_connector.py
 git commit -m "Add date filters and limit enforcement to ImapConnector (#41)"
 ```
 
@@ -1092,14 +1092,14 @@ IMAP has no native "has attachment" criterion. Implementation: after SEARCH, if 
 **BODYSTRUCTURE detection heuristic:** a message "has an attachment" iff its BODYSTRUCTURE contains any non-text part with `disposition` of type `attachment` or `inline` with a filename parameter. IMAPClient parses BODYSTRUCTURE into nested tuples. We'll implement a simple walker.
 
 **Files:**
-- Modify: `src/apple_mail_mcp/imap_connector.py`
+- Modify: `src/apple_mail_fast_mcp/imap_connector.py`
 - Modify: `tests/unit/test_imap_connector.py`
 
 **Step 1: Append tests**
 
 ```python
 class TestHasAttachment:
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_has_attachment_true_filters_to_messages_with_attachments(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -1144,7 +1144,7 @@ class TestHasAttachment:
         ids = [m["id"] for m in result]
         assert ids == ["2@e.com"]
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_has_attachment_false_filters_to_messages_without(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -1181,7 +1181,7 @@ class TestHasAttachment:
         ids = [m["id"] for m in result]
         assert ids == ["1@e.com"]
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_has_attachment_includes_bodystructure_in_fetch(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -1282,7 +1282,7 @@ Expected: all pass. Note: real BODYSTRUCTURE shapes are nuanced and provider-dep
 **Step 5: Commit**
 
 ```bash
-git add src/apple_mail_mcp/imap_connector.py tests/unit/test_imap_connector.py
+git add src/apple_mail_fast_mcp/imap_connector.py tests/unit/test_imap_connector.py
 git commit -m "Add has_attachment post-filter to ImapConnector (#41)"
 ```
 
@@ -1294,13 +1294,13 @@ Confirm the translator handles encoded bytes, empty from, bracketed message-ids,
 
 **Files:**
 - Modify: `tests/unit/test_imap_connector.py`
-- Possibly modify: `src/apple_mail_mcp/imap_connector.py` (if a test surfaces a gap in existing helpers)
+- Possibly modify: `src/apple_mail_fast_mcp/imap_connector.py` (if a test surfaces a gap in existing helpers)
 
 **Step 1: Append tests**
 
 ```python
 class TestEnvelopeTranslation:
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_strips_angle_brackets_from_message_id(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -1315,7 +1315,7 @@ class TestEnvelopeTranslation:
         [msg] = conn.search_messages()
         assert msg["id"] == "abc@example.com"
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_empty_sender_returns_empty_string(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -1339,7 +1339,7 @@ class TestEnvelopeTranslation:
         [msg] = conn.search_messages()
         assert msg["sender"] == ""
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_seen_flag_maps_to_read_status(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -1354,7 +1354,7 @@ class TestEnvelopeTranslation:
         assert msg["read_status"] is True
         assert msg["flagged"] is False
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_flagged_flag_maps_to_flagged(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -1369,7 +1369,7 @@ class TestEnvelopeTranslation:
         assert msg["flagged"] is True
         assert msg["read_status"] is False
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_date_iso_format(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -1386,7 +1386,7 @@ class TestEnvelopeTranslation:
         [msg] = ImapConnector("h", 993, "u@e.com", "pw").search_messages()
         assert msg["date_received"] == "2026-04-22T14:30:00"
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_subject_bytes_decoded_utf8(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
@@ -1456,9 +1456,9 @@ import os
 
 import pytest
 
-from apple_mail_mcp.exceptions import MailKeychainEntryNotFoundError
-from apple_mail_mcp.imap_connector import ImapConnector
-from apple_mail_mcp.keychain import get_imap_password
+from apple_mail_fast_mcp.exceptions import MailKeychainEntryNotFoundError
+from apple_mail_fast_mcp.imap_connector import ImapConnector
+from apple_mail_fast_mcp.keychain import get_imap_password
 
 
 ICLOUD_HOST = "imap.mail.me.com"
@@ -1629,8 +1629,8 @@ gh issue comment 40 --body "Unblocked by #41 (merged). ImapConnector is ready to
 **Commit count:** expect ~10 commits on the feature branch.
 
 **End state:**
-- `keychain.py` retrievable via `from apple_mail_mcp.keychain import get_imap_password`.
-- `ImapConnector` retrievable via `from apple_mail_mcp.imap_connector import ImapConnector`.
+- `keychain.py` retrievable via `from apple_mail_fast_mcp.keychain import get_imap_password`.
+- `ImapConnector` retrievable via `from apple_mail_fast_mcp.imap_connector import ImapConnector`.
 - Integration test passing against real iCloud.
 - Design doc committed alongside the implementation.
 - #41 closed, #40 unblocked.

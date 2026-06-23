@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from apple_mail_mcp.imap_connector import ImapConnector, _build_search_criteria
+from apple_mail_fast_mcp.imap_connector import ImapConnector, _build_search_criteria
 
 # A representative injection payload and a grab-bag of control characters.
 _INJECTION = 'x\r\nA1 DELETE "INBOX"'
@@ -49,7 +49,7 @@ class TestSearchCriteriaRejectControlChars:
         assert "SUBJECT" in criteria
         assert "hello world" in criteria
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_search_messages_never_reaches_wire_with_crlf(self, mock_cls: MagicMock) -> None:
         client = MagicMock()
         mock_cls.return_value = client
@@ -62,7 +62,7 @@ class TestSearchCriteriaRejectControlChars:
 class TestMessageIdRejectControlChars:
     """Message-ID HEADER searches must reject control characters."""
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_get_message_rejects_crlf(self, mock_cls: MagicMock) -> None:
         client = MagicMock()
         mock_cls.return_value = client
@@ -70,7 +70,7 @@ class TestMessageIdRejectControlChars:
             _conn().get_message(_INJECTION, mailbox="INBOX")
         client.search.assert_not_called()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_delete_messages_rejects_crlf(self, mock_cls: MagicMock) -> None:
         client = MagicMock()
         mock_cls.return_value = client
@@ -78,7 +78,7 @@ class TestMessageIdRejectControlChars:
             _conn().delete_messages([_INJECTION], source_mailbox="INBOX")
         client.search.assert_not_called()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_move_messages_rejects_crlf(self, mock_cls: MagicMock) -> None:
         client = MagicMock()
         mock_cls.return_value = client
@@ -88,7 +88,7 @@ class TestMessageIdRejectControlChars:
             )
         client.search.assert_not_called()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_find_thread_members_rejects_crlf_anchor(self, mock_cls: MagicMock) -> None:
         client = MagicMock()
         mock_cls.return_value = client
@@ -100,7 +100,7 @@ class TestMessageIdRejectControlChars:
 class TestMailboxNameRejectControlChars:
     """Mailbox/folder names become IMAP command args too (SELECT/DELETE/RENAME)."""
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_search_rejects_crlf_mailbox(self, mock_cls: MagicMock) -> None:
         client = MagicMock()
         mock_cls.return_value = client
@@ -108,7 +108,7 @@ class TestMailboxNameRejectControlChars:
             _conn().search_messages(mailbox="INBOX\r\nA1 DELETE x")
         client.select_folder.assert_not_called()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_delete_mailbox_rejects_crlf(self, mock_cls: MagicMock) -> None:
         client = MagicMock()
         mock_cls.return_value = client
@@ -118,7 +118,7 @@ class TestMailboxNameRejectControlChars:
         client.select_folder.assert_not_called()
         client.delete_folder.assert_not_called()
 
-    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_rename_mailbox_rejects_crlf(self, mock_cls: MagicMock) -> None:
         client = MagicMock()
         mock_cls.return_value = client

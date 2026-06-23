@@ -28,7 +28,7 @@
 ## Task 1: `_normalize_subject` helper
 
 **Files:**
-- Modify: `src/apple_mail_mcp/utils.py` (add function at end)
+- Modify: `src/apple_mail_fast_mcp/utils.py` (add function at end)
 - Modify: `tests/unit/test_utils.py` (new `TestNormalizeSubject` class; place imports at top of file)
 
 **Step 1 — failing tests**
@@ -67,11 +67,11 @@ class TestNormalizeSubject:
         assert normalize_subject("Re: Q3   Report") == "Q3   Report"
 ```
 
-Add the import at the top of the file alongside the existing `from apple_mail_mcp.utils import ...` line: `normalize_subject`.
+Add the import at the top of the file alongside the existing `from apple_mail_fast_mcp.utils import ...` line: `normalize_subject`.
 
 Run: `uv run pytest tests/unit/test_utils.py::TestNormalizeSubject -v`. Expect 9 failures (ImportError or NameError).
 
-**Step 2 — implement.** Append to `src/apple_mail_mcp/utils.py`:
+**Step 2 — implement.** Append to `src/apple_mail_fast_mcp/utils.py`:
 
 ```python
 # Subject prefixes that indicate a reply or forward, case-insensitive.
@@ -109,7 +109,7 @@ def normalize_subject(subject: str) -> str:
 **Step 4 — commit**
 
 ```bash
-git add src/apple_mail_mcp/utils.py tests/unit/test_utils.py
+git add src/apple_mail_fast_mcp/utils.py tests/unit/test_utils.py
 git commit -m "Add normalize_subject helper for thread matching (#29)"
 ```
 
@@ -118,7 +118,7 @@ git commit -m "Add normalize_subject helper for thread matching (#29)"
 ## Task 2: `parse_rfc822_ids` helper
 
 **Files:**
-- Modify: `src/apple_mail_mcp/utils.py`
+- Modify: `src/apple_mail_fast_mcp/utils.py`
 - Modify: `tests/unit/test_utils.py`
 
 **Step 1 — failing tests**
@@ -154,7 +154,7 @@ class TestParseRfc822Ids:
         assert parse_rfc822_ids("<a@x.com> <malformed") == ["a@x.com", "malformed"]
 ```
 
-Add `parse_rfc822_ids` to the `from apple_mail_mcp.utils import ...` line.
+Add `parse_rfc822_ids` to the `from apple_mail_fast_mcp.utils import ...` line.
 
 Run: `uv run pytest tests/unit/test_utils.py::TestParseRfc822Ids -v`. Expect failures.
 
@@ -189,7 +189,7 @@ def parse_rfc822_ids(raw: str) -> list[str]:
 **Step 4 — commit**
 
 ```bash
-git add src/apple_mail_mcp/utils.py tests/unit/test_utils.py
+git add src/apple_mail_fast_mcp/utils.py tests/unit/test_utils.py
 git commit -m "Add parse_rfc822_ids helper for threading headers (#29)"
 ```
 
@@ -198,7 +198,7 @@ git commit -m "Add parse_rfc822_ids helper for threading headers (#29)"
 ## Task 3: `walk_thread_graph` helper
 
 **Files:**
-- Modify: `src/apple_mail_mcp/utils.py`
+- Modify: `src/apple_mail_fast_mcp/utils.py`
 - Modify: `tests/unit/test_utils.py`
 
 **Step 1 — failing tests**
@@ -350,7 +350,7 @@ def walk_thread_graph(
 **Step 4 — commit**
 
 ```bash
-git add src/apple_mail_mcp/utils.py tests/unit/test_utils.py
+git add src/apple_mail_fast_mcp/utils.py tests/unit/test_utils.py
 git commit -m "Add walk_thread_graph helper for thread reconstruction (#29)"
 ```
 
@@ -359,7 +359,7 @@ git commit -m "Add walk_thread_graph helper for thread reconstruction (#29)"
 ## Task 4: Connector `get_thread` — anchor resolution
 
 **Files:**
-- Modify: `src/apple_mail_mcp/mail_connector.py`
+- Modify: `src/apple_mail_fast_mcp/mail_connector.py`
 - Modify: `tests/unit/test_mail_connector.py`
 
 This task adds the method skeleton + anchor-resolution AppleScript. The candidate-collection call is added in Task 5.
@@ -484,7 +484,7 @@ Also add `MailMessageNotFoundError` raise is handled by `_run_applescript` itsel
 **Step 4 — commit**
 
 ```bash
-git add src/apple_mail_mcp/mail_connector.py tests/unit/test_mail_connector.py
+git add src/apple_mail_fast_mcp/mail_connector.py tests/unit/test_mail_connector.py
 git commit -m "Add get_thread connector skeleton with anchor resolution (#29)"
 ```
 
@@ -493,7 +493,7 @@ git commit -m "Add get_thread connector skeleton with anchor resolution (#29)"
 ## Task 5: Connector `get_thread` — candidate collection + graph walk
 
 **Files:**
-- Modify: `src/apple_mail_mcp/mail_connector.py` (complete `get_thread`)
+- Modify: `src/apple_mail_fast_mcp/mail_connector.py` (complete `get_thread`)
 - Modify: `tests/unit/test_mail_connector.py`
 
 **Step 1 — failing tests**
@@ -707,7 +707,7 @@ Also run the whole unit suite: `uv run pytest tests/unit/ -q`. Expect all passin
 **Step 4 — commit**
 
 ```bash
-git add src/apple_mail_mcp/mail_connector.py tests/unit/test_mail_connector.py
+git add src/apple_mail_fast_mcp/mail_connector.py tests/unit/test_mail_connector.py
 git commit -m "Complete get_thread connector with graph walk + candidate collection (#29)"
 ```
 
@@ -716,14 +716,14 @@ git commit -m "Complete get_thread connector with graph walk + candidate collect
 ## Task 6: Server MCP tool + security tier
 
 **Files:**
-- Modify: `src/apple_mail_mcp/server.py` (add `@mcp.tool() get_thread` after `get_attachments`)
-- Modify: `src/apple_mail_mcp/security.py` (`get_thread` → `cheap_reads`)
+- Modify: `src/apple_mail_fast_mcp/server.py` (add `@mcp.tool() get_thread` after `get_attachments`)
+- Modify: `src/apple_mail_fast_mcp/security.py` (`get_thread` → `cheap_reads`)
 - Modify: `tests/unit/test_server.py` (new `TestGetThread` class, import `get_thread`)
 - Modify: `tests/unit/test_security.py` (tier-assignment test)
 
 **Step 1 — failing tests**
 
-In `tests/unit/test_server.py`, extend the `from apple_mail_mcp.server import ...` block to include `get_thread`. Then add after `TestGetAttachments`:
+In `tests/unit/test_server.py`, extend the `from apple_mail_fast_mcp.server import ...` block to include `get_thread`. Then add after `TestGetAttachments`:
 
 ```python
 class TestGetThread:
@@ -765,7 +765,7 @@ In `tests/unit/test_security.py::test_all_operations_have_tier_assigned`, add `"
 
 Run: `uv run pytest tests/unit/test_server.py::TestGetThread tests/unit/test_security.py::TestCheckRateLimit::test_all_operations_have_tier_assigned -v`. Expect ImportErrors + a security failure.
 
-**Step 2 — implement.** In `src/apple_mail_mcp/server.py`, add after the `get_attachments` tool:
+**Step 2 — implement.** In `src/apple_mail_fast_mcp/server.py`, add after the `get_attachments` tool:
 
 ```python
 @mcp.tool()
@@ -827,14 +827,14 @@ def get_thread(message_id: str) -> dict[str, Any]:
         }
 ```
 
-In `src/apple_mail_mcp/security.py`, add `"get_thread": "cheap_reads"` to `OPERATION_TIERS`.
+In `src/apple_mail_fast_mcp/security.py`, add `"get_thread": "cheap_reads"` to `OPERATION_TIERS`.
 
 **Step 3 — verify.** Re-run tests. Expect all passing.
 
 **Step 4 — commit**
 
 ```bash
-git add src/apple_mail_mcp/server.py src/apple_mail_mcp/security.py tests/unit/test_server.py tests/unit/test_security.py
+git add src/apple_mail_fast_mcp/server.py src/apple_mail_fast_mcp/security.py tests/unit/test_server.py tests/unit/test_security.py
 git commit -m "Expose get_thread as MCP tool, rate-limited cheap_reads (#29)"
 ```
 
@@ -909,7 +909,7 @@ git commit -m "Wire get_thread into E2E EXPECTED_TOOLS (16 -> 17) (#29)"
         self, connector: AppleMailConnector
     ) -> None:
         """Nonexistent anchor raises MailMessageNotFoundError."""
-        from apple_mail_mcp.exceptions import MailMessageNotFoundError
+        from apple_mail_fast_mcp.exceptions import MailMessageNotFoundError
         with pytest.raises(MailMessageNotFoundError):
             connector.get_thread("99999999999")
 ```

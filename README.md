@@ -131,7 +131,7 @@ When set to a non-empty value, the env var is used **in preference to** any Keyc
 
 **Verifying the setup.** The `setup-imap` command does this for you. If you want to spot-check post-hoc:
 ```bash
-uv run python -c "from apple_mail_mcp.mail_connector import AppleMailConnector; \
+uv run python -c "from apple_mail_fast_mcp.mail_connector import AppleMailConnector; \
     print(AppleMailConnector().search_messages(account='<ACCOUNT_NAME>', limit=1))"
 ```
 If IMAP is working, the call returns in ~1 second. If it logs a WARNING about falling back (visible with `--log-level=DEBUG`), check that the account name matches Mail.app's account name exactly and that the email in your Keychain entry matches what `email addresses of account` returns.

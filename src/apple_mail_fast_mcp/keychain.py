@@ -28,7 +28,7 @@ import re
 import subprocess
 from typing import NoReturn
 
-from apple_mail_mcp.exceptions import (
+from apple_mail_fast_mcp.exceptions import (
     MailKeychainAccessDeniedError,
     MailKeychainEntryNotFoundError,
     MailKeychainError,

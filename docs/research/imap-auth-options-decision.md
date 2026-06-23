@@ -111,7 +111,7 @@ Only relevant if both (a) and (b) failed. (a) succeeded; (e) is moot.
 The chosen path produces this module layout when #41 is executed:
 
 ```
-src/apple_mail_mcp/
+src/apple_mail_fast_mcp/
 ├── keychain.py         # NEW — thin wrapper around `security find-generic-password`
 ├── imap_connector.py   # NEW — IMAPClient wrapper for read ops, takes creds from keychain
 ├── mail_connector.py   # unchanged shape — delegates read ops to IMAP when creds exist

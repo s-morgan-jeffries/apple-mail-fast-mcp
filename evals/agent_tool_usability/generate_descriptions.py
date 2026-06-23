@@ -21,7 +21,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from apple_mail_mcp.server import mcp
+from apple_mail_fast_mcp.server import mcp
 
 SCRIPT_DIR = Path(__file__).parent
 SERVER_INSTRUCTIONS_PATH = SCRIPT_DIR / "server_instructions.md"

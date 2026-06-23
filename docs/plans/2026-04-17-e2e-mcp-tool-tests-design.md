@@ -77,4 +77,4 @@ E2E tests are excluded from coverage via the pytest markers already in place. Th
 
 ## Follow-up issues
 
-- **New v0.4.0 issue:** "Add stdio subprocess smoke test for MCP server" — spawn `python -m apple_mail_mcp.server`, connect via MCP client SDK, assert `list_tools` handshake returns 14 tools. Separate PR, separate fixture plumbing.
+- **New v0.4.0 issue:** "Add stdio subprocess smoke test for MCP server" — spawn `python -m apple_mail_fast_mcp.server`, connect via MCP client SDK, assert `list_tools` handshake returns 14 tools. Separate PR, separate fixture plumbing.

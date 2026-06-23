@@ -17,7 +17,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from apple_mail_mcp.utils import escape_applescript_string, sanitize_input
+from apple_mail_fast_mcp.utils import escape_applescript_string, sanitize_input
 
 pytestmark = pytest.mark.skipif(
     "not config.getoption('--run-integration')",

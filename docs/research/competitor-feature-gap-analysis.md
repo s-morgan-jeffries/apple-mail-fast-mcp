@@ -24,7 +24,7 @@ registrations), not from their README's marketing count — several misstate the
 Each deep dive records the repo URL + the commit SHA/date it was read at (see Provenance).
 
 **Our 24-tool baseline** (from `docs/reference/TOOLS.md`, verified in
-`src/apple_mail_mcp/server.py`): `list_accounts, list_mailboxes, list_rules, list_templates,
+`src/apple_mail_fast_mcp/server.py`): `list_accounts, list_mailboxes, list_rules, list_templates,
 search_messages, get_messages, get_thread, get_template, render_template, update_message,
 update_mailbox, update_rule, update_draft, delete_draft, delete_mailbox, delete_messages,
 delete_rule, delete_template, create_mailbox, create_draft, create_rule, save_template,
@@ -43,7 +43,7 @@ count where deep-dived (✦), else the advertised number.
 | **imdinu/apple-mail-mcp** ✦ | 37 | Python · **local SQLite FTS5 + .emlx** | 8✦ | RO | Full-coverage body search; public benchmarks |
 | **sweetrb/apple-mail-mcp** ✦ | 36 | TS/Node · AppleScript | 40✦ | RW | Mail-merge serial send, contacts, granular verbs |
 | **PsychQuant/che-apple-mail-mcp** ✦ | 5 | Swift · **SQLite/.emlx read** + AppleScript write | 48✦ | RW | Breadth (VIP/signatures/SMTP), batch, MD export |
-| **like-a-freedom/rusty_apple_mail_mcp** ✦ | 5 | Rust · **Envelope Index + .emlx**, read-only | 5✦ | RO | "Dead fast"; rich multi-format attachment extraction |
+| **like-a-freedom/rusty_apple_mail_fast_mcp** ✦ | 5 | Rust · **Envelope Index + .emlx**, read-only | 5✦ | RO | "Dead fast"; rich multi-format attachment extraction |
 | GodModeAI2025/AppleMCP | 11 | multi-app suite (Mail+Calendar+…) | — | — | Not Mail-dedicated (landscape only) |
 | l22-io/orchard-mcp | 6 | multi-app (Mail+Calendar+Reminders) | — | — | Not Mail-dedicated (landscape only) |
 
@@ -100,7 +100,7 @@ Automation **and** Full Disk Access. `.mcpb` bundle + MCP registry.
   rate limiting, no confirmation/test-mode gate. The 48 count is breadth of thin wrappers, not
   advanced workflows (no smart-inbox/analytics/threading/templates).
 
-### like-a-freedom/rusty_apple_mail_mcp — 5★ · commit `647054185` (2026-05-30) · no license
+### like-a-freedom/rusty_apple_mail_fast_mcp — 5★ · commit `647054185` (2026-05-30) · no license
 Rust, **local-first read-only** (Envelope Index via `rusqlite` + `.emlx` lazy hydration), no
 AppleScript/network at all. 5 tools (1 deprecated). aarch64-only prebuilt binary.
 - **Leads on:** speed-by-construction, **rich multi-format attachment text extraction**
@@ -209,5 +209,5 @@ All read live on 2026-06-14 via `gh api`/source:
 - imdinu/apple-mail-mcp — https://github.com/imdinu/apple-mail-mcp — `463e22565` (2026-06-12), v0.4.1, GPL-3.0.
 - sweetrb/apple-mail-mcp — https://github.com/sweetrb/apple-mail-mcp — `c57c66647` (2026-06-01), v1.5.5, MIT.
 - PsychQuant/che-apple-mail-mcp — https://github.com/PsychQuant/che-apple-mail-mcp — `a703fd073` (2026-06-14), v2.0.1, MIT (Swift). cyber404/che-apple-mail-mcp is a stale code copy (45 tools), not the canonical repo.
-- like-a-freedom/rusty_apple_mail_mcp — https://github.com/like-a-freedom/rusty_apple_mail_mcp — `647054185` (2026-05-30), v1.4.1, no license.
+- like-a-freedom/rusty_apple_mail_fast_mcp — https://github.com/like-a-freedom/rusty_apple_mail_fast_mcp — `647054185` (2026-05-30), v1.4.1, no license.
 - Landscape ranking: GitHub repo search, 2026-06-14. Multi-app suites (GodModeAI2025/AppleMCP, l22-io/orchard-mcp) noted but not deep-dived.

@@ -53,7 +53,7 @@ A maintenance release. The one user-facing fix lets an iCloud account whose Appl
 
 First release under the new name **`apple-mail-fast-mcp`** (#335) — the PyPI distribution, CLI command, and repo were renamed, and publishing now goes through PyPI OIDC trusted publishing. Feature-wise the theme is **richer composition and inspection**: drafts can carry an HTML body, a new tool reads an attachment's content inline without writing to disk, and IMAP credentials can come from an environment variable for uvx/headless/CI contexts. Alongside: a confirmation-prompt fix for current FastMCP, and CI/release hardening so parity drift and dependency advisories can't slip through (or hard-block a release) unnoticed.
 
-> **Renaming note:** install as `apple-mail-fast-mcp` (e.g. `pip install apple-mail-fast-mcp` / `uvx apple-mail-fast-mcp`) and invoke the CLI as `apple-mail-fast-mcp`. The Python import package remains `apple_mail_mcp` for now, and Keychain entries remain under the `apple-mail-mcp.imap.<account>` prefix (a brand migration is tracked in #336/#337).
+> **Renaming note:** install as `apple-mail-fast-mcp` (e.g. `pip install apple-mail-fast-mcp` / `uvx apple-mail-fast-mcp`) and invoke the CLI as `apple-mail-fast-mcp`. The Python import package remains `apple_mail_fast_mcp` for now, and Keychain entries remain under the `apple-mail-mcp.imap.<account>` prefix (a brand migration is tracked in #336/#337).
 
 ### Added
 
@@ -273,7 +273,7 @@ Performance + correctness release. The headline arc is **IMAP fast paths for eve
 
 **Test-mode safety gap on implicit-reply `send_now` (#175):** In test mode (`MAIL_TEST_MODE=true`), `create_draft(reply_to=X, send_now=True)` and the analogous `update_draft` path bypassed the reserved-domain safety check when no explicit `to`/`cc`/`bcc` overrides were supplied — Mail.app derived recipients from the original message at send time, so the server's pre-flight gate (which only fired on non-empty recipient lists) was skipped. The gap let test-mode replies target real addresses without surfacing as safety violations. Fixed at two layers: server-tool wrappers now always call `check_test_mode_safety` on `send_now=True` (even with empty recipients), and `check_test_mode_safety` itself now treats empty/None recipients on a `SEND_OPERATIONS` call in test mode as a `safety_violation`. The fix forces explicit recipients for any test-mode send. Surfaced during the v0.7.0 release-review documentation pass; analog of the v0.6 `reply_to_message` hardcoded block that was dropped when the drafts lifecycle (#134) replaced the four old send tools.
 
-**Flag color labels in `update_message(flag_color=...)` (#185):** The map from color name to AppleScript flag index in [`utils.py:get_flag_index`](src/apple_mail_mcp/utils.py) had two pairs of swapped labels. Empirical testing (Gmail/Mail.app, 2026-05-12) confirmed that callers passing certain colors got a different color in Mail.app's UI than they asked for:
+**Flag color labels in `update_message(flag_color=...)` (#185):** The map from color name to AppleScript flag index in [`utils.py:get_flag_index`](src/apple_mail_fast_mcp/utils.py) had two pairs of swapped labels. Empirical testing (Gmail/Mail.app, 2026-05-12) confirmed that callers passing certain colors got a different color in Mail.app's UI than they asked for:
 
 - `flag_color="orange"` previously rendered as **red**; now renders as **orange**.
 - `flag_color="red"` previously rendered as **orange**; now renders as **red**.

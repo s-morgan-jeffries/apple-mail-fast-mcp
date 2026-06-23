@@ -27,7 +27,7 @@ import subprocess
 
 import pytest
 
-from apple_mail_mcp.mail_connector import AppleMailConnector
+from apple_mail_fast_mcp.mail_connector import AppleMailConnector
 
 ICLOUD_ACCOUNT_NAME = "iCloud"
 
@@ -77,7 +77,7 @@ class TestIMAPDelegation:
 
         # If IMAP succeeds, _imap_failures stays empty. If anything falls back,
         # the set will contain iCloud. We assert the IMAP path executed.
-        with caplog.at_level(logging.DEBUG, logger="apple_mail_mcp"):
+        with caplog.at_level(logging.DEBUG, logger="apple_mail_fast_mcp"):
             result = connector.search_messages(
                 account=ICLOUD_ACCOUNT_NAME, limit=5
             )
@@ -122,11 +122,11 @@ class TestIMAPDelegation:
 
         monkeypatch.setattr(connector, "_resolve_imap_config", fake_config)
         monkeypatch.setattr(
-            "apple_mail_mcp.mail_connector.get_imap_password",
+            "apple_mail_fast_mcp.mail_connector.get_imap_password",
             lambda _account, _email: "fake-password",
         )
 
-        with caplog.at_level(logging.DEBUG, logger="apple_mail_mcp"):
+        with caplog.at_level(logging.DEBUG, logger="apple_mail_fast_mcp"):
             result = connector.search_messages(
                 account=ICLOUD_ACCOUNT_NAME, limit=5
             )
@@ -183,7 +183,7 @@ class TestIMAPDelegation:
         anchor_id = anchor_finder.stdout.strip()
         assert anchor_id, "Anchor finder returned empty stdout"
 
-        with caplog.at_level(logging.DEBUG, logger="apple_mail_mcp"):
+        with caplog.at_level(logging.DEBUG, logger="apple_mail_fast_mcp"):
             result = connector.get_thread(message_id=anchor_id)
 
         assert isinstance(result, list)
@@ -227,11 +227,11 @@ class TestIMAPDelegation:
 
         monkeypatch.setattr(connector, "_resolve_imap_config", fake_config)
         monkeypatch.setattr(
-            "apple_mail_mcp.mail_connector.get_imap_password",
+            "apple_mail_fast_mcp.mail_connector.get_imap_password",
             lambda _account, _email: "fake-password",
         )
 
-        with caplog.at_level(logging.DEBUG, logger="apple_mail_mcp"):
+        with caplog.at_level(logging.DEBUG, logger="apple_mail_fast_mcp"):
             result = connector.get_thread(message_id=anchor_id)
 
         # AppleScript fallback ran and returned the thread (at least the

@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from apple_mail_mcp.exceptions import MailAppleScriptError
-from apple_mail_mcp.utils import (
+from apple_mail_fast_mcp.exceptions import MailAppleScriptError
+from apple_mail_fast_mcp.utils import (
     DEFAULT_MAX_BODY_BYTES,
     address_domain,
     applescript_account_clause,
@@ -521,7 +521,7 @@ class TestCoerceJsonDict:
 
 import base64 as _base64  # noqa: E402
 
-from apple_mail_mcp.utils import (  # noqa: E402
+from apple_mail_fast_mcp.utils import (  # noqa: E402
     attachment_content_encoding,
     is_texty_mime,
 )
