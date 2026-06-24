@@ -18,6 +18,8 @@ def _fake_envelope(
     sender_name: bytes = b"Alice",
     sender_mailbox: bytes = b"alice",
     sender_host: bytes = b"example.com",
+    to: tuple[Address, ...] = (),
+    cc: tuple[Address, ...] = (),
     date: datetime | None = None,
 ) -> Envelope:
     """Build an Envelope with reasonable defaults for envelope-shape tests."""
@@ -29,8 +31,8 @@ def _fake_envelope(
         from_=(from_addr,),
         sender=(from_addr,),
         reply_to=(from_addr,),
-        to=(),
-        cc=(),
+        to=to,
+        cc=cc,
         bcc=(),
         in_reply_to=None,
         message_id=message_id,
@@ -792,11 +794,12 @@ class TestGetMessage:
         assert result["read_status"] is True
 
     @patch("apple_mail_mcp.imap_connector.IMAPClient")
-    def test_default_fetch_keys_include_body_text(
+    def test_default_fetch_keys_include_full_body(
         self, mock_cls: MagicMock
     ) -> None:
-        """Default include_content=True and headers_only=False → fetch
-        ENVELOPE + FLAGS + BODY[TEXT]."""
+        """Default body_format='text' → fetch ENVELOPE + FLAGS + BODY[] (the
+        whole message, so the body is MIME-parsed server-side and attachment
+        bytes are dropped from ``content``)."""
         self._setup_client(mock_cls)
 
         ImapConnector("h", 993, "u@e.com", "pw").get_message(
@@ -806,8 +809,140 @@ class TestGetMessage:
         fetch_keys = mock_cls.return_value.fetch.call_args[0][1]
         assert b"ENVELOPE" in fetch_keys
         assert b"FLAGS" in fetch_keys
-        assert b"BODY[TEXT]" in fetch_keys
+        assert b"BODY[]" in fetch_keys
+        assert b"BODY[TEXT]" not in fetch_keys
         assert b"BODY[HEADER]" not in fetch_keys
+
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_raw_body_format_fetches_legacy_body_text(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """body_format='raw' is the escape hatch: keep the legacy
+        header-less BODY[TEXT] fetch and the undecoded content."""
+        self._setup_client(mock_cls, body=b"--b\r\nraw mime\r\n--b--")
+
+        result = ImapConnector("h", 993, "u@e.com", "pw").get_message(
+            "abc@x", mailbox="INBOX", body_format="raw",
+        )
+
+        fetch_keys = mock_cls.return_value.fetch.call_args[0][1]
+        assert b"BODY[TEXT]" in fetch_keys
+        assert b"BODY[]" not in fetch_keys
+        # raw mode returns the bytes verbatim (charset-decoded only).
+        assert result["content"] == "--b\r\nraw mime\r\n--b--"
+
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_text_body_strips_attachment_base64(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """The crux of the overflow fix: a multipart message with a large
+        base64 attachment yields ``content`` with the readable text only —
+        the attachment bytes never appear."""
+        import base64
+
+        blob = base64.b64encode(b"\x00" * 8000).decode()
+        full = (
+            "From: alice@example.com\r\n"
+            "Subject: Hi\r\n"
+            'Content-Type: multipart/mixed; boundary="B"\r\n\r\n'
+            "--B\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n"
+            "Please see the attached report.\r\n"
+            "--B\r\nContent-Type: application/octet-stream\r\n"
+            "Content-Transfer-Encoding: base64\r\n"
+            'Content-Disposition: attachment; filename="r.bin"\r\n\r\n'
+            f"{blob}\r\n--B--\r\n"
+        ).encode()
+        self._setup_client(mock_cls, body=full)
+
+        result = ImapConnector("h", 993, "u@e.com", "pw").get_message(
+            "abc@x", mailbox="INBOX",
+        )
+
+        assert result["content"] == "Please see the attached report."
+        assert blob[:50] not in result["content"]
+        assert len(result["content"]) < 200  # not megabytes of base64
+
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_to_cc_recipients_surfaced(self, mock_cls: MagicMock) -> None:
+        """To/Cc were dropped on the IMAP path; now they come through from
+        the ENVELOPE."""
+        client = self._setup_client(mock_cls)
+        entry = next(iter(client.fetch.return_value.values()))
+        entry[b"ENVELOPE"] = _fake_envelope(
+            to=(Address(b"Bob", None, b"bob", b"example.com"),),
+            cc=(Address(None, None, b"carol", b"example.com"),),
+        )
+
+        result = ImapConnector("h", 993, "u@e.com", "pw").get_message(
+            "abc@x", mailbox="INBOX",
+        )
+
+        assert result["to"] == "Bob <bob@example.com>"
+        assert result["cc"] == "carol@example.com"
+
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_attachments_from_full_body_parse(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """include_attachments=True derives attachment metadata from the
+        parsed full body — so a real attachment is found even when the
+        BODYSTRUCTURE walker would miss it (the historical false-negative).
+        BODYSTRUCTURE isn't even fetched when we already have the full body."""
+        import base64
+
+        blob = base64.b64encode(b"PK\x03\x04" + b"\x00" * 1000).decode()
+        full = (
+            "From: a@e.com\r\nSubject: Hi\r\n"
+            'Content-Type: multipart/mixed; boundary="B"\r\n\r\n'
+            "--B\r\nContent-Type: text/plain\r\n\r\nbody text\r\n"
+            "--B\r\nContent-Type: application/octet-stream\r\n"
+            "Content-Transfer-Encoding: base64\r\n"
+            'Content-Disposition: attachment; filename="report.hwp"\r\n\r\n'
+            f"{blob}\r\n--B--\r\n"
+        ).encode()
+        self._setup_client(mock_cls, body=full)
+
+        result = ImapConnector("h", 993, "u@e.com", "pw").get_message(
+            "abc@x", mailbox="INBOX", include_attachments=True,
+        )
+
+        atts = result["attachments"]
+        assert len(atts) == 1
+        assert atts[0]["name"] == "report.hwp"
+        assert atts[0]["mime_type"] == "application/octet-stream"
+        assert atts[0]["size"] == 1004
+        assert atts[0]["downloaded"] is True
+        assert result["content"] == "body text"
+        fetch_keys = mock_cls.return_value.fetch.call_args[0][1]
+        assert b"BODYSTRUCTURE" not in fetch_keys
+
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_attachments_fall_back_to_bodystructure_without_body(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """When the body isn't fetched (include_content=False) there is no
+        full parse to mine, so attachment metadata still comes from
+        BODYSTRUCTURE — the legacy path stays intact."""
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.search.return_value = [9]
+        client.fetch.return_value = {
+            9: {
+                b"ENVELOPE": _fake_envelope(message_id=b"<9@e.com>"),
+                b"FLAGS": (),
+                b"BODYSTRUCTURE": _MULTIPART_WITH_ATTACHMENT,
+            }
+        }
+
+        result = ImapConnector("h", 993, "u@e.com", "pw").get_message(
+            "9@e.com", mailbox="INBOX",
+            include_content=False, include_attachments=True,
+        )
+
+        fetch_keys = client.fetch.call_args[0][1]
+        assert b"BODYSTRUCTURE" in fetch_keys
+        names = [a["name"] for a in result["attachments"]]
+        assert "x.pdf" in names
 
     @patch("apple_mail_mcp.imap_connector.IMAPClient")
     def test_include_content_false_skips_body_fetch(

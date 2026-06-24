@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from datetime import date as _date
 from datetime import datetime as _datetime
 from datetime import timedelta as _timedelta
+from email import message_from_bytes, policy
 from typing import Any, cast
 
 from imapclient import IMAPClient
@@ -285,6 +286,107 @@ def _decode(b: bytes | bytearray | str | None) -> str:
     return b.decode("utf-8", errors="replace")
 
 
+def _part_text(part: Any) -> str:
+    """Decode a single non-multipart MIME part to text, honoring its
+    transfer-encoding and charset (falling back to UTF-8/replace)."""
+    try:
+        payload = part.get_payload(decode=True)
+        if payload is None:
+            return str(part.get_payload() or "")
+        charset = part.get_content_charset() or "utf-8"
+        return str(payload.decode(charset, errors="replace"))
+    except (LookupError, ValueError, TypeError):
+        try:
+            return str(part.get_payload() or "")
+        except (ValueError, TypeError):
+            return ""
+
+
+def _html_to_text(html: str) -> str:
+    """Cheap HTML→text for the rare text/html-only message. Not a renderer —
+    just enough to recover readable prose when there is no text/plain part."""
+    import html as _html
+
+    html = re.sub(r"(?is)<(script|style).*?</\1>", "", html)
+    html = re.sub(r"(?i)<br\s*/?>", "\n", html)
+    html = re.sub(r"(?i)</p>", "\n\n", html)
+    html = re.sub(r"<[^>]+>", "", html)
+    return _html.unescape(html)
+
+
+def _attachment_meta(part: Any) -> dict[str, Any]:
+    """Build an attachment metadata dict from a parsed MIME part, matching the
+    BODYSTRUCTURE walker's shape (``name``, ``mime_type``, ``size``,
+    ``downloaded``). ``downloaded`` is True here because we parsed the part from
+    the full message body — the bytes are in hand, unlike the BODYSTRUCTURE path
+    which only ever sees metadata."""
+    name = part.get_filename()
+    if not name:
+        raw_name = part.get_param("name")
+        name = str(raw_name) if raw_name else ""
+    try:
+        payload = part.get_payload(decode=True)
+        size = len(payload) if payload else 0
+    except (ValueError, TypeError):
+        size = 0
+    return {
+        "name": name,
+        "mime_type": part.get_content_type(),
+        "size": size,
+        "downloaded": True,
+    }
+
+
+def _parse_message_body(
+    raw: bytes | bytearray | None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Parse a full RFC822 message (BODY[]) ONCE and return both its
+    human-readable text and its attachment metadata.
+
+    This is the crux of the body-overflow fix: IMAP ``BODY[TEXT]`` hands back
+    the entire multipart body with every attachment base64-inlined, so a 1.5 MB
+    attachment becomes ~2 MB of ``content`` that overflows the MCP result. By
+    walking the MIME tree here we (1) return kilobytes of decoded prose with the
+    attachment bytes dropped, and (2) recover reliable attachment metadata from
+    the same parse — which also fixes the long-standing ``attachments: []``
+    false-negative BODYSTRUCTURE produces for some real-world messages.
+
+    On any parse failure we degrade to a raw charset decode rather than raising
+    — a body is never worth a hard error.
+    """
+    if not raw:
+        return "", []
+    try:
+        msg = message_from_bytes(bytes(raw), policy=policy.default)
+    except (ValueError, TypeError):
+        return _decode(raw), []
+    plains: list[str] = []
+    htmls: list[str] = []
+    attachments: list[dict[str, Any]] = []
+    for part in msg.walk():
+        if part.is_multipart():
+            continue
+        disp = part.get_content_disposition() or ""
+        if part.get_filename() or disp == "attachment":
+            attachments.append(_attachment_meta(part))
+            continue  # attachment bytes never enter content
+        ctype = part.get_content_type()
+        if ctype == "text/plain":
+            plains.append(_part_text(part))
+        elif ctype == "text/html":
+            htmls.append(_part_text(part))
+    body = "\n".join(p for p in plains if p.strip())
+    if not body.strip() and htmls:
+        body = _html_to_text("\n".join(htmls))
+    return body.replace("\r\n", "\n").strip(), attachments
+
+
+def _extract_text_body(raw: bytes | bytearray | None) -> str:
+    """Convenience wrapper returning just the text body (see
+    ``_parse_message_body``)."""
+    return _parse_message_body(raw)[0]
+
+
 def _strip_brackets(s: str) -> str:
     if s.startswith("<") and s.endswith(">"):
         return s[1:-1]
@@ -327,16 +429,28 @@ def _flatten_one(node: Any, out: set[int]) -> None:
             pass
 
 
+def _format_address(addr: Any) -> str:
+    """Format one IMAP ENVELOPE address (name + mailbox@host) as a string."""
+    name = _decode(getattr(addr, "name", None))
+    mailbox = _decode(getattr(addr, "mailbox", None))
+    host = _decode(getattr(addr, "host", None))
+    email = f"{mailbox}@{host}" if mailbox and host else mailbox or ""
+    return f"{name} <{email}>" if name else email
+
+
 def _format_sender(envelope: Envelope) -> str:
     from_ = envelope.from_ or ()
     if not from_:
         return ""
-    first = from_[0]
-    name = _decode(first.name)
-    mailbox = _decode(first.mailbox)
-    host = _decode(first.host)
-    email = f"{mailbox}@{host}" if mailbox and host else mailbox or ""
-    return f"{name} <{email}>" if name else email
+    return _format_address(from_[0])
+
+
+def _format_address_list(addrs: Any) -> str:
+    """Format an ENVELOPE address tuple (To/Cc) as a comma-joined string.
+    Returns ``""`` when the field is absent — recipients were previously
+    dropped entirely on the IMAP path; surfacing them closes that gap."""
+    formatted = [_format_address(a) for a in (addrs or ())]
+    return ", ".join(x for x in formatted if x)
 
 
 def _bodystructure_extract_attachments(
@@ -499,10 +613,62 @@ def _envelope_to_dict(
         "rfc_message_id": rfc_id,
         "subject": _decode(envelope.subject),
         "sender": _format_sender(envelope),
+        "to": _format_address_list(envelope.to),
+        "cc": _format_address_list(envelope.cc),
         "date_received": date_str,
         "read_status": _FLAG_SEEN in flags,
         "flagged": _FLAG_FLAGGED in flags,
     }
+
+
+def _select_body_bytes(entry: dict[bytes, Any], body_key: bytes) -> bytes:
+    """Pull the body section out of a FETCH entry. IMAPClient can key the
+    returned section slightly differently than requested, so fall back to any
+    ``BODY[...]`` that isn't the header block."""
+    body_bytes = entry.get(body_key)
+    if body_bytes is None:
+        for k, v in entry.items():
+            if (
+                isinstance(k, bytes)
+                and k.startswith(b"BODY[")
+                and b"HEADER" not in k
+            ):
+                body_bytes = v
+                break
+    return body_bytes or b""
+
+
+def _build_get_message_result(
+    entry: dict[bytes, Any],
+    body_key: bytes,
+    *,
+    want_body: bool,
+    text_mode: bool,
+    include_attachments: bool,
+) -> dict[str, Any]:
+    """Assemble the get_message response dict from a single FETCH entry.
+
+    Kept out of ``get_message`` itself so that method stays a thin
+    fetch-orchestrator (and under the complexity budget). In text mode the
+    attachment metadata is mined from the same full-body parse that produced
+    ``content``; otherwise it falls back to BODYSTRUCTURE."""
+    result = _envelope_to_dict(entry[b"ENVELOPE"], tuple(entry[b"FLAGS"]))
+    parsed_attachments: list[dict[str, Any]] | None = None
+    if want_body:
+        body_bytes = _select_body_bytes(entry, body_key)
+        if text_mode:
+            result["content"], parsed_attachments = _parse_message_body(body_bytes)
+        else:
+            result["content"] = _decode(body_bytes)
+    else:
+        result["content"] = ""
+    if include_attachments:
+        result["attachments"] = (
+            parsed_attachments
+            if parsed_attachments is not None
+            else _bodystructure_extract_attachments(entry.get(b"BODYSTRUCTURE"))
+        )
+    return result
 
 
 class ImapConnector:
@@ -628,6 +794,7 @@ class ImapConnector:
         include_content: bool = True,
         headers_only: bool = False,
         include_attachments: bool = False,
+        body_format: str = "text",
     ) -> dict[str, Any]:
         """Look up a single message by RFC 5322 Message-ID and return its
         envelope + flags, optionally with body content.
@@ -648,6 +815,14 @@ class ImapConnector:
             include_content: When False, ``content`` is the empty string
                 (matches the AppleScript path's behavior with the same
                 flag).
+            body_format: ``"text"`` (default) fetches the full message and
+                returns ``content`` as decoded human-readable text only —
+                attachment bytes are parsed out (their metadata still comes
+                via ``include_attachments``). This is what keeps a message
+                with a multi-MB attachment from overflowing the MCP result.
+                ``"raw"`` preserves the legacy behavior: ``content`` is the
+                undecoded ``BODY[TEXT]`` (the entire multipart body with
+                base64 attachments inlined) — kept only as an escape hatch.
             headers_only: When True, fetches ``BODY[HEADER]`` instead of
                 ``BODY[TEXT]`` — useful for preview-style callers who
                 don't want the body. ``content`` is always returned as
@@ -674,8 +849,12 @@ class ImapConnector:
 
         fetch_keys: list[bytes] = [b"ENVELOPE", b"FLAGS"]
         want_body = include_content and not headers_only
+        text_mode = body_format != "raw"
+        # text mode parses the whole message server-side, so fetch BODY[] (full
+        # RFC822); raw mode keeps the legacy header-less BODY[TEXT].
+        body_key = b"BODY[]" if text_mode else b"BODY[TEXT]"
         if want_body:
-            fetch_keys.append(b"BODY[TEXT]")
+            fetch_keys.append(body_key)
         elif headers_only:
             # We don't currently use the raw header block for anything in
             # the response (envelope already gives us subject/sender/date),
@@ -683,7 +862,12 @@ class ImapConnector:
             # the server for headers without paying for the body. Some
             # servers send less data this way; some don't care.
             fetch_keys.append(b"BODY[HEADER]")
-        if include_attachments:
+        # When we parse the full body (text mode), attachment metadata comes
+        # from that parse — more reliable than BODYSTRUCTURE, which yields a
+        # false-empty list on some real messages. Only pay for BODYSTRUCTURE
+        # when we won't have the full body to parse (raw mode, or body skipped).
+        have_full_body = want_body and text_mode
+        if include_attachments and not have_full_body:
             fetch_keys.append(b"BODYSTRUCTURE")
 
         with self._session() as client:
@@ -699,19 +883,13 @@ class ImapConnector:
             fetched = client.fetch(uids[:1], fetch_keys)
             entry = next(iter(fetched.values()))
 
-            result = _envelope_to_dict(
-                entry[b"ENVELOPE"], tuple(entry[b"FLAGS"])
+            return _build_get_message_result(
+                entry,
+                body_key,
+                want_body=want_body,
+                text_mode=text_mode,
+                include_attachments=include_attachments,
             )
-            if want_body:
-                body_bytes = entry.get(b"BODY[TEXT]") or b""
-                result["content"] = _decode(body_bytes)
-            else:
-                result["content"] = ""
-            if include_attachments:
-                result["attachments"] = _bodystructure_extract_attachments(
-                    entry.get(b"BODYSTRUCTURE")
-                )
-            return result
 
     def get_attachments(
         self,

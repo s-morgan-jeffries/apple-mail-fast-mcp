@@ -1246,6 +1246,7 @@ class TestGetMessages:
             account=None,
             mailbox=None,
             include_attachments=True,
+            body_format="text",
         )
         mock_logger.log_operation.assert_called_once()
 
@@ -1373,6 +1374,7 @@ class TestGetMessages:
             account="iCloud",
             mailbox="INBOX",
             include_attachments=True,
+            body_format="text",
         )
 
     # ---- include_attachments (#133 + #142) -------------------------------

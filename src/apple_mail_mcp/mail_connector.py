@@ -1534,6 +1534,7 @@ class AppleMailConnector:
         account: str | None = None,
         mailbox: str | None = None,
         include_attachments: bool = False,
+        body_format: str = "text",
     ) -> dict[str, Any]:
         """
         Get full message details.
@@ -1584,6 +1585,7 @@ class AppleMailConnector:
                     include_content=include_content,
                     headers_only=headers_only,
                     include_attachments=include_attachments,
+                    body_format=body_format,
                 )
                 self._imap_clear_breaker(account)
                 return result
@@ -1604,6 +1606,7 @@ class AppleMailConnector:
         include_content: bool,
         headers_only: bool,
         include_attachments: bool,
+        body_format: str = "text",
     ) -> dict[str, Any]:
         """Run get_message through the IMAP path. Mirrors _imap_search.
 
@@ -1619,6 +1622,7 @@ class AppleMailConnector:
             include_content=include_content,
             headers_only=headers_only,
             include_attachments=include_attachments,
+            body_format=body_format,
         )
 
     def _get_message_applescript(
