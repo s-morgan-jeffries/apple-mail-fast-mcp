@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from datetime import date as _date
 from datetime import datetime as _datetime
 from datetime import timedelta as _timedelta
+from email.header import decode_header, make_header
 from typing import Any, cast
 
 from imapclient import IMAPClient
@@ -276,6 +277,31 @@ def _build_search_criteria(
     return criteria or ["ALL"]
 
 
+def _search_charset(criteria: list[Any]) -> str | None:
+    """Return ``"UTF-8"`` if any criterion value is non-ASCII, else ``None``.
+
+    imapclient encodes ``str`` search criteria using the charset passed to
+    ``IMAPClient.search()``, which defaults to ``us-ascii``. A non-ASCII term
+    (e.g. a Korean keyword like ``"안내"``) under that default raises
+    ``UnicodeEncodeError`` inside imaplib *before* the command is sent — never
+    reaching the server, never matching anything.
+
+    RFC 3501 §6.4.4 requires non-ASCII SEARCH keys to be sent under an explicit
+    ``CHARSET``; imapclient emits ``SEARCH CHARSET UTF-8 ...`` (with the term as
+    an 8-bit literal) when we pass ``charset="UTF-8"``. UTF-8 is near-universally
+    supported; a server that rejects it answers ``BAD``/``NO``, which imapclient
+    raises as ``IMAPClientError`` — caught by the orchestrator's AppleScript
+    fallback.
+
+    We only opt in to UTF-8 when a term actually needs it: pure-ASCII searches
+    stay on the default us-ascii path for maximum server compatibility.
+    """
+    for item in criteria:
+        if isinstance(item, str) and not item.isascii():
+            return "UTF-8"
+    return None
+
+
 def _decode(b: bytes | bytearray | str | None) -> str:
     if b is None:
         return ""
@@ -283,6 +309,41 @@ def _decode(b: bytes | bytearray | str | None) -> str:
         return b
     # bytes or bytearray — both have .decode().
     return b.decode("utf-8", errors="replace")
+
+
+def _decode_mime_header(raw: bytes | bytearray | str | None) -> str:
+    """Decode an RFC 2047 encoded-word header value to its Unicode form.
+
+    IMAP ``ENVELOPE`` returns Subject and address display-name fields as the
+    raw header bytes. For non-ASCII content those are MIME encoded-words such
+    as ``=?UTF-8?B?7JWI64K0?=`` — not the human-readable text. The AppleScript
+    path hands back the value Mail.app has *already* decoded, so without this
+    step the two paths disagree (the IMAP path leaked ``=?UTF-8?B?...?=`` for
+    Korean subjects/senders — see the IMAP-delegation diagnosis, F3).
+
+    Handles both shapes:
+    - Proper encoded-words (pure ASCII on the wire) — decoded by
+      ``decode_header``/``make_header``.
+    - Servers that send raw UTF-8 in the header without encoding it — the
+      initial UTF-8 decode recovers the text, and ``decode_header`` then finds
+      no encoded-words and returns it unchanged. (Encoded-words are an ASCII
+      subset, so decoding them as UTF-8 first is lossless.)
+
+    Falls back to the best-effort string on any malformed input or unknown
+    charset rather than raising — a display field is never worth a hard error.
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, (bytes, bytearray)):
+        s = bytes(raw).decode("utf-8", errors="replace")
+    else:
+        s = raw
+    try:
+        return str(make_header(decode_header(s)))
+    except (ValueError, LookupError):
+        # ValueError: malformed encoded-word. LookupError: charset label the
+        # codec registry doesn't know. Either way, return the raw string.
+        return s
 
 
 def _strip_brackets(s: str) -> str:
@@ -332,7 +393,7 @@ def _format_sender(envelope: Envelope) -> str:
     if not from_:
         return ""
     first = from_[0]
-    name = _decode(first.name)
+    name = _decode_mime_header(first.name)
     mailbox = _decode(first.mailbox)
     host = _decode(first.host)
     email = f"{mailbox}@{host}" if mailbox and host else mailbox or ""
@@ -497,7 +558,7 @@ def _envelope_to_dict(
     return {
         "id": rfc_id,
         "rfc_message_id": rfc_id,
-        "subject": _decode(envelope.subject),
+        "subject": _decode_mime_header(envelope.subject),
         "sender": _format_sender(envelope),
         "date_received": date_str,
         "read_status": _FLAG_SEEN in flags,
@@ -578,10 +639,19 @@ class ImapConnector:
             text_contains,
         )
 
+        charset = _search_charset(criteria)
+
         with self._session() as client:
             client.select_folder(mailbox, readonly=True)
 
-            uids = client.search(criteria)
+            # Pass charset only when a non-ASCII term needs it — keeps ASCII
+            # searches on the default us-ascii path (max server compatibility)
+            # while letting Korean/CJK terms ride a CHARSET UTF-8 literal.
+            uids = (
+                client.search(criteria)
+                if charset is None
+                else client.search(criteria, charset)
+            )
             if limit is not None:
                 uids = uids[-limit:]
 

@@ -49,6 +49,15 @@ from .utils import (
 # OSError covers socket.timeout too. ValueError and MailAccountNotFoundError
 # are deliberately NOT in this tuple — they indicate caller/config errors
 # and must surface, not be papered over by fallback.
+#
+# UnicodeEncodeError IS included (even though it subclasses ValueError) as a
+# safety net for non-ASCII SEARCH terms: the IMAP path now sends UTF-8 search
+# criteria under an explicit CHARSET (see ImapConnector.search_messages), but
+# if any criterion still reaches imaplib's default us-ascii encoder it raises
+# UnicodeEncodeError *before* the request leaves the process. That used to
+# surface to the caller as a validation_error with no fallback; routing it
+# here means a Korean/CJK keyword search degrades gracefully to AppleScript
+# instead of failing outright.
 _IMAP_FALLBACK_EXCS: tuple[type[Exception], ...] = (
     MailKeychainEntryNotFoundError,
     MailKeychainAccessDeniedError,
@@ -57,6 +66,7 @@ _IMAP_FALLBACK_EXCS: tuple[type[Exception], ...] = (
     IMAPClientError,
     MailImapMoveUnsupportedError,
     MailImapTrashNotFoundError,
+    UnicodeEncodeError,
 )
 
 logger = logging.getLogger(__name__)
@@ -169,6 +179,36 @@ def _filter_imap_results_to_cutoff(
 # in well under a second; sustained >5s suggests the user is hitting the
 # AppleScript fallback against a mailbox where IMAP would help.
 _SLOW_SEARCH_THRESHOLD_SEC = 5.0
+
+
+def _message_id_match_clause(message_id: str) -> str:
+    """Build an AppleScript boolean (for a ``whose`` filter) that matches a
+    message by EITHER Mail's numeric ``id`` OR its RFC 5322 ``message id``
+    (bare or bracketed).
+
+    This is the cross-path bridge for issue F2: read tools on the IMAP path
+    return ``id`` = the RFC 5322 Message-ID (bracketless), while the
+    AppleScript path returns Mail's internal numeric id. Accepting both forms
+    lets a caller pipe an id from either path into any AppleScript-backed
+    lookup (save_attachments, get_thread anchor, …) without knowing which
+    path produced it.
+
+    The numeric ``id`` branch is included ONLY when the input is all-digits:
+    comparing Mail's integer ``id`` against a non-numeric string raises inside
+    a ``whose`` filter and aborts the entire match — the bug that made
+    IMAP-sourced ids report "Message not found".
+    """
+    raw = sanitize_input(message_id)
+    bare = raw[1:-1] if raw.startswith("<") and raw.endswith(">") else raw
+    bare_safe = escape_applescript_string(bare)
+    brk_safe = escape_applescript_string(f"<{bare}>")
+    clauses = [
+        f'message id is "{bare_safe}"',
+        f'message id is "{brk_safe}"',
+    ]
+    if bare.isdigit():
+        clauses.insert(0, f"id is {bare}")
+    return " or ".join(clauses)
 
 
 # MCP-tool field name → Mail.app AppleScript `rule type` enum identifier.
@@ -2387,14 +2427,17 @@ class AppleMailConnector:
         """
         from .utils import parse_rfc822_ids
 
-        message_id_safe = escape_applescript_string(sanitize_input(message_id))
+        # Accept either the numeric AppleScript id or the RFC Message-ID that
+        # the IMAP read path emits, so get_thread can anchor on a search
+        # result id regardless of which path produced it (issue F2).
+        id_match_clause = _message_id_match_clause(message_id)
         anchor_body = f'''
         tell application "Mail"
             set anchorResult to missing value
             repeat with acc in accounts
                 repeat with mb in mailboxes of acc
                     try
-                        set msg to first message of mb whose id is "{message_id_safe}"
+                        set msg to first message of mb whose ({id_match_clause})
                         set anchorInReplyTo to ""
                         set anchorRefs to ""
                         try
@@ -2582,16 +2625,29 @@ class AppleMailConnector:
         if not save_directory.is_dir():
             raise ValueError(f"Save path is not a directory: {save_directory}")
 
-        # Prevent path traversal
+        # Normalize the destination. We deliberately do NOT restrict which
+        # directory the caller may target — choosing an arbitrary save
+        # location is an intended capability (the agent decides where files
+        # go). The path-traversal defense lives on the attacker-controlled
+        # side instead: the attachment *filename* is set by the email sender,
+        # so the AppleScript below reduces it to a bare basename and can never
+        # redirect the write outside `save_directory`, wherever that points.
+        # (The previous `".." in str(resolved)` check was dead code — resolve()
+        # has already collapsed any "..", so it never fired.)
         try:
             save_directory = save_directory.resolve()
-            # Check for suspicious paths
-            if ".." in str(save_directory):
-                raise ValueError("Path traversal detected")
         except (RuntimeError, OSError) as e:
             raise ValueError(f"Invalid save directory: {e}") from e
 
-        message_id_safe = escape_applescript_string(sanitize_input(message_id))
+        # Accept BOTH id spaces so a row from the IMAP search path pipes
+        # straight in (issue F2): the IMAP path returns `id` = the RFC 5322
+        # Message-ID (bracketless), while the AppleScript path returns Mail's
+        # internal numeric id. Match on either `id` (numeric) or `message id`
+        # (RFC, bare or bracketed) in one `whose` clause so the caller never
+        # has to know which path produced the id.
+        # Accept both id spaces (numeric AppleScript id or RFC Message-ID from
+        # the IMAP search path) so search results pipe straight in — see F2.
+        id_match_clause = _message_id_match_clause(message_id)
         dir_safe = escape_applescript_string(str(save_directory))
 
         # Build index filter if specified
@@ -2608,13 +2664,25 @@ class AppleMailConnector:
             repeat with acc in accounts
                 repeat with mb in mailboxes of acc
                     try
-                        set msg to first message of mb whose id is "{message_id_safe}"
+                        set msg to first message of mb whose ({id_match_clause})
                         set attList to {index_filter} mail attachments of msg
                         set saveCount to 0
 
                         repeat with att in attList
                             try
                                 set attName to name of att
+                                -- Path-traversal defense: the attachment name
+                                -- is chosen by the email sender and must not be
+                                -- able to escape the caller's chosen directory.
+                                -- Reduce it to a bare basename by dropping any
+                                -- "/"- or ":"-separated path components.
+                                set _otid to AppleScript's text item delimiters
+                                set AppleScript's text item delimiters to "/"
+                                set attName to last text item of attName
+                                set AppleScript's text item delimiters to ":"
+                                set attName to last text item of attName
+                                set AppleScript's text item delimiters to _otid
+                                if attName is "" or attName is "." or attName is ".." then set attName to "attachment_" & (saveCount + 1)
                                 save att in ("{dir_safe}/" & attName)
                                 set saveCount to saveCount + 1
                             end try
@@ -3958,7 +4026,16 @@ class AppleMailConnector:
         for i, name in enumerate(attachment_names):
             subdir = dest_dir / str(i)
             subdir.mkdir(parents=True, exist_ok=True)
-            target_paths.append(subdir / name)
+            # Reduce the (sender-influenceable) name to a bare basename so a
+            # crafted filename like "../../x" can't escape the per-attachment
+            # subdir. Path(name).name drops all directory components; we then
+            # reject the special segments explicitly — pathlib *preserves*
+            # ".." as a name (Path("..").name == ".."), so `or <fallback>`
+            # alone would let a literal ".." through and re-parent the write.
+            safe_name = Path(name).name
+            if safe_name in ("", ".", ".."):
+                safe_name = f"attachment_{i}"
+            target_paths.append(subdir / safe_name)
 
         targets_safe = ", ".join(
             f'"{escape_applescript_string(str(p.resolve()))}"'

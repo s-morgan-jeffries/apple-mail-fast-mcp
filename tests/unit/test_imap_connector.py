@@ -180,6 +180,154 @@ class TestTextFilters:
         )
 
 
+class TestNonAsciiSearchCharset:
+    """F1: non-ASCII (Korean/CJK) search terms must be sent under an explicit
+    CHARSET UTF-8 instead of crashing imaplib's default us-ascii encoder."""
+
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_korean_subject_passes_utf8_charset(self, mock_cls):
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.search.return_value = []
+
+        ImapConnector("h", 993, "u@e.com", "pw").search_messages(
+            subject_contains="안내"
+        )
+
+        mock_client.search.assert_called_once_with(["SUBJECT", "안내"], "UTF-8")
+
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_korean_body_passes_utf8_charset(self, mock_cls):
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.search.return_value = []
+
+        ImapConnector("h", 993, "u@e.com", "pw").search_messages(
+            body_contains="안내"
+        )
+
+        mock_client.search.assert_called_once_with(["BODY", "안내"], "UTF-8")
+
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_korean_sender_and_text_pass_utf8_charset(self, mock_cls):
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.search.return_value = []
+
+        ImapConnector("h", 993, "u@e.com", "pw").search_messages(
+            sender_contains="홍길동", text_contains="자료"
+        )
+
+        mock_client.search.assert_called_once_with(
+            ["FROM", "홍길동", "TEXT", "자료"], "UTF-8"
+        )
+
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_ascii_search_omits_charset(self, mock_cls):
+        """Pure-ASCII searches stay on the default us-ascii path (no charset
+        arg) for maximum server compatibility."""
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.search.return_value = []
+
+        ImapConnector("h", 993, "u@e.com", "pw").search_messages(
+            subject_contains="BK21"
+        )
+
+        mock_client.search.assert_called_once_with(["SUBJECT", "BK21"])
+
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_mixed_ascii_and_korean_still_uses_utf8(self, mock_cls):
+        """One non-ASCII term anywhere in the criteria upgrades the whole
+        SEARCH to UTF-8."""
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.search.return_value = []
+
+        ImapConnector("h", 993, "u@e.com", "pw").search_messages(
+            sender_contains="bob", subject_contains="안내"
+        )
+
+        mock_client.search.assert_called_once_with(
+            ["FROM", "bob", "SUBJECT", "안내"], "UTF-8"
+        )
+
+    def test_search_charset_helper(self):
+        from apple_mail_mcp.imap_connector import _search_charset
+
+        assert _search_charset(["ALL"]) is None
+        assert _search_charset(["SUBJECT", "invoice"]) is None
+        assert _search_charset(["SINCE", "22-Apr-2026"]) is None
+        assert _search_charset(["SUBJECT", "안내"]) == "UTF-8"
+        assert _search_charset(["FROM", "홍길동", "SEEN"]) == "UTF-8"
+
+
+class TestMimeHeaderDecoding:
+    """F3: RFC 2047 encoded-word headers (=?UTF-8?B?...?=) must be decoded to
+    Unicode so the IMAP path matches what the AppleScript path returns."""
+
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_search_decodes_rfc2047_subject(self, mock_cls):
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.search.return_value = [1]
+        # "안내" base64-encoded as an RFC 2047 encoded-word.
+        mock_client.fetch.return_value = {
+            1: {
+                b"ENVELOPE": _fake_envelope(
+                    subject=b"=?UTF-8?B?7JWI64K0?=",
+                ),
+                b"FLAGS": (b"\\Seen",),
+            }
+        }
+
+        result = ImapConnector("h", 993, "u@e.com", "pw").search_messages()
+
+        assert result[0]["subject"] == "안내"
+
+    @patch("apple_mail_mcp.imap_connector.IMAPClient")
+    def test_search_decodes_rfc2047_sender_name(self, mock_cls):
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.search.return_value = [1]
+        # Display name "홍길동" as a base64 encoded-word; address stays ASCII.
+        mock_client.fetch.return_value = {
+            1: {
+                b"ENVELOPE": _fake_envelope(
+                    sender_name=b"=?UTF-8?B?7ZmN6ri464+Z?=",
+                    sender_mailbox=b"gildong",
+                    sender_host=b"example.com",
+                ),
+                b"FLAGS": (b"\\Seen",),
+            }
+        }
+
+        result = ImapConnector("h", 993, "u@e.com", "pw").search_messages()
+
+        assert result[0]["sender"] == "홍길동 <gildong@example.com>"
+
+    def test_decode_mime_header_helper(self):
+        from apple_mail_mcp.imap_connector import _decode_mime_header
+
+        # Encoded-word (base64) → decoded.
+        assert _decode_mime_header(b"=?UTF-8?B?7JWI64K0?=") == "안내"
+        # Plain ASCII bytes → unchanged.
+        assert _decode_mime_header(b"Hello") == "Hello"
+        # Raw (unencoded) UTF-8 bytes that some servers send → decoded.
+        assert _decode_mime_header("안내".encode()) == "안내"
+        # str passthrough and None.
+        assert _decode_mime_header("plain") == "plain"
+        assert _decode_mime_header(None) == ""
+
+    def test_decode_mime_header_multi_chunk(self):
+        """A subject split across two encoded-words (as real mailers do for
+        long Korean subjects) reassembles into one string."""
+        from apple_mail_mcp.imap_connector import _decode_mime_header
+
+        raw = b"=?UTF-8?B?7JWI64K0?= =?UTF-8?B?7JWI64K0?="
+        assert _decode_mime_header(raw) == "안내안내"
+
+
 class TestFlagFilters:
     @patch("apple_mail_mcp.imap_connector.IMAPClient")
     def test_read_status_true_maps_to_seen(self, mock_cls):
