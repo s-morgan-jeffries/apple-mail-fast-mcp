@@ -1,0 +1,34 @@
+{
+  "manifest_version": "0.4",
+  "name": "apple-mail-fast-mcp",
+  "display_name": "Apple Mail (Fast MCP)",
+  "version": "0.10.2",
+  "description": "MCP server for Apple Mail — search, read, organize, draft, templates, rules, and inbox stats, with an IMAP fast path and a security-first design.",
+  "long_description": "A local, security-first MCP server for Apple Mail on macOS. Reads and organizes mail via AppleScript with an optional IMAP fast path for large mailboxes. 25 tools across search/read, drafts, mailbox & rule CRUD, attachments, templates, and inbox statistics. No telemetry; destructive operations are gated; a --read-only mode is available. See the README for IMAP setup and the read/write server split.",
+  "author": {
+    "name": "Morgan Jeffries"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/s-morgan-jeffries/apple-mail-fast-mcp",
+  "documentation": "https://github.com/s-morgan-jeffries/apple-mail-fast-mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/s-morgan-jeffries/apple-mail-fast-mcp.git"
+  },
+  "keywords": ["mcp", "apple-mail", "email", "macos", "imap", "automation"],
+  "server": {
+    "type": "uv",
+    "entry_point": "src/apple_mail_fast_mcp/server.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": ["run", "--directory", "${__dirname}", "apple-mail-fast-mcp"]
+    }
+  },
+  "tools_generated": true,
+  "compatibility": {
+    "platforms": ["darwin"],
+    "runtimes": {
+      "python": ">=3.10"
+    }
+  }
+}

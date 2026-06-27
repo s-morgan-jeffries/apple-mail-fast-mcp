@@ -39,6 +39,16 @@ if [ -f ".claude/CLAUDE.md" ]; then
     fi
 fi
 
+# Check mcpb/manifest.json (#332 — the .mcpb bundle version must track pyproject)
+if [ -f "mcpb/manifest.json" ]; then
+    MCPB_VERSION=$(grep '"version"' mcpb/manifest.json | head -1 | sed -E 's/.*"version": *"([^"]+)".*/\1/')
+    echo "  mcpb/manifest:  $MCPB_VERSION"
+    if [ "$MCPB_VERSION" != "$PYPROJECT_VERSION" ]; then
+        echo "  ERROR: mcpb/manifest.json version mismatch!"
+        ERRORS=$((ERRORS + 1))
+    fi
+fi
+
 # Check CHANGELOG.md
 if [ -f "CHANGELOG.md" ]; then
     CHANGELOG_VERSION=$(grep '^## \[' CHANGELOG.md | grep -v 'Unreleased' | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "")

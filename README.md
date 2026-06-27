@@ -31,14 +31,28 @@ Destructive operations (`delete_*`, `create_rule` with move/forward/delete actio
 
 ## Installation
 
+### Claude Desktop — install from file (`.mcpb`)
+
+The lowest-friction path for Claude Desktop: grab the `apple-mail-fast-mcp-<version>.mcpb`
+bundle from the [Releases](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/releases)
+page and open it (or drag it into **Settings → Extensions**). Claude Desktop manages Python
+and dependencies for you via `uv` — no manual venv, no config JSON to hand-edit. macOS only.
+
+To build the bundle yourself: `./scripts/build-mcpb.sh` → `dist/apple-mail-fast-mcp-<version>.mcpb`
+(requires Node for the `mcpb` packer).
+
+### From source (development)
+
 ```bash
-# From source (recommended for development)
 git clone https://github.com/s-morgan-jeffries/apple-mail-fast-mcp.git
 cd apple-mail-fast-mcp
 uv sync --dev
 ```
 
 ## Configuration
+
+> Skip this section if you installed the `.mcpb` bundle — it wires up Claude Desktop for you.
+> The manual config below is for source installs.
 
 Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`). `uv sync` installs a console script at `.venv/bin/apple-mail-fast-mcp`; point Claude Desktop at its **absolute path** — it's the most reliable form under Claude Desktop's restricted spawn environment (no reliance on `uv` being on `PATH`):
 

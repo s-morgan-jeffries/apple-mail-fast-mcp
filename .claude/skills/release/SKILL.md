@@ -24,6 +24,7 @@ Update ALL files (pyproject.toml is authoritative):
 2. `src/apple_mail_fast_mcp/__init__.py` — `__version__ = "X.Y.Z"`
 3. `.claude/CLAUDE.md` — `**Version:** vX.Y.Z`
 4. `README.md` — all version references
+5. `mcpb/manifest.json` — `"version": "X.Y.Z"` (the .mcpb bundle; `check_version_sync.sh` enforces it)
 
 ## Phase 5: Generate CHANGELOG
 - Commits since last tag: `git log v{prev}..HEAD --oneline`
