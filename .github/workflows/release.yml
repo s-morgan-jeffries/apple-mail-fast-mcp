@@ -13,7 +13,7 @@ jobs:
       contents: write
       issues: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -80,7 +80,7 @@ jobs:
     permissions:
       id-token: write  # mint the short-lived OIDC token for PyPI
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: astral-sh/setup-uv@v7
 
