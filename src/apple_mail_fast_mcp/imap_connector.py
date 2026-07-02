@@ -453,6 +453,13 @@ def _bodystructure_extract_attachments(
     BODYSTRUCTURE returns metadata only, not body bytes, and Mail.app's
     local cache state isn't observable from the protocol. Callers that
     need the bytes invoke ``save_attachments`` (which fetches on demand).
+
+    The byte-fetch path (``get_attachment_content`` / ``save_attachments``)
+    indexes into this list by position, so its enumerator
+    (``draft_builder.extract_attachment_payloads``) MUST apply the SAME
+    inclusion predicate and document order as the ``_walk`` below
+    (attachment-disposition, inline-with-filename, or message/rfc822). Keep
+    the two in sync; the live integration test asserts they agree.
     """
     out: list[dict[str, Any]] = []
 

@@ -331,3 +331,313 @@ def test_parse_original_html_only_falls_back_to_text():
     orig = parse_original_message(m.as_bytes())
     assert "Hello" in orig.text and "there" in orig.text
     assert "<p>" not in orig.text
+
+
+def test_parse_original_serializes_forwarded_rfc822_attachment():
+    """A forwarded ``message/rfc822`` part must carry the sub-message's real
+    bytes, not a success-shaped empty payload.
+
+    ``get_payload(decode=True)`` returns ``None`` for ``message/*`` parts (the
+    payload is a sub-Message, not a transfer-encoded string), so without
+    special handling the attachment came through as ``b""`` — and
+    ``get_attachment_content`` / ``save_attachments`` on a forwarded email
+    returned a 0-byte "success". (rfc822 empty-bytes fix)
+    """
+    import email
+    from email.message import EmailMessage
+    from email.policy import default as _pol
+
+    from apple_mail_fast_mcp.draft_builder import parse_original_message
+
+    inner = EmailMessage()
+    inner["From"] = "alice@example.com"
+    inner["To"] = "bob@example.com"
+    inner["Subject"] = "Quarterly report"
+    inner["Message-ID"] = "<inner@example.com>"
+    inner.set_content("Here is the report body.")
+
+    outer = EmailMessage()
+    outer["From"] = "bob@example.com"
+    outer["To"] = "carol@example.com"
+    outer["Subject"] = "Fwd: Quarterly report"
+    outer.set_content("FYI, see attached.")
+    # A normal attachment alongside the forwarded message guards co-existence
+    # (the fix must not regress ordinary attachments).
+    outer.add_attachment(
+        b"%PDF-1.4 cover sheet", maintype="application",
+        subtype="pdf", filename="cover.pdf",
+    )
+    outer.add_attachment(inner)  # message/rfc822
+
+    orig = parse_original_message(outer.as_bytes())
+
+    cover = [a for a in orig.attachments if a[0] == "cover.pdf"]
+    assert cover and cover[0][3] == b"%PDF-1.4 cover sheet"
+
+    fwd = [a for a in orig.attachments if (a[1], a[2]) == ("message", "rfc822")]
+    assert len(fwd) == 1
+    _name, _maintype, _subtype, payload = fwd[0]
+    assert payload, "forwarded rfc822 attachment must carry real bytes, not b''"
+    # The payload is the serialized sub-message — it round-trips.
+    sub = email.message_from_bytes(payload, policy=_pol)
+    assert sub["Subject"] == "Quarterly report"
+    assert "report body" in sub.get_content()
+
+
+def test_parse_original_rfc822_base64_degrades_to_empty_not_corrupt():
+    """A non-conformant base64-encoded ``message/rfc822`` part (RFC 2046
+    §5.2.1 permits only 7bit/8bit/binary for message/*) is parsed by the
+    stdlib from its *still-encoded* text, so the sub-message is garbage. We
+    must degrade to empty bytes — an honest "couldn't extract" — rather than
+    hand back corrupt content masquerading as the forwarded message.
+    """
+    import base64
+    from email.message import EmailMessage
+
+    from apple_mail_fast_mcp.draft_builder import parse_original_message
+
+    inner = EmailMessage()
+    inner["From"] = "alice@example.com"
+    inner["Subject"] = "Secret"
+    inner.set_content("body")
+    b64 = base64.encodebytes(inner.as_bytes()).decode("ascii")
+    wire = (
+        "From: x@y.com\r\nSubject: outer\r\nMIME-Version: 1.0\r\n"
+        'Content-Type: multipart/mixed; boundary="BB"\r\n\r\n'
+        "--BB\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
+        "--BB\r\nContent-Type: message/rfc822\r\n"
+        "Content-Transfer-Encoding: base64\r\n\r\n"
+        f"{b64}\r\n--BB--\r\n"
+    ).encode("ascii")
+
+    fwd = [
+        a for a in parse_original_message(wire).attachments
+        if (a[1], a[2]) == ("message", "rfc822")
+    ]
+    assert len(fwd) == 1
+    # Honest-empty, NOT 265 bytes of re-serialized base64 garbage.
+    assert fwd[0][3] == b""
+
+
+def test_forwarded_rfc822_attachment_round_trips_through_build():
+    """End-to-end (parse -> build): a ``message/rfc822`` forwarded_attachment
+    — the shape ``parse_original_message`` now produces after the empty-bytes
+    fix — must travel into a built draft as a real, decodable forwarded email.
+
+    Guards the write-path interaction: ``build_draft_mime`` feeds these tuples
+    to ``add_attachment(payload, maintype="message", subtype="rfc822")``, and a
+    future email-API change must not silently re-break the forwarded ``.eml``.
+    """
+    import email
+    from email.message import EmailMessage
+    from email.policy import default as _pol
+
+    from apple_mail_fast_mcp.draft_builder import build_draft_mime, parse_original_message
+
+    inner = EmailMessage()
+    inner["From"] = "alice@example.com"
+    inner["Subject"] = "Original thing"
+    inner["Message-ID"] = "<inner2@example.com>"
+    inner.set_content("Original body text.")
+
+    _mid, raw = build_draft_mime(
+        sender="me@example.invalid",
+        to=["you@example.invalid"],
+        subject="Fwd: Original thing",
+        body="See forwarded.",
+        forwarded_attachments=[("inner.eml", "message", "rfc822", inner.as_bytes())],
+    )
+    msg = email.message_from_bytes(raw, policy=_pol)
+    rfc822_parts = [
+        p for p in msg.iter_attachments()
+        if p.get_content_type() == "message/rfc822"
+    ]
+    assert len(rfc822_parts) == 1
+
+    # Write-path contract (asserted directly, not just via the round-trip):
+    # forwarded messages must be encoded idiomatically per RFC 2046 §5.2.1,
+    # never base64 — a revert to raw-byte attachment would base64-encode and
+    # break clean re-parsing (and the read guard would then degrade it).
+    cte = (
+        rfc822_parts[0].get("Content-Transfer-Encoding") or ""
+    ).strip().lower()
+    assert cte in ("", "7bit", "8bit", "binary")
+
+    # Recover it the way get_attachment_content would, and confirm the inner
+    # message survived the build round-trip intact.
+    recovered = [
+        a for a in parse_original_message(raw).attachments
+        if (a[1], a[2]) == ("message", "rfc822")
+    ]
+    assert len(recovered) == 1
+    sub = email.message_from_bytes(recovered[0][3], policy=_pol)
+    assert sub["Subject"] == "Original thing"
+    assert "Original body text." in sub.get_content()
+
+
+def test_build_draft_with_empty_rfc822_forward_does_not_raise():
+    """Pins the read->write edge the two halves of this fix jointly create.
+
+    The read-path guard degrades a non-conformant base64 ``message/rfc822``
+    to ``b""``; if such a tuple is then forwarded, ``build_draft_mime`` runs
+    ``email.message_from_bytes(b"")`` in ``_attach_forwarded``. That is safe
+    today only by stdlib leniency — pin it so a future parser/policy change
+    can't turn a real forward operation into a crash.
+    """
+    import email
+    from email.policy import default as _pol
+
+    from apple_mail_fast_mcp.draft_builder import build_draft_mime
+
+    _mid, raw = build_draft_mime(
+        sender="me@example.invalid",
+        to=["you@example.invalid"],
+        subject="Fwd: empty",
+        body="see fwd",
+        forwarded_attachments=[("x.eml", "message", "rfc822", b"")],
+    )
+    assert isinstance(raw, bytes) and raw  # built, did not raise
+    msg = email.message_from_bytes(raw, policy=_pol)
+    rfc822 = [
+        p for p in msg.iter_attachments()
+        if p.get_content_type() == "message/rfc822"
+    ]
+    assert len(rfc822) == 1  # an honest (empty) placeholder, not a crash
+
+
+# --- byte-fetch attachment enumeration (IMAP index-contract fix) ---------
+#
+# get_attachment_content / save_attachments (IMAP) index into this list; it
+# MUST agree, in count and order, with the BODYSTRUCTURE metadata walk that
+# get_attachments / get_messages report (imap_connector
+# ._bodystructure_extract_attachments). email.iter_attachments() does NOT —
+# it drops body-referenced inline parts and skips parts nested under a
+# multipart/alternative — which broke the shared 0-based index contract
+# (out-of-range, or the WRONG part's bytes). Cases below mirror the real
+# iCloud divergences found by dogfooding.
+
+
+def _names_types(atts):
+    return [(name, f"{mt}/{st}") for (name, mt, st, _b) in atts]
+
+
+def test_extract_payloads_plain_attachment_is_unchanged():
+    """Control: an ordinary text-body + attachment message is enumerated the
+    same as before (one attachment, real bytes)."""
+    from email.message import EmailMessage
+
+    from apple_mail_fast_mcp.draft_builder import extract_attachment_payloads
+
+    m = EmailMessage()
+    m["Subject"] = "c1"
+    m.set_content("body")
+    m.add_attachment(b"%PDF-1.4 data", maintype="application", subtype="pdf",
+                     filename="a.pdf")
+    atts = extract_attachment_payloads(m.as_bytes())
+    assert _names_types(atts) == [("a.pdf", "application/pdf")]
+    assert atts[0][3] == b"%PDF-1.4 data"
+
+
+def test_extract_payloads_includes_inline_image_with_filename():
+    """A multipart/related inline cid image WITH a filename is a real,
+    savable attachment (metadata reports it; iter_attachments drops it)."""
+    from email.message import EmailMessage
+
+    from apple_mail_fast_mcp.draft_builder import extract_attachment_payloads
+
+    m = EmailMessage()
+    m["Subject"] = "c2"
+    m.set_content("plain")
+    m.add_alternative("<img src=cid:x>", subtype="html")
+    m.get_payload()[1].add_related(b"\x89PNGdata", maintype="image",
+                                   subtype="png", cid="<x>", filename="logo.png")
+
+    # iter_attachments misses it; the real fix must not.
+    assert list(email.message_from_bytes(m.as_bytes(), policy=policy.default)
+                .iter_attachments()) == []
+    atts = extract_attachment_payloads(m.as_bytes())
+    assert _names_types(atts) == [("logo.png", "image/png")]
+    assert atts[0][3] == b"\x89PNGdata"
+
+
+def test_extract_payloads_descends_under_multipart_alternative():
+    """The real 'byte-fetch=0' case: PDFs nested in a multipart/mixed that is
+    itself an alternative. iter_attachments returns nothing because it never
+    descends past the alternative; the fix must find both."""
+    from email.mime.application import MIMEApplication
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    from apple_mail_fast_mcp.draft_builder import extract_attachment_payloads
+
+    outer = MIMEMultipart("alternative")
+    mixed = MIMEMultipart("mixed")
+    mixed.attach(MIMEText("<p>hi</p>", "html"))
+    pdf1 = MIMEApplication(b"%PDF one", _subtype="pdf")
+    pdf1.add_header("Content-Disposition", "inline", filename="a.pdf")
+    mixed.attach(pdf1)
+    pdf2 = MIMEApplication(b"%PDF two", _subtype="pdf")
+    pdf2.add_header("Content-Disposition", "attachment", filename="b.pdf")
+    mixed.attach(pdf2)
+    outer.attach(mixed)
+    raw = outer.as_bytes()
+
+    assert list(email.message_from_bytes(raw, policy=policy.default)
+                .iter_attachments()) == []
+    atts = extract_attachment_payloads(raw)
+    assert _names_types(atts) == [
+        ("a.pdf", "application/pdf"), ("b.pdf", "application/pdf"),
+    ]
+    assert atts[0][3] == b"%PDF one"
+    assert atts[1][3] == b"%PDF two"
+
+
+def test_extract_payloads_preserves_document_order():
+    """Index order follows MIME document order (inline image before the
+    trailing attachment), so attachment_index lines up with the metadata."""
+    from email.message import EmailMessage
+
+    from apple_mail_fast_mcp.draft_builder import extract_attachment_payloads
+
+    m = EmailMessage()
+    m["Subject"] = "c3"
+    m.set_content("plain")
+    m.add_alternative("<img src=cid:y>", subtype="html")
+    m.get_payload()[1].add_related(b"PNG", maintype="image", subtype="png",
+                                   cid="<y>", filename="inline.png")
+    m.add_attachment(b"%PDF real", maintype="application", subtype="pdf",
+                     filename="real.pdf")
+    atts = extract_attachment_payloads(m.as_bytes())
+    assert _names_types(atts) == [
+        ("inline.png", "image/png"), ("real.pdf", "application/pdf"),
+    ]
+
+
+def test_extract_payloads_rfc822_counted_once_not_descended():
+    """A forwarded message/rfc822 is one attachment (emitted whole with real
+    bytes); its OWN inner attachments are not surfaced as separate top-level
+    entries — matching the BODYSTRUCTURE leaf treatment."""
+    from email.message import EmailMessage
+
+    from apple_mail_fast_mcp.draft_builder import extract_attachment_payloads
+
+    inner = EmailMessage()
+    inner["Subject"] = "orig"
+    inner.set_content("hi")
+    inner.add_attachment(b"%PDF inner", maintype="application", subtype="pdf",
+                         filename="inner.pdf")
+
+    m = EmailMessage()
+    m["Subject"] = "c4"
+    m.set_content("body")
+    m.add_attachment(b"%PDF cover", maintype="application", subtype="pdf",
+                     filename="cover.pdf")
+    m.add_attachment(inner)
+
+    atts = extract_attachment_payloads(m.as_bytes())
+    types = [f"{mt}/{st}" for (_n, mt, st, _b) in atts]
+    assert types == ["application/pdf", "message/rfc822"]  # rfc822 NOT descended
+    # The forwarded message carries real bytes (PR #42), not b"".
+    assert atts[1][3]
+    sub = email.message_from_bytes(atts[1][3], policy=policy.default)
+    assert sub["Subject"] == "orig"
