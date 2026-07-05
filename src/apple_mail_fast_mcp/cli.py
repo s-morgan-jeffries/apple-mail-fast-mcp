@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import getpass
 import sys
+import webbrowser
 from collections.abc import Callable
 
 from imapclient.exceptions import IMAPClientError, LoginError
@@ -20,6 +21,7 @@ from .exceptions import (
 )
 from .imap_connector import ImapConnector
 from .imap_overrides import delete_login_override, set_login_override
+from .imap_providers import Provider, detect_provider
 from .keychain import (
     delete_imap_password,
     get_imap_password,
@@ -27,6 +29,8 @@ from .keychain import (
 )
 from .mail_connector import AppleMailConnector
 from .utils import is_apple_hosted_address, is_icloud_imap_host
+
+_MAX_PASSWORD_ATTEMPTS = 3
 
 
 def _print_available_accounts(accounts: list[dict[str, object]]) -> None:
@@ -65,6 +69,128 @@ def _maybe_print_icloud_login_hint(
         )
 
 
+def _offer_app_password_page(
+    provider: Provider,
+    *,
+    open_url_fn: Callable[[str], object],
+    input_fn: Callable[[str], str],
+) -> None:
+    """Print scoped-credential guidance for the detected provider and, when it
+    has an app-password page, offer to open it in the browser. (#384)"""
+    print(
+        "\nThis uses a scoped app-specific password — limited to this one "
+        "account and revocable anytime (unlike granting full disk access)."
+    )
+    print(f"\nProvider detected: {provider.name}")
+    for step in provider.steps:
+        print(f"  • {step}")
+    url = provider.app_password_url
+    if not url:
+        return
+    print(f"\nApp-password page: {url}")
+    try:
+        answer = input_fn("Open this page in your browser now? [Y/n] ")
+    except (EOFError, OSError):
+        answer = "n"  # non-interactive (no stdin) — don't try to open
+    if answer.strip().lower() in ("", "y", "yes"):
+        try:
+            open_url_fn(url)
+        except Exception:  # noqa: BLE001 — a browser hiccup must not abort setup
+            print(f"  (couldn't open a browser — visit {url} manually)")
+
+
+def _rollback(account_name: str, email: str, cli_email: str | None) -> None:
+    """Undo a just-written Keychain entry (+ any --email override) so a
+    rejected password never leaves a broken item that get_imap_password
+    would happily return."""
+    try:
+        delete_imap_password(account_name, email)
+    except MailKeychainError:
+        pass
+    if cli_email:
+        delete_login_override(account_name)
+
+
+def _prompt_write_verify(
+    *,
+    account_name: str,
+    email: str,
+    host: str,
+    port: int,
+    cli_email: str | None,
+    getpass_fn: Callable[[str], str],
+    imap_factory: Callable[[str, int, str, str], ImapConnector],
+) -> int:
+    """Prompt for the app password, write it to Keychain, and LOGIN-verify —
+    retrying on a rejected password (paste-and-verify, up to
+    ``_MAX_PASSWORD_ATTEMPTS``) and rolling back between attempts. A network/
+    protocol error keeps the entry (can't verify now); returns the exit code.
+    """
+    for attempt in range(1, _MAX_PASSWORD_ATTEMPTS + 1):
+        last = attempt == _MAX_PASSWORD_ATTEMPTS
+        try:
+            password = getpass_fn("Enter app-specific password: ")
+        except (EOFError, KeyboardInterrupt):
+            print("\nCancelled.", file=sys.stderr)
+            return 1
+        if not password:
+            print("ERROR: empty password.", file=sys.stderr)
+            if last:
+                return 1
+            continue
+
+        try:
+            set_imap_password(account_name, email, password)
+        except MailKeychainError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        print(
+            f"Stored in Keychain as 'apple-mail-fast-mcp.imap.{account_name}'."
+        )
+        # Persist an explicit --email as a login override so runtime resolution
+        # uses the same login we verify here — otherwise runtime re-derives it
+        # from Mail.app and ignores --email (#341).
+        if cli_email:
+            set_login_override(account_name, email)
+
+        print(f"Testing IMAP connection to {host}:{port}...")
+        imap = imap_factory(host, port, email, password)
+        try:
+            # Cheap read-only call: exercises login + folder select.
+            imap.search_messages(mailbox="INBOX", limit=1)
+        except LoginError as exc:
+            _rollback(account_name, email, cli_email)
+            if not last:
+                print(
+                    f"  Login rejected ({exc}) — the entry was removed; "
+                    "try again.",
+                    file=sys.stderr,
+                )
+                continue
+            print(
+                f"ERROR: IMAP login was rejected ({exc}). The Keychain entry "
+                "has been removed; please re-run with the correct password.",
+                file=sys.stderr,
+            )
+            _maybe_print_icloud_login_hint(cli_email, host, email)
+            return 1
+        except (OSError, IMAPClientError) as exc:
+            # Network / protocol error — password may be fine but unverifiable
+            # now. Keep the entry; warn explicitly. (Not a retry case.)
+            print(
+                f"WARNING: IMAP verification could not complete ({exc}). The "
+                "Keychain entry has been written but was not verified against "
+                "the server. Re-run setup-imap later or test live to confirm.",
+                file=sys.stderr,
+            )
+            return 0
+
+        print(f"OK (connected to {host}:{port})")
+        print("Setup complete.")
+        return 0
+    return 1  # unreachable — the loop returns on every path
+
+
 def run_setup_imap(
     *,
     account_name: str,
@@ -75,12 +201,13 @@ def run_setup_imap(
     imap_factory: Callable[
         [str, int, str, str], ImapConnector
     ] | None = None,
+    open_url_fn: Callable[[str], object] | None = None,
+    input_fn: Callable[[str], str] | None = None,
 ) -> int:
     """Run the ``setup-imap`` subcommand. Returns the desired exit code.
 
-    The ``*_factory`` and ``*_fn`` keyword-only arguments are injection
-    seams for unit tests. Production callers omit them and get the real
-    implementations.
+    The ``*_factory`` / ``*_fn`` keyword-only arguments are injection seams for
+    unit tests. Production callers omit them and get the real implementations.
     """
     mail = (connector_factory or AppleMailConnector)()
     accounts = mail.list_accounts()
@@ -140,71 +267,21 @@ def run_setup_imap(
         print(f"Removed Keychain entry for {account_name!r} ({email}).")
         return 0
 
-    print(
-        f"Found Mail.app account {account_name!r} (email: {email})."
+    print(f"Found Mail.app account {account_name!r} (email: {email}).")
+    _offer_app_password_page(
+        detect_provider(host, email),
+        open_url_fn=open_url_fn or webbrowser.open,
+        input_fn=input_fn or input,
     )
-
-    prompt = "Enter app-specific password: "
-    try:
-        password = (getpass_fn or getpass.getpass)(prompt)
-    except (EOFError, KeyboardInterrupt):
-        print("\nCancelled.", file=sys.stderr)
-        return 1
-    if not password:
-        print("ERROR: empty password.", file=sys.stderr)
-        return 1
-
-    try:
-        set_imap_password(account_name, email, password)
-    except MailKeychainError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-    print(
-        f"Stored in Keychain as 'apple-mail-fast-mcp.imap.{account_name}'."
+    return _prompt_write_verify(
+        account_name=account_name,
+        email=email,
+        host=host,
+        port=port,
+        cli_email=cli_email,
+        getpass_fn=getpass_fn or getpass.getpass,
+        imap_factory=imap_factory or ImapConnector,
     )
-    # Persist an explicit --email as a login override so runtime resolution
-    # (_resolve_imap_config) uses the same login this setup verifies — without
-    # it, runtime re-derives the login from Mail.app and ignores --email (#341).
-    if cli_email:
-        set_login_override(account_name, email)
-
-    print(f"Testing IMAP connection to {host}:{port}...")
-    imap = (imap_factory or ImapConnector)(host, port, email, password)
-    try:
-        # Use a cheap read-only call; search_messages with limit=1 is enough
-        # to exercise login + folder select without paging much data.
-        imap.search_messages(mailbox="INBOX", limit=1)
-    except LoginError as exc:
-        # Bad password — roll the entry back so the user can retry without
-        # leaving a broken Keychain item that get_imap_password would
-        # happily return. Mirror the rollback for any override just written.
-        try:
-            delete_imap_password(account_name, email)
-        except MailKeychainError:
-            pass
-        if cli_email:
-            delete_login_override(account_name)
-        print(
-            f"ERROR: IMAP login was rejected ({exc}). The Keychain entry "
-            "has been removed; please re-run with the correct password.",
-            file=sys.stderr,
-        )
-        _maybe_print_icloud_login_hint(cli_email, host, email)
-        return 1
-    except (OSError, IMAPClientError) as exc:
-        # Network / protocol error. The password may be fine but we can't
-        # verify right now. Keep the entry; warn explicitly.
-        print(
-            f"WARNING: IMAP verification could not complete ({exc}). The "
-            "Keychain entry has been written but was not verified against "
-            "the server. Re-run setup-imap later or test live to confirm.",
-            file=sys.stderr,
-        )
-        return 0
-
-    print(f"OK (connected to {host}:{port})")
-    print("Setup complete.")
-    return 0
 
 
 __all__ = ["run_setup_imap", "get_imap_password"]

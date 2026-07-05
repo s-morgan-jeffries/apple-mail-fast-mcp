@@ -321,9 +321,11 @@ class TestSetupFailurePaths:
             imap_factory=lambda *a, **k: mock_imap_client,
         )
         assert rc == 1
-        # We wrote, then rolled back on the LoginError.
-        assert set_calls == [("iCloud", "alice@icloud.com", "wrongpw")]
-        assert delete_calls == [("iCloud", "alice@icloud.com")]
+        # Paste-and-verify (#384): the rejected password is retried up to 3×,
+        # and the entry is rolled back after every attempt — so a bad password
+        # never leaves a broken Keychain item behind.
+        assert set_calls == [("iCloud", "alice@icloud.com", "wrongpw")] * 3
+        assert delete_calls == [("iCloud", "alice@icloud.com")] * 3
         err = capsys.readouterr().err
         assert "IMAP login was rejected" in err
         assert "removed" in err
@@ -686,3 +688,120 @@ class TestLoginOverride:
         assert rc == 1
         err = capsys.readouterr().err
         assert "--email" in err and "icloud.com" in err.lower()
+
+
+class TestGuidedProviderSetup:
+    """#384: provider detection, app-password-page guidance, paste-and-verify."""
+
+    def test_login_retry_then_success_stores_second_password(
+        self,
+        mock_connector: MagicMock,
+        mock_imap_client: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from apple_mail_fast_mcp import cli as cli_mod
+
+        set_calls: list[tuple[str, str, str]] = []
+        delete_calls: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            cli_mod, "set_imap_password",
+            lambda a, e, p: set_calls.append((a, e, p)),
+        )
+        monkeypatch.setattr(
+            cli_mod, "delete_imap_password",
+            lambda a, e: delete_calls.append((a, e)),
+        )
+        # First LOGIN rejected, second accepted.
+        mock_imap_client.search_messages.side_effect = [
+            LoginError("AUTHENTICATIONFAILED"), [],
+        ]
+        pws = iter(["wrongpw", "rightpw"])
+
+        rc = run_setup_imap(
+            account_name="iCloud",
+            cli_email=None,
+            uninstall=False,
+            connector_factory=lambda: mock_connector,
+            getpass_fn=lambda _prompt: next(pws),
+            imap_factory=lambda *a, **k: mock_imap_client,
+            input_fn=lambda _p: "n",  # don't open a browser in tests
+        )
+        assert rc == 0
+        # Wrote wrong, rolled it back, wrote right and kept it.
+        assert set_calls == [
+            ("iCloud", "alice@icloud.com", "wrongpw"),
+            ("iCloud", "alice@icloud.com", "rightpw"),
+        ]
+        assert delete_calls == [("iCloud", "alice@icloud.com")]
+
+    def test_offers_and_opens_app_password_page_on_yes(
+        self,
+        mock_connector: MagicMock,
+        mock_imap_client: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        opened: list[str] = []
+        rc = run_setup_imap(
+            account_name="iCloud",
+            cli_email=None,
+            uninstall=False,
+            connector_factory=lambda: mock_connector,
+            getpass_fn=lambda _p: "pw",
+            imap_factory=lambda *a, **k: mock_imap_client,
+            input_fn=lambda _p: "y",
+            open_url_fn=lambda url: opened.append(url),
+        )
+        assert rc == 0
+        # iCloud host → the Apple app-password page was offered and opened.
+        assert opened == ["https://account.apple.com/account/manage"]
+        out = capsys.readouterr().out
+        assert "Provider detected: iCloud" in out
+        assert "scoped app-specific password" in out
+
+    def test_declining_open_does_not_touch_browser(
+        self,
+        mock_connector: MagicMock,
+        mock_imap_client: MagicMock,
+    ) -> None:
+        opened: list[str] = []
+        rc = run_setup_imap(
+            account_name="iCloud",
+            cli_email=None,
+            uninstall=False,
+            connector_factory=lambda: mock_connector,
+            getpass_fn=lambda _p: "pw",
+            imap_factory=lambda *a, **k: mock_imap_client,
+            input_fn=lambda _p: "n",
+            open_url_fn=lambda url: opened.append(url),
+        )
+        assert rc == 0
+        assert opened == []
+
+    def test_generic_provider_prints_guidance_and_never_prompts_to_open(
+        self,
+        mock_connector: MagicMock,
+        mock_imap_client: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Unknown host + email → GENERIC (no app-password URL).
+        mock_connector._resolve_imap_config.return_value = (
+            "imap.example.org", 993, "bob@example.org",
+        )
+        prompts: list[str] = []
+        opened: list[str] = []
+
+        rc = run_setup_imap(
+            account_name="iCloud",
+            cli_email=None,
+            uninstall=False,
+            connector_factory=lambda: mock_connector,
+            getpass_fn=lambda _p: "pw",
+            imap_factory=lambda *a, **k: mock_imap_client,
+            input_fn=lambda p: prompts.append(p) or "y",
+            open_url_fn=lambda url: opened.append(url),
+        )
+        assert rc == 0
+        assert opened == []  # no URL → never opens
+        # The open-in-browser question is never asked for a URL-less provider.
+        assert not any("browser" in p for p in prompts)
+        assert "app password" in capsys.readouterr().out.lower()
