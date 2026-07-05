@@ -1,0 +1,26 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "apple-mail-fast-mcp",
+  "version": "0.10.2",
+  "description": "Apple Mail for Claude Code — fast, security-first email management via MCP (macOS)",
+  "owner": {
+    "name": "Morgan Jeffries"
+  },
+  "plugins": [
+    {
+      "name": "apple-mail-fast",
+      "displayName": "Apple Mail (Fast MCP)",
+      "description": "Search, read, organize, draft, templates, rules, and inbox stats for Apple Mail — with an IMAP fast path and a security-first design. macOS only.",
+      "version": "0.10.2",
+      "source": "./",
+      "author": {
+        "name": "Morgan Jeffries"
+      },
+      "homepage": "https://github.com/s-morgan-jeffries/apple-mail-fast-mcp",
+      "repository": "https://github.com/s-morgan-jeffries/apple-mail-fast-mcp",
+      "license": "MIT",
+      "keywords": ["mcp", "apple-mail", "email", "macos", "imap"],
+      "category": "productivity"
+    }
+  ]
+}

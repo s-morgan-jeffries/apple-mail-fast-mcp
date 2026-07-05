@@ -25,6 +25,7 @@ Update ALL files (pyproject.toml is authoritative):
 3. `.claude/CLAUDE.md` — `**Version:** vX.Y.Z`
 4. `README.md` — all version references
 5. `mcpb/manifest.json` — `"version": "X.Y.Z"` (the .mcpb bundle; `check_version_sync.sh` enforces it)
+6. `.claude-plugin/marketplace.json` + `.claude-plugin/plugin.json` — every `"version": "X.Y.Z"` (the Claude Code plugin; `check_version_sync.sh` enforces all occurrences)
 
 ## Phase 5: Generate CHANGELOG
 - Commits since last tag: `git log v{prev}..HEAD --oneline`

@@ -49,6 +49,21 @@ if [ -f "mcpb/manifest.json" ]; then
     fi
 fi
 
+# Check Claude Code plugin manifests (#398). Both files carry version fields
+# (marketplace has a top-level + per-plugin-entry version); every one must
+# track pyproject. `for v in $(...)` runs in the current shell so ERRORS sticks.
+for PLUGIN_FILE in .claude-plugin/marketplace.json .claude-plugin/plugin.json; do
+    if [ -f "$PLUGIN_FILE" ]; then
+        for v in $(grep -oE '"version"[[:space:]]*:[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"' "$PLUGIN_FILE" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+'); do
+            if [ "$v" != "$PYPROJECT_VERSION" ]; then
+                echo "  ERROR: $PLUGIN_FILE version $v != $PYPROJECT_VERSION"
+                ERRORS=$((ERRORS + 1))
+            fi
+        done
+        echo "  $PLUGIN_FILE: $PYPROJECT_VERSION"
+    fi
+done
+
 # Check CHANGELOG.md
 if [ -f "CHANGELOG.md" ]; then
     CHANGELOG_VERSION=$(grep '^## \[' CHANGELOG.md | grep -v 'Unreleased' | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "")

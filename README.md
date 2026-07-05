@@ -41,6 +41,20 @@ and dependencies for you via `uv` — no manual venv, no config JSON to hand-edi
 To build the bundle yourself: `./scripts/build-mcpb.sh` → `dist/apple-mail-fast-mcp-<version>.mcpb`
 (requires Node for the `mcpb` packer).
 
+### Claude Code — install as a plugin
+
+One command in Claude Code, no config JSON:
+
+```
+/plugin marketplace add s-morgan-jeffries/apple-mail-fast-mcp
+/plugin install apple-mail-fast@apple-mail-fast-mcp
+```
+
+Claude Code launches the server via `uv run` from the plugin directory (resolves dependencies
+from the bundled `pyproject.toml`/`uv.lock` — no PyPI needed), so you only need `uv` installed.
+macOS only. See [`docs/reference/TOOLS.md`](docs/reference/TOOLS.md) for IMAP setup and the
+read/write split.
+
 ### From source (development)
 
 ```bash
