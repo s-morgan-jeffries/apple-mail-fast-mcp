@@ -55,6 +55,25 @@ from the bundled `pyproject.toml`/`uv.lock` — no PyPI needed), so you only nee
 macOS only. See [`docs/reference/TOOLS.md`](docs/reference/TOOLS.md) for IMAP setup and the
 read/write split.
 
+### pip / uvx (any MCP client)
+
+Published on [PyPI](https://pypi.org/project/apple-mail-fast-mcp/):
+
+```bash
+uvx apple-mail-fast-mcp          # zero-install, run on demand
+pip install apple-mail-fast-mcp  # or install the console script
+```
+
+Then point your MCP client at it — the config is a one-liner (no absolute paths):
+
+```json
+{
+  "mcpServers": {
+    "apple-mail": { "command": "uvx", "args": ["apple-mail-fast-mcp"] }
+  }
+}
+```
+
 ### From source (development)
 
 ```bash
