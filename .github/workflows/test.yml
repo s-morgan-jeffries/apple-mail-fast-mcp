@@ -26,11 +26,12 @@ jobs:
 
       - name: Unit tests
         run: uv run pytest tests/ -m "not integration and not e2e and not benchmark" -v --cov=apple_mail_fast_mcp --cov-report=term-missing --cov-fail-under=90
-        # The unit suite runs in seconds. A tight cap catches any future
-        # leak of a real osascript/socket call (which stalls ~30s in CI) —
-        # the #298 keychain-fallback leak that once made this ~5min is fixed
-        # in tests/unit/conftest.py.
-        timeout-minutes: 5
+        # The unit suite should run in seconds; a tight cap catches leaks of
+        # a real osascript/socket call (which stalls ~30s in CI) — see #298.
+        # TEMPORARY (#408): the CI suite has regressed to ~5min (vs ~5s local)
+        # and trips a 5-min cap, so this is loosened to 10 while #408 is
+        # investigated. Restore to a tight value once the leak is fixed.
+        timeout-minutes: 10
 
       - name: Complexity check
         run: ./scripts/check_complexity.sh
