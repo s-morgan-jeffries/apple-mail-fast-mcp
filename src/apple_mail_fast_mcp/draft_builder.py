@@ -109,7 +109,13 @@ def build_draft_mime(
       forwarding so the original's files travel with the draft.
     """
     msg = EmailMessage()
-    message_id = make_msgid()
+    # Derive the Message-ID domain from the sender's own address. Passing an
+    # explicit domain avoids make_msgid()'s default fallback to
+    # socket.getfqdn() — a reverse-DNS lookup that stalls ~5s per call in
+    # environments without hostname/reverse-DNS (the #408 CI leak), and that
+    # otherwise leaks the local machine's FQDN into outgoing Message-IDs.
+    _local, _at, _domain = parseaddr(sender)[1].rpartition("@")
+    message_id = make_msgid(domain=_domain if _at and _domain else "localhost")
     msg["Message-ID"] = message_id
     msg["From"] = _sanitize_header(sender)
     msg["To"] = ", ".join(_sanitize_header(a) for a in to)

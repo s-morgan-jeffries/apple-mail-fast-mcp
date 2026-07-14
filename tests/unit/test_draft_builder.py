@@ -641,3 +641,43 @@ def test_extract_payloads_rfc822_counted_once_not_descended():
     assert atts[1][3]
     sub = email.message_from_bytes(atts[1][3], policy=policy.default)
     assert sub["Subject"] == "orig"
+
+
+# --- Message-ID domain: no reverse-DNS, sender-derived (#408) --------------
+
+
+def test_message_id_domain_matches_sender_and_needs_no_dns():
+    """#408: the Message-ID domain is taken from the sender's address, so
+    make_msgid() never falls back to socket.getfqdn() (a reverse-DNS lookup
+    that stalls ~5s per call in CI). The autouse conftest guard would raise
+    if any real DNS were attempted here, so a green result also proves no
+    getfqdn call."""
+    msgid, _raw = build_draft_mime(
+        sender="email@fmasi.eu",
+        to=["someone@example.com"],
+        subject="Hi",
+        body="body",
+    )
+    assert msgid.endswith("@fmasi.eu>")
+
+
+def test_message_id_domain_from_display_name_sender():
+    msgid, _raw = build_draft_mime(
+        sender="Frederic Masi <fred@corp.example>",
+        to=["someone@example.com"],
+        subject="Hi",
+        body="body",
+    )
+    assert msgid.endswith("@corp.example>")
+
+
+def test_message_id_domain_falls_back_when_sender_has_no_domain():
+    """A malformed/domainless sender must not crash or reach getfqdn — it
+    falls back to a fixed literal."""
+    msgid, _raw = build_draft_mime(
+        sender="just-a-name",
+        to=["someone@example.com"],
+        subject="Hi",
+        body="body",
+    )
+    assert msgid.endswith("@localhost>")
