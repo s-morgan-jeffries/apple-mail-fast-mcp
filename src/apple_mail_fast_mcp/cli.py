@@ -20,7 +20,12 @@ from .exceptions import (
     MailKeychainError,
 )
 from .imap_connector import ImapConnector
-from .imap_overrides import delete_login_override, set_login_override
+from .imap_overrides import (
+    delete_login_override,
+    delete_server_override,
+    set_login_override,
+    set_server_override,
+)
 from .imap_providers import Provider, detect_provider
 from .keychain import (
     delete_imap_password,
@@ -99,16 +104,25 @@ def _offer_app_password_page(
             print(f"  (couldn't open a browser — visit {url} manually)")
 
 
-def _rollback(account_name: str, email: str, cli_email: str | None) -> None:
-    """Undo a just-written Keychain entry (+ any --email override) so a
-    rejected password never leaves a broken item that get_imap_password
-    would happily return."""
+def _rollback(
+    account_name: str,
+    email: str,
+    cli_email: str | None,
+    *,
+    cli_host: str | None = None,
+    cli_port: int | None = None,
+) -> None:
+    """Undo a just-written Keychain entry (+ any --email login override and
+    --host/--port server override) so a rejected password never leaves a
+    broken item that get_imap_password would happily return."""
     try:
         delete_imap_password(account_name, email)
     except MailKeychainError:
         pass
     if cli_email:
         delete_login_override(account_name)
+    if cli_host or cli_port:
+        delete_server_override(account_name)
 
 
 def _prompt_write_verify(
@@ -118,6 +132,8 @@ def _prompt_write_verify(
     host: str,
     port: int,
     cli_email: str | None,
+    cli_host: str | None,
+    cli_port: int | None,
     getpass_fn: Callable[[str], str],
     imap_factory: Callable[[str, int, str, str], ImapConnector],
 ) -> int:
@@ -152,6 +168,11 @@ def _prompt_write_verify(
         # from Mail.app and ignores --email (#341).
         if cli_email:
             set_login_override(account_name, email)
+        # Persist explicit --host/--port so runtime resolution connects to the
+        # same server coordinates we verify here — otherwise runtime re-derives
+        # them from Mail.app, which may misreport the port (#405).
+        if cli_host or cli_port:
+            set_server_override(account_name, host=cli_host, port=cli_port)
 
         print(f"Testing IMAP connection to {host}:{port}...")
         imap = imap_factory(host, port, email, password)
@@ -159,7 +180,10 @@ def _prompt_write_verify(
             # Cheap read-only call: exercises login + folder select.
             imap.search_messages(mailbox="INBOX", limit=1)
         except LoginError as exc:
-            _rollback(account_name, email, cli_email)
+            _rollback(
+                account_name, email, cli_email,
+                cli_host=cli_host, cli_port=cli_port,
+            )
             if not last:
                 print(
                     f"  Login rejected ({exc}) — the entry was removed; "
@@ -183,6 +207,16 @@ def _prompt_write_verify(
                 "the server. Re-run setup-imap later or test live to confirm.",
                 file=sys.stderr,
             )
+            # A TLS handshake failure on a non-993 port is the #405 shape:
+            # Mail.app handed us the plaintext/STARTTLS port for a server that
+            # actually speaks implicit TLS on 993. Point the user at the fix.
+            if port != 993:
+                print(
+                    f"  Hint: connecting on port {port} with implicit TLS. If "
+                    "your account uses SSL on the standard IMAPS port, re-run "
+                    "with `--port 993`.",
+                    file=sys.stderr,
+                )
             return 0
 
         print(f"OK (connected to {host}:{port})")
@@ -196,6 +230,8 @@ def run_setup_imap(
     account_name: str,
     cli_email: str | None,
     uninstall: bool,
+    cli_host: str | None = None,
+    cli_port: int | None = None,
     connector_factory: Callable[[], AppleMailConnector] | None = None,
     getpass_fn: Callable[[str], str] | None = None,
     imap_factory: Callable[
@@ -261,11 +297,20 @@ def run_setup_imap(
         except MailKeychainError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1
-        # Also drop any persisted login override (#341) so a re-setup starts
-        # from Mail.app's derived login rather than a stale override.
+        # Also drop any persisted login override (#341) and server override
+        # (#405) so a re-setup starts from Mail.app's derived values rather
+        # than stale overrides.
         delete_login_override(account_name)
+        delete_server_override(account_name)
         print(f"Removed Keychain entry for {account_name!r} ({email}).")
         return 0
+
+    # `--host` / `--port` override the Mail.app-derived server coordinates for
+    # both the verification connect below and (persisted) runtime resolution —
+    # the escape hatch for accounts Mail.app misreports (e.g. Zimbra returning
+    # port 143 for a 993 server). (#405)
+    host = cli_host or host
+    port = cli_port or port
 
     print(f"Found Mail.app account {account_name!r} (email: {email}).")
     _offer_app_password_page(
@@ -279,6 +324,8 @@ def run_setup_imap(
         host=host,
         port=port,
         cli_email=cli_email,
+        cli_host=cli_host,
+        cli_port=cli_port,
         getpass_fn=getpass_fn or getpass.getpass,
         imap_factory=imap_factory or ImapConnector,
     )

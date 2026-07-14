@@ -1005,6 +1005,86 @@ class TestAppleMailConnector:
         assert result == ("p42-imap.mail.me.com", 993, "s.morgan@icloud.com")
 
     @patch.object(AppleMailConnector, "_run_applescript")
+    def test_resolve_imap_config_port_override_wins(
+        self,
+        mock_run: MagicMock,
+        connector: AppleMailConnector,
+        tmp_path,
+        monkeypatch,
+    ) -> None:
+        """#405: a persisted port override (setup-imap --port) wins over the
+        port Mail.app reports — the fix for accounts whose Mail.app scriptably
+        misreports the IMAP port (e.g. Zimbra returning 143 for a 993/implicit-
+        TLS account)."""
+        from apple_mail_fast_mcp import imap_overrides
+
+        monkeypatch.setenv("APPLE_MAIL_MCP_HOME", str(tmp_path))
+        imap_overrides.set_server_override("Work", host=None, port=993)
+        mock_run.return_value = (
+            '{"host":"imap.corp.example",'
+            '"port":143,'  # Mail.app misreports the port
+            '"user_name":"me@corp.example",'
+            '"email_addresses":["me@corp.example"]}'
+        )
+        result = connector._resolve_imap_config("Work")
+        assert result == ("imap.corp.example", 993, "me@corp.example")
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_resolve_imap_config_host_override_wins(
+        self,
+        mock_run: MagicMock,
+        connector: AppleMailConnector,
+        tmp_path,
+        monkeypatch,
+    ) -> None:
+        """#405: a persisted host override (setup-imap --host) wins over the
+        server name Mail.app reports."""
+        from apple_mail_fast_mcp import imap_overrides
+
+        monkeypatch.setenv("APPLE_MAIL_MCP_HOME", str(tmp_path))
+        imap_overrides.set_server_override(
+            "Work", host="imap.real.example", port=None
+        )
+        mock_run.return_value = (
+            '{"host":"imap.wrong.example",'
+            '"port":993,'
+            '"user_name":"me@corp.example",'
+            '"email_addresses":["me@corp.example"]}'
+        )
+        host, _port, _email = connector._resolve_imap_config("Work")
+        assert host == "imap.real.example"
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_resolve_imap_config_host_override_applied_before_icloud_alias(
+        self,
+        mock_run: MagicMock,
+        connector: AppleMailConnector,
+        tmp_path,
+        monkeypatch,
+    ) -> None:
+        """#405 + #299: the host override is applied *before* the iCloud
+        apple-alias logic, so overriding an account onto a non-iCloud host
+        stops that logic from rewriting the login. Mail.app reports an me.com
+        host + third-party user_name (which alone would swap in the @icloud
+        alias); with the host overridden to a plain host, the login stays the
+        reported user_name."""
+        from apple_mail_fast_mcp import imap_overrides
+
+        monkeypatch.setenv("APPLE_MAIL_MCP_HOME", str(tmp_path))
+        imap_overrides.set_server_override(
+            "iCloud", host="imap.corp.example", port=None
+        )
+        mock_run.return_value = (
+            '{"host":"p42-imap.mail.me.com",'
+            '"port":993,'
+            '"user_name":"me@gmail.com",'
+            '"email_addresses":["me@gmail.com","alias@icloud.com"]}'
+        )
+        host, _port, email = connector._resolve_imap_config("iCloud")
+        assert host == "imap.corp.example"
+        assert email == "me@gmail.com"
+
+    @patch.object(AppleMailConnector, "_run_applescript")
     def test_resolve_imap_config_non_icloud_host_not_overridden(
         self, mock_run: MagicMock, connector: AppleMailConnector
     ) -> None:

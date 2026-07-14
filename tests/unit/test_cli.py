@@ -551,6 +551,8 @@ class TestServerMainDispatch:
             "account_name": "iCloud",
             "cli_email": None,
             "uninstall": True,
+            "cli_host": None,
+            "cli_port": None,
         }
 
     def test_setup_imap_requires_account(self) -> None:
@@ -805,3 +807,209 @@ class TestGuidedProviderSetup:
         # The open-in-browser question is never asked for a URL-less provider.
         assert not any("browser" in p for p in prompts)
         assert "app password" in capsys.readouterr().out.lower()
+
+
+# ---------------------------------------------------------------------------
+# setup-imap --host / --port server overrides (#405)
+# ---------------------------------------------------------------------------
+
+
+def _ok_imap_capture(captured: dict[str, Any]):
+    """imap_factory that records the (host, port) it was constructed with and
+    verifies successfully."""
+
+    def _factory(h: str, p: int, e: str, pw: str) -> MagicMock:
+        captured["host"], captured["port"] = h, p
+        m = MagicMock()
+        m.search_messages.return_value = []
+        return m
+
+    return _factory
+
+
+class TestServerOverrideFlags:
+    def test_port_override_used_for_verify_and_persisted(
+        self, mock_connector: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from apple_mail_fast_mcp import cli as cli_mod
+        from apple_mail_fast_mcp import imap_overrides
+
+        monkeypatch.setattr(cli_mod, "set_imap_password", lambda a, e, p: None)
+        # Mail.app misreports the port as 143 (the #405 bug).
+        mock_connector._resolve_imap_config.return_value = (
+            "imap.corp.example", 143, "me@corp.example",
+        )
+        seen: dict[str, Any] = {}
+        rc = run_setup_imap(
+            account_name="iCloud", cli_email=None, uninstall=False,
+            cli_host=None, cli_port=993,
+            connector_factory=lambda: mock_connector,
+            getpass_fn=lambda prompt: "pw",
+            imap_factory=_ok_imap_capture(seen),
+        )
+        assert rc == 0
+        # Verify connected on the override port, not the misreported 143.
+        assert seen["port"] == 993
+        # Persisted so runtime resolution uses it too.
+        assert imap_overrides.get_port_override("iCloud") == 993
+
+    def test_host_override_used_for_verify_and_persisted(
+        self, mock_connector: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from apple_mail_fast_mcp import cli as cli_mod
+        from apple_mail_fast_mcp import imap_overrides
+
+        monkeypatch.setattr(cli_mod, "set_imap_password", lambda a, e, p: None)
+        mock_connector._resolve_imap_config.return_value = (
+            "imap.wrong.example", 993, "me@corp.example",
+        )
+        seen: dict[str, Any] = {}
+        rc = run_setup_imap(
+            account_name="iCloud", cli_email=None, uninstall=False,
+            cli_host="imap.real.example", cli_port=None,
+            connector_factory=lambda: mock_connector,
+            getpass_fn=lambda prompt: "pw",
+            imap_factory=_ok_imap_capture(seen),
+        )
+        assert rc == 0
+        assert seen["host"] == "imap.real.example"
+        assert imap_overrides.get_host_override("iCloud") == "imap.real.example"
+
+    def test_server_override_rolled_back_on_login_rejection(
+        self, mock_connector: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from apple_mail_fast_mcp import cli as cli_mod
+        from apple_mail_fast_mcp import imap_overrides
+
+        monkeypatch.setattr(cli_mod, "set_imap_password", lambda a, e, p: None)
+        monkeypatch.setattr(cli_mod, "delete_imap_password", lambda a, e: None)
+
+        def _reject(h: str, p: int, e: str, pw: str) -> MagicMock:
+            m = MagicMock()
+            m.search_messages.side_effect = LoginError("bad password")
+            return m
+
+        rc = run_setup_imap(
+            account_name="iCloud", cli_email=None, uninstall=False,
+            cli_host=None, cli_port=993,
+            connector_factory=lambda: mock_connector,
+            getpass_fn=lambda prompt: "pw",
+            imap_factory=_reject,
+        )
+        assert rc == 1
+        # The just-written override was rolled back, not left dangling.
+        assert imap_overrides.get_port_override("iCloud") is None
+
+    def test_uninstall_deletes_server_override(
+        self, mock_connector: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from apple_mail_fast_mcp import cli as cli_mod
+        from apple_mail_fast_mcp import imap_overrides
+
+        imap_overrides.set_server_override("iCloud", host=None, port=993)
+        monkeypatch.setattr(cli_mod, "delete_imap_password", lambda a, e: None)
+        rc = run_setup_imap(
+            account_name="iCloud", cli_email=None, uninstall=True,
+            connector_factory=lambda: mock_connector,
+        )
+        assert rc == 0
+        assert imap_overrides.get_port_override("iCloud") is None
+
+    def test_ssl_failure_at_non_993_port_hints_993(
+        self,
+        mock_connector: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        import ssl
+
+        from apple_mail_fast_mcp import cli as cli_mod
+
+        monkeypatch.setattr(cli_mod, "set_imap_password", lambda a, e, p: None)
+        # Resolver hands back the misreported plaintext port; no override given.
+        mock_connector._resolve_imap_config.return_value = (
+            "imap.corp.example", 143, "me@corp.example",
+        )
+
+        def _ssl_fail(h: str, p: int, e: str, pw: str) -> MagicMock:
+            m = MagicMock()
+            m.search_messages.side_effect = ssl.SSLError(
+                "[SSL: WRONG_VERSION_NUMBER] wrong version number"
+            )
+            return m
+
+        rc = run_setup_imap(
+            account_name="iCloud", cli_email=None, uninstall=False,
+            connector_factory=lambda: mock_connector,
+            getpass_fn=lambda prompt: "pw",
+            imap_factory=_ssl_fail,
+        )
+        # Unverifiable (network/protocol) → entry kept, returns 0 with a warning.
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "--port 993" in err
+
+    def test_no_hint_when_port_already_993(
+        self,
+        mock_connector: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        import ssl
+
+        from apple_mail_fast_mcp import cli as cli_mod
+
+        monkeypatch.setattr(cli_mod, "set_imap_password", lambda a, e, p: None)
+        mock_connector._resolve_imap_config.return_value = (
+            "imap.corp.example", 993, "me@corp.example",
+        )
+
+        def _ssl_fail(h: str, p: int, e: str, pw: str) -> MagicMock:
+            m = MagicMock()
+            m.search_messages.side_effect = ssl.SSLError("some tls error")
+            return m
+
+        run_setup_imap(
+            account_name="iCloud", cli_email=None, uninstall=False,
+            connector_factory=lambda: mock_connector,
+            getpass_fn=lambda prompt: "pw",
+            imap_factory=_ssl_fail,
+        )
+        assert "--port 993" not in capsys.readouterr().err
+
+
+class TestSetupImapArgParsing:
+    def test_parser_accepts_host_and_port(self) -> None:
+        from apple_mail_fast_mcp.server import _build_arg_parser
+
+        args = _build_arg_parser().parse_args(
+            ["setup-imap", "--account", "X", "--host", "imap.h", "--port", "993"]
+        )
+        assert args.host == "imap.h"
+        assert args.port == 993
+
+    def test_parser_rejects_out_of_range_port(self) -> None:
+        from apple_mail_fast_mcp.server import _build_arg_parser
+
+        with pytest.raises(SystemExit):
+            _build_arg_parser().parse_args(
+                ["setup-imap", "--account", "X", "--port", "0"]
+            )
+
+    def test_main_forwards_host_and_port(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from apple_mail_fast_mcp import cli as cli_mod
+        from apple_mail_fast_mcp import server as server_mod
+
+        calls: dict[str, Any] = {}
+        monkeypatch.setattr(
+            cli_mod, "run_setup_imap",
+            lambda **kw: calls.update(kw) or 0,
+        )
+        rc = server_mod.main(
+            ["setup-imap", "--account", "X", "--host", "imap.h", "--port", "993"]
+        )
+        assert rc == 0
+        assert calls["cli_host"] == "imap.h"
+        assert calls["cli_port"] == 993

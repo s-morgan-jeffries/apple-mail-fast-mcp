@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 
 def _overrides_path() -> Path:
@@ -96,4 +97,112 @@ def delete_login_override(account: str) -> None:
     else:
         # Last entry removed — drop the file so an empty store leaves no
         # stray artifact.
+        path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Server (host / port) overrides (#405)
+#
+# `_resolve_imap_config` reads the IMAP host/port from Mail.app's account
+# properties. Some accounts (e.g. an institutional Zimbra account) misreport
+# `port` scriptably — Mail.app's UI shows 993 (implicit TLS) but the
+# scripting property returns 143 (the plaintext/STARTTLS default), so the
+# implicit-TLS handshake fails with WRONG_VERSION_NUMBER. `setup-imap
+# --host/--port` persists an explicit override here, honored at runtime, so
+# the connection uses the correct values regardless of what Mail.app reports.
+# Kept in a separate file from the login override so the two evolve
+# independently.
+# ---------------------------------------------------------------------------
+
+
+def _server_overrides_path() -> Path:
+    """Path to the server-override (host/port) file, honoring
+    ``APPLE_MAIL_MCP_HOME`` (resolved at call time, same convention as
+    :func:`_overrides_path`)."""
+    home_override = os.environ.get("APPLE_MAIL_MCP_HOME")
+    base = (
+        Path(home_override)
+        if home_override
+        else Path.home() / ".apple_mail_mcp"
+    )
+    return base / "imap_server_overrides.json"
+
+
+def _load_server() -> dict[str, dict[str, Any]]:
+    """Load the server-override map. A missing, unreadable, or corrupt file
+    yields an empty map — overrides must never raise into the IMAP resolve
+    path. Keeps only ``str -> dict`` entries."""
+    path = _server_overrides_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        str(k): v
+        for k, v in data.items()
+        if isinstance(k, str) and isinstance(v, dict)
+    }
+
+
+def get_host_override(account: str) -> str | None:
+    """Return the persisted IMAP host override for ``account``, or ``None``.
+    Empty/whitespace-only values are treated as absent."""
+    host = _load_server().get(account, {}).get("host")
+    if isinstance(host, str) and host.strip():
+        return host.strip()
+    return None
+
+
+def get_port_override(account: str) -> int | None:
+    """Return the persisted IMAP port override for ``account``, or ``None``.
+    Non-int / out-of-range values are treated as absent (``bool`` is a
+    subclass of ``int`` and is deliberately excluded)."""
+    port = _load_server().get(account, {}).get("port")
+    if isinstance(port, int) and not isinstance(port, bool) and 1 <= port <= 65535:
+        return port
+    return None
+
+
+def set_server_override(
+    account: str, *, host: str | None, port: int | None
+) -> None:
+    """Persist host and/or port overrides for ``account`` (#405).
+
+    Only the provided fields are stored; passing both ``None`` is a no-op
+    (never creates a stray entry/file). Replaces any existing entry for the
+    account, and merges with entries for other accounts.
+    """
+    entry: dict[str, Any] = {}
+    if host and host.strip():
+        entry["host"] = host.strip()
+    if port is not None:
+        entry["port"] = port
+    if not entry:
+        return
+    overrides = _load_server()
+    overrides[account] = entry
+    path = _server_overrides_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(overrides, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def delete_server_override(account: str) -> None:
+    """Remove ``account``'s server override if present. No-op when absent or
+    when the file doesn't exist; drops the file when the last entry goes."""
+    overrides = _load_server()
+    if account not in overrides:
+        return
+    del overrides[account]
+    path = _server_overrides_path()
+    if overrides:
+        path.write_text(
+            json.dumps(overrides, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    else:
         path.unlink(missing_ok=True)

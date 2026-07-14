@@ -3474,6 +3474,19 @@ def delete_draft(draft_id: str) -> dict[str, Any]:
         return {"success": False, "error": str(e), "error_type": "unknown"}
 
 
+def _port_arg(value: str) -> int:
+    """argparse type for ``--port``: an integer in the valid TCP range."""
+    try:
+        port = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid port {value!r}") from exc
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError(
+            f"port must be between 1 and 65535, got {port}"
+        )
+    return port
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="apple-mail-fast-mcp",
@@ -3515,6 +3528,26 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     setup_imap.add_argument(
+        "--host",
+        default=None,
+        help=(
+            "Override the IMAP server host for this account. Escape hatch for "
+            "accounts whose host Mail.app reports incorrectly; persisted and "
+            "used at runtime."
+        ),
+    )
+    setup_imap.add_argument(
+        "--port",
+        type=_port_arg,
+        default=None,
+        help=(
+            "Override the IMAP server port (1-65535). Escape hatch for "
+            "accounts whose port Mail.app misreports (e.g. 143 for a server "
+            "actually on 993); persisted and used at runtime. Assumes implicit "
+            "TLS."
+        ),
+    )
+    setup_imap.add_argument(
         "--uninstall",
         action="store_true",
         help=(
@@ -3542,6 +3575,8 @@ def main(argv: list[str] | None = None) -> int:
             account_name=args.account,
             cli_email=args.email,
             uninstall=args.uninstall,
+            cli_host=args.host,
+            cli_port=args.port,
         )
 
     if _READ_ONLY:

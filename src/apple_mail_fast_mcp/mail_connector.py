@@ -50,7 +50,11 @@ from .exceptions import (
     MailUnsupportedRuleActionError,
 )
 from .imap_connector import ImapConnectionPool, ImapConnector
-from .imap_overrides import get_login_override
+from .imap_overrides import (
+    get_host_override,
+    get_login_override,
+    get_port_override,
+)
 from .imap_providers import detect_provider
 from .keychain import get_imap_password
 from .security import send_recipients_test_violation
@@ -1736,6 +1740,12 @@ class AppleMailConnector:
         # record. An empty host then fails the later connect with OSError
         # (the graceful-fallback path) rather than KeyError-ing here.
         host = cast(str, parsed.get("host") or "")
+        # (#405) An explicit host override (setup-imap --host) wins over the
+        # Mail.app-reported server name. Applied *before* the #299 iCloud
+        # alias logic below so that logic keys off the intended host.
+        host_override = get_host_override(account)
+        if host_override:
+            host = host_override
         # (#299) iCloud IMAP (*.mail.me.com) authenticates the account's own
         # Apple-hosted address, not a third-party Apple ID. When `user name`
         # is a non-Apple email (e.g. a gmail-based Apple ID), prefer an
@@ -1759,11 +1769,12 @@ class AppleMailConnector:
         override = get_login_override(account)
         if override:
             email = override
-        return (
-            host,
-            cast(int, parsed.get("port") or 0),
-            email,
-        )
+        # (#405) An explicit port override (setup-imap --port) wins over the
+        # Mail.app-reported port — the fix for accounts whose Mail.app
+        # scriptably misreports the IMAP port (e.g. a Zimbra account that
+        # returns 143 for a server actually on 993/implicit-TLS).
+        port = get_port_override(account) or cast(int, parsed.get("port") or 0)
+        return (host, port, email)
 
     def _imap_search(
         self,
