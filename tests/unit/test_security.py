@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 from apple_mail_fast_mcp.security import (
     OPERATION_TIERS,
     TIER_LIMITS,
@@ -292,6 +294,21 @@ class TestCheckTestModeSafety:
         # Clear the per-process UUID-resolution cache so tests don't see
         # cached identifiers from other tests' mocked subprocess returns.
         _get_test_account_identifiers.cache_clear()
+
+    @pytest.fixture(autouse=True)
+    def _stub_uuid_osascript(self, monkeypatch: Any) -> None:
+        """The safety gate shells to ``osascript`` to enrich the identifier
+        set with the account's UUID. In CI that first osascript triggers a
+        ~20-30s Mail.app cold-launch (#408). Default it to a benign
+        "not found" so the gate falls back to name-only matching — which is
+        all these name-based tests need. The two UUID-path tests re-stub
+        ``subprocess.run`` in their own body (shadowing this)."""
+        monkeypatch.setattr(
+            "apple_mail_fast_mcp.security.subprocess.run",
+            lambda *a, **k: type(
+                "R", (), {"returncode": 1, "stdout": "", "stderr": "n/a"}
+            )(),
+        )
 
     def test_no_test_mode_returns_none(self, monkeypatch: Any) -> None:
         monkeypatch.delenv("MAIL_TEST_MODE", raising=False)

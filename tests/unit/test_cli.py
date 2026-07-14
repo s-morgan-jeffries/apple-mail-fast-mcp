@@ -695,6 +695,17 @@ class TestLoginOverride:
 class TestGuidedProviderSetup:
     """#384: provider detection, app-password-page guidance, paste-and-verify."""
 
+    @pytest.fixture(autouse=True)
+    def _stub_keychain_writes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """These tests drive the guided flow to success, which writes to the
+        Keychain via the ``security`` CLI (a real subprocess + side effect).
+        Stub it out by default so no test touches the real Keychain (#408);
+        tests asserting on the write re-stub it in their own body."""
+        from apple_mail_fast_mcp import cli as cli_mod
+
+        monkeypatch.setattr(cli_mod, "set_imap_password", lambda *a, **k: None)
+        monkeypatch.setattr(cli_mod, "delete_imap_password", lambda *a, **k: None)
+
     def test_login_retry_then_success_stores_second_password(
         self,
         mock_connector: MagicMock,
