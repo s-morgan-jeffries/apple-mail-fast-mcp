@@ -26,12 +26,12 @@ jobs:
 
       - name: Unit tests
         run: uv run pytest tests/ -m "not integration and not e2e and not benchmark" -v --cov=apple_mail_fast_mcp --cov-report=term-missing --cov-fail-under=90
-        # The unit suite should run in seconds; a tight cap catches leaks of
-        # a real osascript/socket call (which stalls ~30s in CI) — see #298.
-        # TEMPORARY (#408): the CI suite has regressed to ~5min (vs ~5s local)
-        # and trips a 5-min cap, so this is loosened to 10 while #408 is
-        # investigated. Restore to a tight value once the leak is fixed.
-        timeout-minutes: 10
+        # The unit suite runs in seconds (~13s in CI incl. coverage). A tight
+        # cap is a backstop against a real-I/O leak that stalls in CI (#298,
+        # #408). The primary defense is now the autouse `_block_real_io` guard
+        # in tests/unit/conftest.py, which fails such leaks fast; this cap
+        # just bounds a pathological hang. Keep it tight.
+        timeout-minutes: 3
 
       - name: Complexity check
         run: ./scripts/check_complexity.sh
