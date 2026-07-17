@@ -5486,8 +5486,11 @@ class TestDeleteDraft:
         connector.delete_draft("160991")
         script = mock_run.call_args[0][0]
         assert 'whose id is "160991"' in script
-        # Lookup must be scoped to Drafts mailboxes only (perf + correctness).
-        assert 'name of mb contains "Drafts"' in script
+        # #407: search the unified, locale-independent "drafts mailbox" (which
+        # also excludes Gmail's All Mail mirror), not per-account mailboxes
+        # matched by the English name "Drafts".
+        assert "first message of drafts mailbox" in script
+        assert 'name of mb contains "Drafts"' not in script
 
     @patch.object(AppleMailConnector, "_run_applescript")
     def test_delete_draft_not_found_raises(
@@ -5525,7 +5528,7 @@ class TestDeleteDraft:
         assert connector.delete_draft("160991") is True
 
     @patch.object(
-        AppleMailConnector, "find_message_by_message_id", return_value="160991"
+        AppleMailConnector, "_resolve_draft_internal_id", return_value="160991"
     )
     @patch.object(AppleMailConnector, "_run_applescript")
     def test_delete_draft_resolves_rfc_message_id(
@@ -5544,7 +5547,7 @@ class TestDeleteDraft:
         assert 'whose id is "160991"' in script
 
     @patch.object(
-        AppleMailConnector, "find_message_by_message_id", return_value=None
+        AppleMailConnector, "_resolve_draft_internal_id", return_value=None
     )
     @patch.object(AppleMailConnector, "_run_applescript")
     def test_delete_draft_unresolved_rfc_message_id_raises(
@@ -5581,6 +5584,52 @@ class TestDeleteDraft:
         script = mock_run.call_args[0][0]
         expected = escape_applescript_string(sanitize_input('1"x\\y'))
         assert f'whose id is "{expected}"' in script
+
+
+class TestResolveDraftInternalId:
+    """#407: the draft lookup resolves a Message-ID within the unified
+    ``drafts mailbox`` (Drafts-scoped, Gmail-mirror-safe), NOT the account-
+    wide find_message_by_message_id (which returns Gmail's All Mail mirror)."""
+
+    @pytest.fixture
+    def connector(self) -> AppleMailConnector:
+        return AppleMailConnector(timeout=30)
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_scopes_to_unified_drafts_mailbox(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        mock_run.return_value = "173659"
+        assert connector._resolve_draft_internal_id("abc@host") == "173659"
+        script = mock_run.call_args[0][0]
+        # Drafts-scoped iteration, matched by message id — not an all-mailbox scan.
+        assert "messages of drafts mailbox" in script
+        assert "message id of d" in script
+        assert "mailboxes of acc" not in script
+        # Both bare and bracketed Message-ID forms are queried.
+        assert 'mid is "abc@host"' in script
+        assert 'mid is "<abc@host>"' in script
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_not_found_returns_none(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        mock_run.return_value = "NOT_FOUND"
+        assert connector._resolve_draft_internal_id("missing@host") is None
+
+    @patch.object(AppleMailConnector, "_resolve_draft_internal_id")
+    def test_lookup_id_uses_drafts_scoped_resolver_not_broad(
+        self, mock_resolve: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """_resolve_draft_lookup_id routes a Message-ID through the Drafts-
+        scoped resolver, never the broad find_message_by_message_id."""
+        mock_resolve.return_value = "173659"
+        with patch.object(
+            AppleMailConnector, "find_message_by_message_id"
+        ) as mock_broad:
+            assert connector._resolve_draft_lookup_id("abc@host") == "173659"
+        mock_resolve.assert_called_once_with("abc@host")
+        mock_broad.assert_not_called()
 
 
 class TestFindMessageByMessageId:
@@ -5741,7 +5790,7 @@ class TestGetDraftState:
             connector.get_draft_state("999999")
 
     @patch.object(
-        AppleMailConnector, "find_message_by_message_id", return_value="160991"
+        AppleMailConnector, "_resolve_draft_internal_id", return_value="160991"
     )
     @patch.object(AppleMailConnector, "_run_applescript")
     def test_resolves_rfc_message_id(
@@ -5765,7 +5814,7 @@ class TestGetDraftState:
         assert 'set targetId to "160991"' in script
 
     @patch.object(
-        AppleMailConnector, "find_message_by_message_id", return_value=None
+        AppleMailConnector, "_resolve_draft_internal_id", return_value=None
     )
     @patch.object(AppleMailConnector, "_run_applescript")
     def test_unresolved_rfc_message_id_raises(
@@ -5821,8 +5870,10 @@ class TestGetDraftState:
         except MailDraftNotFoundError:
             pass
         script = mock_run.call_args[0][0]
-        # Lookup should be scoped to Drafts mailboxes.
-        assert 'name of mb contains "Drafts"' in script
+        # #407: iterate the unified "drafts mailbox" (locale-independent,
+        # Gmail-mirror-safe), not per-account name-matched mailboxes.
+        assert "messages of drafts mailbox" in script
+        assert 'name of mb contains "Drafts"' not in script
         # Should use as-text id comparison (probes showed numeric whose
         # clauses are unreliable on IMAP-backed Drafts).
         assert "(id of d as text) is targetId" in script
@@ -6444,7 +6495,7 @@ class TestExtractDraftAttachments:
         assert "mail attachments of foundDraft" in script
 
     @patch.object(
-        AppleMailConnector, "find_message_by_message_id", return_value="160991"
+        AppleMailConnector, "_resolve_draft_internal_id", return_value="160991"
     )
     @patch.object(AppleMailConnector, "_run_applescript")
     def test_extract_resolves_rfc_message_id(

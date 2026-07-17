@@ -1018,6 +1018,11 @@ class AppleMailConnector:
                 ["/usr/bin/osascript", "-"],
                 input=script,
                 text=True,
+                # Pin UTF-8 so non-ASCII in a generated script or in osascript
+                # output (e.g. a localized mailbox name / a message subject)
+                # round-trips deterministically, independent of the locale the
+                # MCP client launched the server under (#407).
+                encoding="utf-8",
                 capture_output=True,
                 timeout=self.timeout,
             )
@@ -4398,10 +4403,70 @@ class AppleMailConnector:
         """
         if "@" not in draft_id:
             return draft_id
-        internal = self.find_message_by_message_id(draft_id)
+        # Resolve within the Drafts scope, NOT the account-wide
+        # find_message_by_message_id: on Gmail the latter returns the All Mail
+        # *mirror* of the draft, whose internal id the Drafts-scoped lifecycle
+        # loops can never match (#407 root cause 2).
+        internal = self._resolve_draft_internal_id(draft_id)
         if internal is None:
             raise MailDraftNotFoundError(f"no draft with id {draft_id!r}")
         return internal
+
+    def _resolve_draft_internal_id(
+        self, rfc5322_message_id: str
+    ) -> str | None:
+        """Resolve an RFC 5322 Message-ID to Mail's internal id, scoped to
+        the unified ``drafts mailbox`` (#407).
+
+        Unlike :meth:`find_message_by_message_id` (which scans every mailbox
+        of every account), this searches only Mail.app's unified
+        ``drafts mailbox`` — the locale-independent aggregation of every
+        account's Drafts folder. On Gmail that excludes the All Mail *mirror*
+        of the draft, so the id returned is the real Drafts copy's, which the
+        draft-lifecycle ``whose id is`` / id-match loops can then find.
+        ``find_message_by_message_id`` is deliberately left broad, because
+        reply/forward seed resolution needs to find seeds outside Drafts.
+
+        Iterates ``messages of drafts mailbox`` manually (rather than a
+        ``whose message id`` clause) — matching :meth:`get_draft_state`, whose
+        docstring notes a freshly-saved draft can briefly lag ``whose``
+        queryability.
+        """
+        if not rfc5322_message_id:
+            return None
+        bare = _bare_message_id(rfc5322_message_id)
+        bracketed = f"<{bare}>"
+        safe_bare = escape_applescript_string(sanitize_input(bare))
+        safe_bracketed = escape_applescript_string(sanitize_input(bracketed))
+
+        script = _wrap_with_timeout(
+            f"""tell application "Mail"
+            set foundId to ""
+            try
+                repeat with d in messages of drafts mailbox
+                    set mid to ""
+                    try
+                        set mid to message id of d
+                    end try
+                    if mid is "{safe_bare}" or mid is "{safe_bracketed}" then
+                        set foundId to (id of d as text)
+                        exit repeat
+                    end if
+                end repeat
+            end try
+            if foundId is "" then
+                return "NOT_FOUND"
+            else
+                return foundId
+            end if
+        end tell""",
+            timeout=self.timeout,
+        )
+
+        result = self._run_applescript(script).strip()
+        if result == "NOT_FOUND" or not result:
+            return None
+        return result
 
     def delete_draft(self, draft_id: str) -> bool:
         """Move a draft to Trash (lifecycle endpoint for cancellation).
@@ -4429,29 +4494,19 @@ class AppleMailConnector:
         # regex staying narrow. (#294)
         lookup_id_safe = escape_applescript_string(sanitize_input(lookup_id))
 
+        # Search Mail.app's unified "drafts mailbox" — its locale-independent
+        # aggregation of every account's Drafts folder — instead of matching a
+        # per-account mailbox by the English name "Drafts" (which misses
+        # localized names like "Entwürfe" and Gmail's All Mail mirror). (#407)
         script = _wrap_with_timeout(
             f"""tell application "Mail"
-            set didDelete to false
-            repeat with acc in accounts
-                try
-                    repeat with mb in mailboxes of acc
-                        if name of mb contains "Drafts" then
-                            try
-                                set m to first message of mb whose id is "{lookup_id_safe}"
-                                delete m
-                                set didDelete to true
-                                exit repeat
-                            end try
-                        end if
-                    end repeat
-                end try
-                if didDelete then exit repeat
-            end repeat
-            if didDelete then
+            try
+                set m to first message of drafts mailbox whose id is "{lookup_id_safe}"
+                delete m
                 return "OK"
-            else
+            on error
                 return "NOT_FOUND"
-            end if
+            end try
         end tell""",
             timeout=self.timeout,
         )
@@ -4561,22 +4616,15 @@ class AppleMailConnector:
         tell application "Mail"
             set targetId to "{lookup_id_safe}"
             set foundDraft to missing value
-            repeat with acc in accounts
-                try
-                    repeat with mb in mailboxes of acc
-                        if name of mb contains "Drafts" then
-                            repeat with d in messages of mb
-                                if (id of d as text) is targetId then
-                                    set foundDraft to d
-                                    exit repeat
-                                end if
-                            end repeat
-                        end if
-                        if foundDraft is not missing value then exit repeat
-                    end repeat
-                end try
-                if foundDraft is not missing value then exit repeat
-            end repeat
+            -- Unified "drafts mailbox": locale-independent, Gmail-mirror-safe. (#407)
+            try
+                repeat with d in messages of drafts mailbox
+                    if (id of d as text) is targetId then
+                        set foundDraft to d
+                        exit repeat
+                    end if
+                end repeat
+            end try
 
             if foundDraft is missing value then
                 set resultData to {{|found|:false}}
@@ -5760,23 +5808,15 @@ class AppleMailConnector:
                 delay 0.5
 
                 set newDraftId to ""
-                repeat with acc in accounts
-                    try
-                        repeat with mb in mailboxes of acc
-                            if name of mb contains "Drafts" then
-                                repeat with d in messages of mb
-                                    set candId to (id of d as text)
-                                    if candId is not in beforeIds then
-                                        set newDraftId to candId
-                                        exit repeat
-                                    end if
-                                end repeat
-                            end if
-                            if newDraftId is not "" then exit repeat
-                        end repeat
-                    end try
-                    if newDraftId is not "" then exit repeat
-                end repeat
+                try
+                    repeat with d in messages of drafts mailbox
+                        set candId to (id of d as text)
+                        if candId is not in beforeIds then
+                            set newDraftId to candId
+                            exit repeat
+                        end if
+                    end repeat
+                end try
                 return newDraftId
             """
 
@@ -5785,17 +5825,11 @@ class AppleMailConnector:
         if not send_now:
             snapshot_block = """
                 set beforeIds to {}
-                repeat with acc in accounts
-                    try
-                        repeat with mb in mailboxes of acc
-                            if name of mb contains "Drafts" then
-                                repeat with d in messages of mb
-                                    copy (id of d as text) to end of beforeIds
-                                end repeat
-                            end if
-                        end repeat
-                    end try
-                end repeat
+                try
+                    repeat with d in messages of drafts mailbox
+                        copy (id of d as text) to end of beforeIds
+                    end repeat
+                end try
             """
 
         script = _wrap_with_timeout(
@@ -6033,22 +6067,15 @@ class AppleMailConnector:
             f"""tell application "Mail"
             set targetId to "{lookup_id_safe}"
             set foundDraft to missing value
-            repeat with acc in accounts
-                try
-                    repeat with mb in mailboxes of acc
-                        if name of mb contains "Drafts" then
-                            repeat with d in messages of mb
-                                if (id of d as text) is targetId then
-                                    set foundDraft to d
-                                    exit repeat
-                                end if
-                            end repeat
-                        end if
-                        if foundDraft is not missing value then exit repeat
-                    end repeat
-                end try
-                if foundDraft is not missing value then exit repeat
-            end repeat
+            -- Unified "drafts mailbox": locale-independent, Gmail-mirror-safe. (#407)
+            try
+                repeat with d in messages of drafts mailbox
+                    if (id of d as text) is targetId then
+                        set foundDraft to d
+                        exit repeat
+                    end if
+                end repeat
+            end try
             if foundDraft is missing value then return "ERR_NOT_FOUND"
 
             set targetPaths to {{{targets_safe}}}

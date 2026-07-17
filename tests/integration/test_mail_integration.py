@@ -13,6 +13,7 @@ Run with: MAIL_TEST_MODE=true MAIL_TEST_ACCOUNT=TestAccount pytest --run-integra
 """
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
@@ -589,6 +590,31 @@ class TestDraftsLifecycleIntegration:
     Each test cleans up its own drafts.
     """
 
+    @staticmethod
+    def _wait_for_draft(
+        connector: AppleMailConnector, draft_id: str, timeout_s: float = 30.0
+    ) -> dict[str, Any]:
+        """Poll get_draft_state until an IMAP-APPEND draft has synced into
+        Mail.app. create_draft returns as soon as the server APPEND succeeds,
+        but Mail.app reflects the new draft asynchronously (~seconds, longer on
+        Gmail). The pre-#407 broad-mailbox scan incidentally masked this by
+        being slow; the #407 drafts-scoped lookup is fast, so tests that look
+        up a just-created draft must wait for the sync explicitly."""
+        import time
+
+        from apple_mail_fast_mcp.exceptions import MailDraftNotFoundError
+
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            try:
+                return connector.get_draft_state(draft_id)
+            except MailDraftNotFoundError:
+                time.sleep(1.0)
+        pytest.fail(
+            f"draft {draft_id!r} not visible {timeout_s}s after create "
+            "(IMAP-APPEND sync lag)"
+        )
+
     @pytest.fixture
     def anchor_message_id(
         self, connector: AppleMailConnector, test_account: str
@@ -691,7 +717,7 @@ class TestDraftsLifecycleIntegration:
         assert "<" not in draft_id and ">" not in draft_id
 
         try:
-            state = connector.get_draft_state(draft_id)
+            state = self._wait_for_draft(connector, draft_id)
             assert state["subject"] == "ZZZ-AMM-INTEG-MSGID"
             assert "integration message-id round-trip body" in state["body"]
         finally:
@@ -805,13 +831,17 @@ class TestDraftsLifecycleIntegration:
         )
         try:
             # Fetch the raw draft back over IMAP from the Drafts folder.
+            import imaplib as _imaplib
             imap = ImapConnector(host, port, email, password)
             raw = None
             for folder in ImapConnector._CONVENTIONAL_DRAFTS_NAMES:
                 try:
                     raw = imap.fetch_raw_message(draft_id, folder)
                     break
-                except MailMessageNotFoundError:
+                except (MailMessageNotFoundError, _imaplib.IMAP4.error):
+                    # Candidate folder absent on this server (e.g. bare
+                    # "Drafts" on Gmail, which uses "[Gmail]/Drafts") — the
+                    # SELECT raises; try the next conventional name.
                     continue
             assert raw is not None, "HTML draft not found in any Drafts folder"
             msg = _email.message_from_bytes(raw, policy=_policy.default)
@@ -822,6 +852,9 @@ class TestDraftsLifecycleIntegration:
             assert f"<b>{marker}</b>" in html.get_content()
             assert "plain fallback" in plain.get_content()
         finally:
+            # Wait for the APPENDed draft to sync into Mail.app before the
+            # AppleScript delete can find it (#407 sync lag).
+            self._wait_for_draft(connector, draft_id)
             assert connector.delete_draft(draft_id) is True
 
     def test_reply_save_preserves_threading_headers(
@@ -1180,18 +1213,26 @@ class TestDraftsLifecycleIntegration:
     def test_delete_draft_removes_from_drafts_mailbox(
         self,
         connector: AppleMailConnector,
+        test_account: str,
     ) -> None:
         import time
 
         from apple_mail_fast_mcp.exceptions import MailDraftNotFoundError
 
+        # Pin the IMAP-APPEND path (stable RFC Message-ID draft_id). A bare
+        # AppleScript-save on an IMAP account gets a *local* numeric id that
+        # Mail.app re-issues once the draft syncs to the server, so polling by
+        # the original id is unreliable — orthogonal to #407.
         result = connector.create_draft(
             seed="new",
+            from_account=test_account,
             to=["x@example.com"],
             subject="ZZZ-AMM-INTEG-DELETE",
             body="delete me",
         )
         draft_id = result["draft_id"]
+        # Wait for the IMAP-APPEND draft to sync in before deleting it (#407).
+        self._wait_for_draft(connector, draft_id)
         assert connector.delete_draft(draft_id) is True
 
         # IMAP sync lag: the delete returns synchronously but the
@@ -2069,28 +2110,29 @@ class TestDraftsLifecycleIntegration:
         # The IMAP-APPEND path (#245) returns a bare RFC Message-ID, not
         # Mail's internal id; resolve it so the `id of d` lookup below
         # matches (mirrors get_draft_state / delete_draft).
+        # #407: wait for the IMAP-APPEND draft to sync, then resolve to Mail's
+        # internal id via the fast Drafts-scoped resolver (the old broad
+        # find_message_by_message_id scans every mailbox and times out on a
+        # large Gmail's All Mail).
         lookup_id = draft_id
         if "@" in draft_id:
-            lookup_id = connector.find_message_by_message_id(draft_id) or draft_id
+            self._wait_for_draft(connector, draft_id)
+            lookup_id = (
+                connector._resolve_draft_internal_id(draft_id) or draft_id
+            )
 
         try:
             # Read the draft's headers via osascript and confirm the
-            # From header includes both the display name and email.
+            # From header includes both the display name and email. Iterate
+            # the unified "drafts mailbox" (locale-independent, Gmail-mirror-
+            # safe), not per-account name-matched mailboxes (#407).
             import subprocess as _subprocess
             script = f'''
             tell application "Mail"
-                repeat with acc in accounts
-                    try
-                        repeat with mb in mailboxes of acc
-                            if name of mb contains "Drafts" then
-                                repeat with d in messages of mb
-                                    if (id of d as text) is "{lookup_id}" then
-                                        return sender of d
-                                    end if
-                                end repeat
-                            end if
-                        end repeat
-                    end try
+                repeat with d in messages of drafts mailbox
+                    if (id of d as text) is "{lookup_id}" then
+                        return sender of d
+                    end if
                 end repeat
                 return ""
             end tell
