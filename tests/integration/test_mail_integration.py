@@ -12,6 +12,7 @@ These tests require:
 Run with: MAIL_TEST_MODE=true MAIL_TEST_ACCOUNT=TestAccount pytest --run-integration
 """
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -232,6 +233,35 @@ class TestMailIntegration:
         from apple_mail_fast_mcp.exceptions import MailMessageNotFoundError
         with pytest.raises(MailMessageNotFoundError):
             connector.get_thread("99999999999")
+
+    def test_get_thread_does_not_freeze_mail(
+        self, connector: AppleMailConnector, test_account: str
+    ) -> None:
+        """#415 freeze-regression guard: get_thread on a real search-result id
+        must never trigger the unindexed all-mailbox `whose message id` scan.
+
+        The bug: a numeric id emitted `message id is "N"` branches (unindexed,
+        ~20s/mailbox) across every account × mailbox, and an RFC id fell through
+        to the same AppleScript scan — either wedged Mail's UI for >100s. Both
+        paths are now indexed / IMAP-resolved, so any real anchor must resolve
+        and collect in well under the freeze threshold. A run over ~10s means
+        the scan has crept back; treat it as a hard FAILURE, not a slow test.
+        """
+        matches = connector.search_messages(
+            account=test_account, mailbox="INBOX", limit=1
+        )
+        if not matches:
+            pytest.skip("test inbox has no messages")
+
+        start = time.monotonic()
+        thread = connector.get_thread(matches[0]["id"])
+        elapsed = time.monotonic() - start
+
+        assert isinstance(thread, list) and len(thread) >= 1
+        assert elapsed < 10.0, (
+            f"get_thread took {elapsed:.1f}s — the #415 unindexed "
+            "`whose message id` scan has regressed (freezes Mail)."
+        )
 
     def test_get_message(
         self, connector: AppleMailConnector, test_account: str

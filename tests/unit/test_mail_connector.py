@@ -26,9 +26,34 @@ from apple_mail_fast_mcp.exceptions import (
 )
 from apple_mail_fast_mcp.mail_connector import (
     AppleMailConnector,
+    _message_id_match_clause,
     _wrap_as_json_script,
     _wrap_with_timeout,
 )
+
+
+class TestMessageIdMatchClause:
+    """#415: the AppleScript match clause. A numeric (all-digit) id matches by
+    Mail's INDEXED integer `id` alone; the unindexed `message id is` branches
+    (which force loading every message) are emitted only for a non-numeric RFC
+    Message-ID, where they're the sole matcher."""
+
+    def test_numeric_id_is_indexed_only(self) -> None:
+        clause = _message_id_match_clause("12345")
+        assert clause == "id is 12345"
+        assert "message id is" not in clause
+
+    def test_rfc_message_id_uses_message_id_branches(self) -> None:
+        clause = _message_id_match_clause("abc.def@host.example")
+        assert 'message id is "abc.def@host.example"' in clause
+        assert 'message id is "<abc.def@host.example>"' in clause
+        # No spurious integer-id branch for a non-numeric id.
+        assert "id is " not in clause.replace("message id is ", "")
+
+    def test_bracketed_rfc_id_is_stripped(self) -> None:
+        clause = _message_id_match_clause("<abc@host>")
+        assert 'message id is "abc@host"' in clause
+        assert 'message id is "<abc@host>"' in clause
 
 
 class TestAppleMailConnector:
@@ -4295,12 +4320,12 @@ class TestAppleMailConnector:
         # All record keys must be |quoted| per the v0.4.1 selector-collision rule.
         assert "|rfc_message_id|:(message id of msg)" in anchor_script
         assert "|subject|:(subject of msg)" in anchor_script
-        # Anchor lookup now matches either the numeric `id` or the RFC
-        # `message id` (F2 cross-path piping). A numeric input keeps the
-        # integer `id` branch (unquoted, valid AppleScript), and the RFC
-        # branch is always present so an IMAP-sourced Message-ID resolves.
+        # #415: a numeric input matches by the INDEXED integer `id` ONLY. The
+        # unindexed `message id is` branches (which force Mail to load every
+        # message) are dropped for all-digit ids — an RFC Message-ID always
+        # contains "@", so it's never all-digits.
         assert "id is 12345" in anchor_script
-        assert 'message id is "12345"' in anchor_script
+        assert 'message id is "12345"' not in anchor_script
 
     @patch.object(AppleMailConnector, "_run_applescript")
     def test_get_thread_anchor_not_found_raises(
@@ -4875,56 +4900,39 @@ class TestWhoseIdQuoting:
         return AppleMailConnector(timeout=30)
 
     @patch.object(AppleMailConnector, "_run_applescript")
-    def test_get_message_quotes_id_in_whose(
+    def test_get_message_rfc_id_without_account_fails_fast(
         self, mock_run: MagicMock, connector: AppleMailConnector
     ) -> None:
-        mock_run.return_value = '{"id":"x","subject":"s","sender":"","date_received":"","read_status":false,"flagged":false,"content":""}'
+        # #415: an RFC Message-ID with no account+mailbox must NOT trigger the
+        # unindexed all-mailbox scan (which freezes Mail); it fails fast with a
+        # hint to pass the IMAP fast-path scope. RFC-id quoting/escaping safety
+        # is covered by TestMessageIdMatchClause.
         uuid_id = "CF7C3761-C190-40BA-B94E-3EBC321980ED@icloud.com"
-        connector.get_message(uuid_id, include_content=False)
-        script = mock_run.call_args[0][0]
-        # The clause now matches either the numeric `id` or the RFC `message
-        # id` (F2 cross-path piping), but a non-numeric id must still appear
-        # quoted inside the `whose` filter (injection safety — the original
-        # intent of #86 / this test).
-        assert f'message id is "{uuid_id}"' in script
-        assert f'message id is "<{uuid_id}>"' in script
+        with pytest.raises(MailMessageNotFoundError, match="account"):
+            connector.get_message(uuid_id, include_content=False)
+        mock_run.assert_not_called()
 
     @patch.object(AppleMailConnector, "_run_applescript")
-    def test_get_attachments_quotes_id_in_whose(
+    def test_get_attachments_rfc_id_without_account_fails_fast(
         self, mock_run: MagicMock, connector: AppleMailConnector
     ) -> None:
-        mock_run.return_value = "[]"
         uuid_id = "CF7C3761-C190-40BA-B94E-3EBC321980ED@icloud.com"
-        connector.get_attachments(uuid_id)
-        script = mock_run.call_args[0][0]
-        assert f'message id is "{uuid_id}"' in script
-        assert f'message id is "<{uuid_id}>"' in script
+        with pytest.raises(MailMessageNotFoundError, match="account"):
+            connector.get_attachments(uuid_id)
+        mock_run.assert_not_called()
 
     @patch.object(AppleMailConnector, "_run_applescript")
-    def test_save_attachments_quotes_id_in_whose(
+    def test_save_attachments_rfc_id_without_account_fails_fast(
         self, mock_run: MagicMock, connector: AppleMailConnector
     ) -> None:
-        mock_run.return_value = "[]"
-        uuid_id = "CF7C3761-C190-40BA-B94E-3EBC321980ED@icloud.com"
-        # save_attachments takes a Path (uses .exists()).
         import tempfile
         from pathlib import Path
+
+        uuid_id = "CF7C3761-C190-40BA-B94E-3EBC321980ED@icloud.com"
         with tempfile.TemporaryDirectory() as td:
-            connector.save_attachments(uuid_id, Path(td))
-        # Multiple AppleScript calls may happen; check at least one
-        # contained the quoted-id pattern. The clause now matches either the
-        # numeric `id` or the RFC `message id` (F2 cross-path piping), but the
-        # id must still appear quoted inside the `whose` filter (injection
-        # safety — the original intent of this test).
-        scripts = [c[0][0] for c in mock_run.call_args_list]
-        assert any(f'message id is "{uuid_id}"' in s for s in scripts), (
-            f"expected quoted id in one of the scripts: {scripts}"
-        )
-        # And the RFC message-id branch (bracketed form) must be present so an
-        # IMAP-sourced id resolves without a numeric-id round-trip.
-        assert any(
-            f'message id is "<{uuid_id}>"' in s for s in scripts
-        ), f"expected message-id branch in one of the scripts: {scripts}"
+            with pytest.raises(MailMessageNotFoundError, match="account"):
+                connector.save_attachments(uuid_id, Path(td))
+        mock_run.assert_not_called()
 
 
 class TestUpdateMessageMatchesRfcMessageId:
@@ -8823,3 +8831,164 @@ class TestSmtpSendPath:
         )
         assert connector._resolve_smtp_config("Gmail") == ("", 0, "")
         assert called == []
+
+
+class TestResolveAnchorViaImap:
+    """#415: cross-account IMAP resolution of an RFC Message-ID anchor."""
+
+    @pytest.fixture
+    def connector(self) -> AppleMailConnector:
+        return AppleMailConnector(timeout=30)
+
+    @staticmethod
+    def _fake_imap(anchor_by_host):
+        def _factory(host, port, email, password, pool=None):
+            m = MagicMock()
+            m.resolve_anchor.return_value = anchor_by_host(host)
+            return m
+        return _factory
+
+    def test_iterates_accounts_first_match_wins(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            connector, "list_accounts",
+            lambda: [{"name": "iCloud"}, {"name": "Gmail"}],
+        )
+        monkeypatch.setattr(connector, "_imap_breaker_open", lambda a: False)
+        monkeypatch.setattr(connector, "_imap_clear_breaker", lambda a: None)
+        monkeypatch.setattr(
+            connector, "_resolve_imap_config",
+            lambda a: (f"imap.{a}", 993, f"{a}@x"),
+        )
+        monkeypatch.setattr(
+            connector, "_get_imap_password_with_fallback", lambda a, e: "pw"
+        )
+        monkeypatch.setattr(
+            "apple_mail_fast_mcp.mail_connector.ImapConnector",
+            self._fake_imap(
+                lambda host: None if "iCloud" in host
+                else {"rfc_message_id": "abc@x", "references": [],
+                      "subject": "Hi", "in_reply_to": None}
+            ),
+        )
+        anchor = connector._resolve_anchor_via_imap("abc@x")
+        assert anchor is not None
+        assert anchor["account"] == "Gmail"
+        assert anchor["rfc_message_id"] == "abc@x"
+
+    def test_skips_accounts_without_keychain_creds(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from apple_mail_fast_mcp.exceptions import (
+            MailKeychainEntryNotFoundError,
+        )
+
+        monkeypatch.setattr(
+            connector, "list_accounts",
+            lambda: [{"name": "NoCreds"}, {"name": "Gmail"}],
+        )
+        monkeypatch.setattr(connector, "_imap_breaker_open", lambda a: False)
+        monkeypatch.setattr(connector, "_imap_clear_breaker", lambda a: None)
+        monkeypatch.setattr(
+            connector, "_resolve_imap_config",
+            lambda a: (f"imap.{a}", 993, f"{a}@x"),
+        )
+
+        def _pwd(a: str, e: str) -> str:
+            if a == "NoCreds":
+                raise MailKeychainEntryNotFoundError("no opt-in")
+            return "pw"
+
+        monkeypatch.setattr(
+            connector, "_get_imap_password_with_fallback", _pwd
+        )
+        monkeypatch.setattr(
+            "apple_mail_fast_mcp.mail_connector.ImapConnector",
+            self._fake_imap(lambda host: {"rfc_message_id": "abc@x",
+                                          "references": []}),
+        )
+        anchor = connector._resolve_anchor_via_imap("abc@x")
+        assert anchor is not None
+        assert anchor["account"] == "Gmail"
+
+    def test_none_when_no_account_resolves(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(connector, "list_accounts", lambda: [{"name": "Gmail"}])
+        monkeypatch.setattr(connector, "_imap_breaker_open", lambda a: False)
+        monkeypatch.setattr(
+            connector, "_resolve_imap_config", lambda a: ("imap.x", 993, "e@x")
+        )
+        monkeypatch.setattr(
+            connector, "_get_imap_password_with_fallback", lambda a, e: "pw"
+        )
+        monkeypatch.setattr(
+            "apple_mail_fast_mcp.mail_connector.ImapConnector",
+            self._fake_imap(lambda host: None),
+        )
+        assert connector._resolve_anchor_via_imap("nope@x") is None
+
+
+class TestGetThreadNeverScansForRfcId:
+    """#415: an RFC Message-ID anchor resolves via IMAP; get_thread must NEVER
+    run the unindexed AppleScript scan for it."""
+
+    @pytest.fixture
+    def connector(self) -> AppleMailConnector:
+        return AppleMailConnector(timeout=30)
+
+    def test_rfc_id_routes_through_imap_no_applescript(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        scripts: list[str] = []
+        monkeypatch.setattr(
+            connector, "_run_applescript",
+            lambda s: scripts.append(s) or "",
+        )
+        monkeypatch.setattr(
+            connector, "_resolve_anchor_via_imap",
+            lambda mid: {"account": "Gmail", "rfc_message_id": "abc@x",
+                         "references": [], "subject": "Hi"},
+        )
+        monkeypatch.setattr(connector, "_imap_breaker_open", lambda a: False)
+        monkeypatch.setattr(connector, "_imap_clear_breaker", lambda a: None)
+        monkeypatch.setattr(
+            connector, "_imap_get_thread", lambda anchor: [{"id": "abc@x"}]
+        )
+        result = connector.get_thread("abc@x")
+        assert result == [{"id": "abc@x"}]
+        # The whole point of #415: no AppleScript ran at all for an RFC id.
+        assert scripts == []
+
+    def test_rfc_id_unresolved_raises_without_scanning(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        scripts: list[str] = []
+        monkeypatch.setattr(
+            connector, "_run_applescript",
+            lambda s: scripts.append(s) or "",
+        )
+        monkeypatch.setattr(
+            connector, "_resolve_anchor_via_imap", lambda mid: None
+        )
+        with pytest.raises(MailMessageNotFoundError):
+            connector.get_thread("missing@x")
+        assert scripts == []  # raised instead of scanning
+
+    def test_numeric_id_still_uses_applescript_anchor(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: dict[str, str] = {}
+        monkeypatch.setattr(
+            connector, "_resolve_thread_anchor_applescript",
+            lambda mid: seen.update(mid=mid) or {
+                "account": "Gmail", "rfc_message_id": "x@y",
+                "references": [], "subject": "S", "internal_id": mid,
+            },
+        )
+        monkeypatch.setattr(connector, "_imap_breaker_open", lambda a: False)
+        monkeypatch.setattr(connector, "_imap_clear_breaker", lambda a: None)
+        monkeypatch.setattr(connector, "_imap_get_thread", lambda anchor: [])
+        connector.get_thread("12345")
+        assert seen["mid"] == "12345"

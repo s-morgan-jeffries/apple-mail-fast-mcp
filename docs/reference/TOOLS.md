@@ -251,6 +251,10 @@ Row fields include both `id` (path-native — see `search_messages` for details)
 
 Uses the connector's tiered IMAP threading dispatch (Tier 1 X-GM-THRID for Gmail per #122, Tier 3 header-search BFS fallback) when IMAP is configured; falls back to AppleScript otherwise.
 
+> **⚡ Performance on large accounts (Gmail especially).** IMAP `SEARCH` runs on **one mailbox at a time** — there is no cross-folder search — so threading cost scales with **how many mailboxes must be checked**, not how many messages you have. A thread's messages are inherently spread across mailboxes (INBOX for received, Sent for replies, plus labels/folders).
+>
+> Gmail is the outlier: it exposes each **label** as a folder and files a copy of a message into *every* label it carries, and accounts routinely have dozens of labels. The shortcut is **All Mail**, which holds every message exactly once — so on Gmail, enable **Settings → Labels → All Mail → "Show in IMAP"** for fast threading (and to search all mail). With All Mail hidden, `get_thread` must walk every label-folder (one `SEARCH` each), which is slow on many-label accounts. Non-Gmail (true folder) accounts usually have a handful of folders with thread members concentrated in INBOX/Sent, so they stay fast without any special mailbox — though an account with genuinely dozens of folders would hit the same per-folder cost.
+
 **Examples:**
 
 ```python

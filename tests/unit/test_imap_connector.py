@@ -3888,3 +3888,77 @@ class TestEnvelopeVanishRobustness:
         conn = ImapConnector("imap.example.com", 993, "u@e.com", "pw")
         with pytest.raises(MailMessageNotFoundError):
             conn.get_message("<gone@example.com>")
+
+
+class TestResolveAnchor:
+    """#415: resolve an RFC Message-ID to a get_thread anchor via server-side
+    INDEXED `SEARCH HEADER Message-ID`, bounded to Gmail All Mail (else
+    INBOX+Sent) — never the unindexed all-mailbox Mail.app scan."""
+
+    @staticmethod
+    def _fetch(uid: int, refs: bytes = b"") -> dict[int, dict[bytes, Any]]:
+        return {
+            uid: {
+                b"ENVELOPE": _fake_envelope(
+                    message_id=b"<abc@x>", subject=b"Hi there"
+                ),
+                b"BODY[HEADER.FIELDS (REFERENCES IN-REPLY-TO)]": (
+                    b"References: " + refs + b"\r\n"
+                ),
+            }
+        }
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_gmail_probes_all_mail_only(self, mock_cls: MagicMock) -> None:
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.list_folders.return_value = [
+            ([b"\\All"], b"/", "[Gmail]/All Mail"),
+            ([b"\\Sent"], b"/", "[Gmail]/Sent Mail"),
+        ]
+        client.search.return_value = [42]
+        client.fetch.return_value = self._fetch(42, b"<r1@x> <r2@x>")
+
+        conn = ImapConnector("h", 993, "e@x", "pw")
+        anchor = conn.resolve_anchor("abc@x")
+
+        assert anchor is not None
+        assert anchor["rfc_message_id"] == "abc@x"
+        assert anchor["subject"] == "Hi there"
+        assert anchor["references"] == ["r1@x", "r2@x"]
+        # Gmail → ONLY All Mail probed (never INBOX/Sent/every folder).
+        client.select_folder.assert_called_once_with(
+            "[Gmail]/All Mail", readonly=True
+        )
+        # Indexed server-side SEARCH HEADER Message-ID (bracketed).
+        assert client.search.call_args[0][0] == [
+            "HEADER", "Message-ID", "<abc@x>",
+        ]
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_non_gmail_probes_inbox_then_sent_only(
+        self, mock_cls: MagicMock
+    ) -> None:
+        client = MagicMock()
+        mock_cls.return_value = client
+        # No \All; a \Sent folder present.
+        client.list_folders.return_value = [
+            ([b"\\Sent"], b"/", "Sent Messages"),
+        ]
+        client.search.return_value = []  # not found → None
+
+        conn = ImapConnector("h", 993, "e@x", "pw")
+        assert conn.resolve_anchor("abc@x") is None
+
+        # Bounded probe: INBOX then Sent, in order — never all folders.
+        selected = [c[0][0] for c in client.select_folder.call_args_list]
+        assert selected == ["INBOX", "Sent Messages"]
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_not_found_returns_none(self, mock_cls: MagicMock) -> None:
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.list_folders.return_value = [([b"\\All"], b"/", "All Mail")]
+        client.search.return_value = []
+        conn = ImapConnector("h", 993, "e@x", "pw")
+        assert conn.resolve_anchor("nope@x") is None

@@ -76,6 +76,19 @@ Gmail operations are inherently slower than IMAP because:
 - Label operations don't map cleanly to folder operations
 - Search across Gmail labels may scan differently than IMAP folders
 
+**Threading cost scales with folder count (not account size).** IMAP `SEARCH` runs
+against one selected mailbox at a time — there is no cross-folder search — so
+`get_thread`'s member collection probes each candidate folder in turn. Gmail exposes
+every label as an IMAP folder *and* copies each message into every label it carries, so
+a thread's members are scattered across many folders. The mitigation is All Mail: enable
+Gmail Settings → Labels → "All Mail" → *Show in IMAP*, and `_find_all_mail_folder`
+(`\All` SPECIAL-USE, RFC 6154) collapses the probe to that single mailbox holding one
+copy of everything. Without it, threading falls back to per-label probing. This is not
+Gmail-specific in principle: any IMAP account with dozens of folders pays the same
+per-folder cost — non-Gmail accounts are usually fast only because their mail is
+concentrated in a handful of folders (INBOX/Sent). See #415 and the `get_thread`
+performance callout in `docs/reference/TOOLS.md`.
+
 ## Profiling
 
 No formal benchmarking infrastructure yet (see issue #31). When added:

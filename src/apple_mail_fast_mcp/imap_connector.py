@@ -46,6 +46,7 @@ from .exceptions import (
     MailImapTrashNotFoundError,
     MailMessageNotFoundError,
 )
+from .utils import parse_rfc822_ids
 
 logger = logging.getLogger(__name__)
 
@@ -815,6 +816,48 @@ def _select_body_bytes(entry: dict[bytes, Any], body_key: bytes) -> bytes:
     return body_bytes or b""
 
 
+def _header_fields_bytes(entry: dict[bytes, Any]) -> bytes:
+    """Pull the ``HEADER.FIELDS`` section bytes out of a FETCH entry,
+    tolerating imapclient's ``BODY.PEEK[…]`` → ``BODY[…]`` key normalization
+    (#415)."""
+    for key, value in entry.items():
+        if (
+            isinstance(key, bytes)
+            and b"HEADER.FIELDS" in key
+            and isinstance(value, (bytes, bytearray))
+        ):
+            return bytes(value)
+    return b""
+
+
+def _anchor_from_fetch(entry: dict[bytes, Any]) -> dict[str, Any]:
+    """Build a ``get_thread`` anchor from a FETCH of ENVELOPE +
+    REFERENCES/IN-REPLY-TO headers (#415). References is not carried in the
+    IMAP ENVELOPE, so it is parsed from the fetched header block."""
+    envelope = entry.get(b"ENVELOPE")
+    rfc_id = ""
+    subject = ""
+    in_reply_to = ""
+    if envelope is not None:
+        rfc_id = _strip_brackets(_decode(envelope.message_id))
+        subject = _decode_mime_header(envelope.subject)
+        in_reply_to = _strip_brackets(_decode(envelope.in_reply_to))
+    references: list[str] = []
+    header_bytes = _header_fields_bytes(entry)
+    if header_bytes:
+        parsed = message_from_bytes(header_bytes, policy=policy.default)
+        references = parse_rfc822_ids(parsed.get("References", "") or "")
+        if not in_reply_to:
+            irt = parse_rfc822_ids(parsed.get("In-Reply-To", "") or "")
+            in_reply_to = irt[0] if irt else ""
+    return {
+        "rfc_message_id": rfc_id,
+        "subject": subject,
+        "in_reply_to": in_reply_to or None,
+        "references": references,
+    }
+
+
 def _payload_to_attachment_meta(fa: ForwardedAttachment) -> dict[str, Any]:
     """Map a ``draft_builder`` ForwardedAttachment tuple
     ``(filename, maintype, subtype, payload)`` to the IMAP attachment-metadata
@@ -1246,6 +1289,64 @@ class ImapConnector:
             return _bodystructure_extract_attachments(
                 entry.get(b"BODYSTRUCTURE")
             )
+
+    def resolve_anchor(self, message_id: str) -> dict[str, Any] | None:
+        """Resolve an RFC 5322 Message-ID to a get_thread anchor via
+        server-side, INDEXED ``SEARCH HEADER Message-ID`` (#415).
+
+        This exists so ``get_thread`` never runs Mail.app's UNINDEXED
+        all-mailbox ``whose message id`` scan, which loads every message and
+        freezes Mail on a large account (a 33k-message INBOX takes >100s).
+        IMAP ``SEARCH HEADER`` is server-indexed and instant.
+
+        Probes a BOUNDED folder set — Gmail's ``\\All`` (All Mail mirrors every
+        message) if present, else INBOX + Sent — and never lists/scans every
+        folder or message. Returns an anchor dict
+        ``{rfc_message_id, subject, in_reply_to, references}`` for the first
+        probed folder that contains the Message-ID, or ``None`` if not found.
+        The caller supplies ``account``.
+
+        Raises:
+            IMAPClientError / OSError / LoginError: connection/auth failures,
+                so the caller can fall through to the next account.
+        """
+        bracketed = _bracket_message_id(message_id)
+        with self._session() as client:
+            for folder in self._anchor_probe_folders(client):
+                try:
+                    client.select_folder(folder, readonly=True)
+                    uids = client.search(["HEADER", "Message-ID", bracketed])
+                except IMAPClientError as exc:
+                    logger.debug(
+                        "resolve_anchor: skipping %s (%s)", folder, exc
+                    )
+                    continue
+                if not uids:
+                    continue
+                try:
+                    fetched = client.fetch(
+                        [uids[0]],
+                        [
+                            b"ENVELOPE",
+                            b"BODY.PEEK[HEADER.FIELDS "
+                            b"(REFERENCES IN-REPLY-TO)]",
+                        ],
+                    )
+                except IMAPClientError:
+                    continue
+                entry = fetched.get(uids[0])
+                if entry:
+                    return _anchor_from_fetch(entry)
+        return None
+
+    def _anchor_probe_folders(self, client: IMAPClient) -> list[str]:
+        """Bounded folder set for #415 anchor resolution: Gmail All Mail
+        (mirrors every message) if present, else INBOX + Sent. Never lists
+        all folders — that's the cost we're removing."""
+        all_mail = self._find_all_mail_folder(client)
+        if all_mail:
+            return [all_mail]
+        return list(self._anchor_lookup_folders(client))
 
     def find_thread_members(
         self,

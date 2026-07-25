@@ -487,22 +487,22 @@ def _message_id_match_clause(message_id: str) -> str:
     lookup (save_attachments, get_thread anchor, …) without knowing which
     path produced it.
 
-    The numeric ``id`` branch is included ONLY when the input is all-digits:
-    comparing Mail's integer ``id`` against a non-numeric string raises inside
-    a ``whose`` filter and aborts the entire match — the bug that made
-    IMAP-sourced ids report "Message not found".
+    Performance / correctness (#415): an all-digit input is matched by the
+    numeric ``id`` ALONE. Mail's ``id`` is an integer and is INDEXED, so
+    ``whose id is N`` is instant; ``whose message id is`` is UNINDEXED and
+    forces Mail to load every message (~20s/mailbox), so it is emitted only for
+    a non-numeric RFC 5322 Message-ID (which always contains ``@``, hence is
+    never all-digits) where it is the sole matcher. Comparing the integer
+    ``id`` against a non-numeric string would also raise inside the ``whose``
+    filter and abort the match, which is the other reason the two never mix.
     """
     raw = sanitize_input(message_id)
     bare = raw[1:-1] if raw.startswith("<") and raw.endswith(">") else raw
+    if bare.isdigit():
+        return f"id is {bare}"
     bare_safe = escape_applescript_string(bare)
     brk_safe = escape_applescript_string(f"<{bare}>")
-    clauses = [
-        f'message id is "{bare_safe}"',
-        f'message id is "{brk_safe}"',
-    ]
-    if bare.isdigit():
-        clauses.insert(0, f"id is {bare}")
-    return " or ".join(clauses)
+    return f'message id is "{bare_safe}" or message id is "{brk_safe}"'
 
 
 # MCP-tool field name → Mail.app AppleScript `rule type` enum identifier.
@@ -2264,6 +2264,24 @@ class AppleMailConnector:
             body_format=body_format,
         )
 
+    def _reject_rfc_id_scan(self, message_id: str) -> None:
+        """Refuse to resolve an RFC 5322 Message-ID via the unindexed
+        all-mailbox ``whose message id`` AppleScript scan (#415).
+
+        That scan loads every message and freezes Mail on a large account. A
+        numeric id (no ``@``) is fine — it uses the indexed ``whose id is``.
+        For a Message-ID, the caller should pass ``account`` + ``mailbox``
+        (both are on every search result) to take the indexed IMAP fast path.
+        """
+        if "@" in message_id:
+            raise MailMessageNotFoundError(
+                f"Resolving message {message_id!r} by its RFC Message-ID "
+                "without an account+mailbox would scan every message and can "
+                "hang Mail on large accounts. Pass `account` and `mailbox` "
+                "(both are on your search result) to use the indexed IMAP "
+                "fast path. (#415)"
+            )
+
     def _get_message_applescript(
         self,
         message_id: str,
@@ -2276,6 +2294,7 @@ class AppleMailConnector:
         with a known account+mailbox should provide them to take the
         IMAP path instead.
         """
+        self._reject_rfc_id_scan(message_id)
         # Accept either the numeric AppleScript id or the RFC Message-ID that
         # the IMAP read path emits, so a search-result id resolves regardless
         # of which path produced it (issue F2).
@@ -2629,6 +2648,7 @@ class AppleMailConnector:
         ``dest_path`` via Mail.app's ``save`` command. Factored out so the
         byte-read path is unit-testable without a real Mail.app save.
         """
+        self._reject_rfc_id_scan(message_id)
         # Accept either the numeric AppleScript id or the RFC Message-ID from
         # the IMAP read path so a search-result id resolves either way (F2).
         id_match_clause = _message_id_match_clause(message_id)
@@ -2672,6 +2692,7 @@ class AppleMailConnector:
         Callers with a known account+mailbox should provide them to take
         the IMAP path instead.
         """
+        self._reject_rfc_id_scan(message_id)
         # Accept either the numeric AppleScript id or the RFC Message-ID from
         # the IMAP read path so a search-result id resolves either way (F2).
         id_match_clause = _message_id_match_clause(message_id)
@@ -2730,7 +2751,25 @@ class AppleMailConnector:
         Raises:
             MailMessageNotFoundError: If no message with the given id exists.
         """
-        anchor = self._resolve_thread_anchor_applescript(message_id)
+        # Resolve the anchor without ever running the unindexed all-mailbox
+        # `whose message id` scan, which loads every message and freezes Mail
+        # on a large account (#415).
+        if "@" in message_id:
+            # An RFC 5322 Message-ID (the id the IMAP read path returns).
+            # Resolve it server-side via indexed SEARCH HEADER Message-ID.
+            anchor = self._resolve_anchor_via_imap(message_id)
+            if anchor is None:
+                raise MailMessageNotFoundError(
+                    f"No message with Message-ID {message_id!r} found via "
+                    "IMAP. get_thread resolves RFC Message-IDs through IMAP — "
+                    "ensure the account has IMAP configured (`setup-imap`). "
+                    "The AppleScript fallback is intentionally not used for "
+                    "Message-IDs because it scans every message and can hang "
+                    "Mail on large accounts. (#415)"
+                )
+        else:
+            # Mail.app numeric internal id → indexed `whose id is N` (fast).
+            anchor = self._resolve_thread_anchor_applescript(message_id)
         anchor_account = cast(str, anchor["account"])
         if not self._imap_breaker_open(anchor_account):
             try:
@@ -2739,7 +2778,7 @@ class AppleMailConnector:
                 return result
             except _IMAP_FALLBACK_EXCS as exc:
                 self._log_imap_fallback(anchor_account, exc)
-                # fall through to AppleScript
+                # fall through to AppleScript (account-scoped, subject-filtered)
         return self._collect_thread_applescript(anchor)
 
     def _imap_get_thread(
@@ -2768,6 +2807,46 @@ class AppleMailConnector:
             anchor_rfc_message_id=cast(str, anchor["rfc_message_id"]),
             anchor_references=cast(list[str], anchor.get("references") or []),
         )
+
+    def _resolve_anchor_via_imap(
+        self, message_id: str,
+    ) -> dict[str, Any] | None:
+        """Resolve an RFC 5322 Message-ID to a get_thread anchor via IMAP,
+        across configured accounts (#415).
+
+        Tries each Mail.app account that has IMAP configured (a Keychain
+        app-password), skipping accounts with an open circuit breaker. The
+        per-account lookup (``ImapConnector.resolve_anchor``) is a server-side,
+        INDEXED ``SEARCH HEADER Message-ID`` over a bounded folder set — never
+        the unindexed all-mailbox AppleScript scan that freezes Mail. Returns
+        the anchor dict with ``account`` filled in for the first account whose
+        server contains the Message-ID, or ``None`` if none resolve it.
+        """
+        for acct in self.list_accounts():
+            account = cast(str, acct.get("name") or "")
+            if not account or self._imap_breaker_open(account):
+                continue
+            try:
+                host, port, email = self._resolve_imap_config(account)
+                if not host:
+                    continue
+                password = self._get_imap_password_with_fallback(
+                    account, email
+                )
+                imap = ImapConnector(
+                    host, port, email, password, pool=self._imap_pool
+                )
+                anchor = imap.resolve_anchor(message_id)
+            except _IMAP_FALLBACK_EXCS as exc:
+                # No creds / breaker / connect failure for this account — try
+                # the next one. (MailKeychainEntryNotFoundError is included.)
+                self._log_imap_fallback(account, exc)
+                continue
+            if anchor is not None:
+                self._imap_clear_breaker(account)
+                anchor["account"] = account
+                return anchor
+        return None
 
     def _imap_move_messages(
         self,
@@ -3483,6 +3562,7 @@ class AppleMailConnector:
             return {"saved": 0, "rejected": rejected}
 
         # Accept BOTH id spaces so a row from the IMAP search path pipes
+        self._reject_rfc_id_scan(message_id)
         # straight in (issue F2): the IMAP path returns `id` = the RFC 5322
         # Message-ID (bracketless), while the AppleScript path returns Mail's
         # internal numeric id. Match on either `id` (numeric) or `message id`
