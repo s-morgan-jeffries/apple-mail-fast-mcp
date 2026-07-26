@@ -79,6 +79,24 @@ model the lifecycle:
 If IMAP isn't configured/reachable, `get_thread` reconstructs the thread via AppleScript (subject
 prefilter + `In-Reply-To`/`References` header walk).
 
+### Anchor resolution
+
+The tiers above cover **member collection**, which is shared by both `message_id` forms. Resolving
+the *anchor* first is what differs, and it is bounded in both cases (#415, #419):
+
+| id form | Strategy | Cost |
+|---------|----------|------|
+| RFC Message-ID | `ImapConnector.resolve_anchor` — indexed `SEARCH HEADER Message-ID` over Gmail All Mail, else INBOX + Sent | one bounded IMAP probe; no AppleScript |
+| numeric | `_resolve_numeric_anchor_fast` — `whose id is N` against Mail's unified `inbox`, then `sent mailbox` | 2 indexed lookups, account-count-independent |
+| numeric (not in either) | `_resolve_thread_anchor_applescript` — every mailbox of every account | correctness backstop; ~2× the probe on a 33k Gmail account |
+
+Both numeric paths emit the same anchor record (`_anchor_record_applescript` /
+`_anchor_from_applescript_record` are shared), so the choice between them is purely a cost decision.
+The unified mailboxes are used because they aggregate across accounts and are locale-independent —
+the same reason `drafts mailbox` is used for draft lookups (#407). Note that the numeric anchor
+deliberately stays in AppleScript: routing it through `resolve_anchor` instead measured ~17s on a
+33k-message Gmail account, since `SEARCH HEADER` over a 33k All Mail is far from instant.
+
 ## Module responsibilities
 
 | Module | Role |

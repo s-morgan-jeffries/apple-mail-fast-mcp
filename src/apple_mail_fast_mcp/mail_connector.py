@@ -475,6 +475,57 @@ def _filter_imap_results_to_cutoff(
 _SLOW_SEARCH_THRESHOLD_SEC = 5.0
 
 
+def _anchor_record_applescript(msg_var: str, account_expr: str) -> str:
+    """AppleScript fragment building a ``get_thread`` anchor record from the
+    message in ``msg_var`` (account name read from ``account_expr``).
+
+    Shared by the bounded probe and the unbounded-walk backstop (#419) so the
+    two anchors cannot drift: ``get_thread`` chooses between them purely on
+    cost, which is only safe while they produce identical records.
+
+    ``missing value`` is coerced away here because NSJSONSerialization rejects
+    it outright — a single message with no subject would otherwise fail the
+    whole call.
+    """
+    return f'''
+                        set anchorInReplyTo to ""
+                        set anchorRefs to ""
+                        try
+                            repeat with h in headers of {msg_var}
+                                set hname to name of h
+                                if hname is "in-reply-to" then set anchorInReplyTo to (content of h)
+                                if hname is "references" then set anchorRefs to (content of h)
+                            end repeat
+                        end try
+                        set anchorAccount to ({account_expr})
+                        if anchorAccount is missing value then set anchorAccount to ""
+                        set anchorRfc to (message id of {msg_var})
+                        if anchorRfc is missing value then set anchorRfc to ""
+                        set anchorSubject to (subject of {msg_var})
+                        if anchorSubject is missing value then set anchorSubject to ""
+                        set anchorRecord to {{|found|:true, |account|:anchorAccount, |rfc_message_id|:anchorRfc, |subject|:anchorSubject, |in_reply_to|:anchorInReplyTo, |references_raw|:anchorRefs}}
+'''
+
+
+def _anchor_from_applescript_record(
+    raw: dict[str, Any], message_id: str
+) -> dict[str, Any]:
+    """Python half of :func:`_anchor_record_applescript` — normalize one
+    emitted anchor record into the dict ``get_thread`` consumes."""
+    from .utils import parse_rfc822_ids
+
+    in_reply_to_raw = raw.get("in_reply_to") or ""
+    references_raw = raw.get("references_raw") or ""
+    return {
+        "internal_id": message_id,
+        "account": cast(str, raw["account"]),
+        "rfc_message_id": cast(str, raw["rfc_message_id"]),
+        "subject": cast(str, raw["subject"]),
+        "in_reply_to": in_reply_to_raw or None,
+        "references": parse_rfc822_ids(references_raw),
+    }
+
+
 def _message_id_match_clause(message_id: str) -> str:
     """Build an AppleScript boolean (for a ``whose`` filter) that matches a
     message by EITHER Mail's numeric ``id`` OR its RFC 5322 ``message id``
@@ -2768,8 +2819,9 @@ class AppleMailConnector:
                     "Mail on large accounts. (#415)"
                 )
         else:
-            # Mail.app numeric internal id → indexed `whose id is N` (fast).
-            anchor = self._resolve_thread_anchor_applescript(message_id)
+            # Mail.app numeric internal id → bounded probe of the unified
+            # inbox/Sent, falling back to the all-mailbox walk (#419).
+            anchor = self._resolve_numeric_anchor(message_id)
         anchor_account = cast(str, anchor["account"])
         if not self._imap_breaker_open(anchor_account):
             try:
@@ -2847,6 +2899,19 @@ class AppleMailConnector:
                 anchor["account"] = account
                 return anchor
         return None
+
+    def _resolve_numeric_anchor(self, message_id: str) -> dict[str, Any]:
+        """Resolve a Mail.app numeric id to a get_thread anchor (#419).
+
+        Tries the bounded probe first and falls back to the unbounded
+        ``accounts x mailboxes`` walk only when the probe can't place the id.
+        Both produce the identical anchor dict, so this is purely a cost
+        reduction — see :meth:`_resolve_numeric_anchor_fast`.
+        """
+        return (
+            self._resolve_numeric_anchor_fast(message_id)
+            or self._resolve_thread_anchor_applescript(message_id)
+        )
 
     def _imap_move_messages(
         self,
@@ -3264,6 +3329,73 @@ class AppleMailConnector:
         anchor = self._resolve_thread_anchor_applescript(message_id)
         return self._collect_thread_applescript(anchor)
 
+    def _resolve_numeric_anchor_fast(
+        self, message_id: str,
+    ) -> dict[str, Any] | None:
+        """Bounded AppleScript probe resolving a numeric id to a thread
+        anchor (#419).
+
+        Returns the SAME anchor dict as
+        :meth:`_resolve_thread_anchor_applescript` — the two share the record
+        fragment — but reaches it without the ``accounts x mailboxes`` walk
+        that method pays. Instead of iterating every mailbox of every account
+        until the id turns up, it probes Mail.app's unified ``inbox`` then
+        ``sent mailbox``: application-level aggregations across all accounts,
+        so they need no per-account mailbox-name matching and are immune to
+        localized names (the property that made ``drafts mailbox`` the right
+        target in #407). That mirrors the bound ``_anchor_probe_folders``
+        already applies on the IMAP side.
+
+        The match uses ``_message_id_match_clause``, which for an all-digit id
+        emits Mail's INDEXED integer ``id is N`` (#415/#416).
+
+        Measured on a 33k-message Gmail account: 1.3s here vs 3.0s for the
+        full walk. (Handing the id to ``ImapConnector.resolve_anchor``
+        instead — the other obvious route to the same anchor — measured 17s
+        on that account, because ``SEARCH HEADER Message-ID`` over a 33k All
+        Mail is anything but instant. Hence AppleScript on both sides of this
+        branch.)
+
+        Returns:
+            The anchor dict, or ``None`` when the id is in neither probed
+            mailbox or the message can't be traced back to a named account.
+            ``None`` means "fall back to the unbounded walk", not "error" —
+            a genuinely nonexistent id is still reported by that walk, which
+            preserves the ``MailMessageNotFoundError`` contract.
+        """
+        id_match_clause = _message_id_match_clause(message_id)
+        anchor_record = _anchor_record_applescript(
+            "msgRef", "name of (account of (mailbox of msgRef))"
+        )
+        probe_body = f'''
+        tell application "Mail"
+            set msgRef to missing value
+            try
+                set msgRef to first message of inbox whose ({id_match_clause})
+            end try
+            if msgRef is missing value then
+                try
+                    set msgRef to first message of sent mailbox whose ({id_match_clause})
+                end try
+            end if
+
+            if msgRef is missing value then
+                set resultData to {{|found|:false}}
+            else
+{anchor_record}
+                set resultData to anchorRecord
+            end if
+        end tell
+        '''
+
+        probe_script = _wrap_as_json_script(probe_body, timeout=self.timeout)
+        raw = parse_applescript_json(self._run_applescript(probe_script))
+        if not isinstance(raw, dict) or not raw.get("found"):
+            return None
+        if not raw.get("account") or not raw.get("rfc_message_id"):
+            return None
+        return _anchor_from_applescript_record(raw, message_id)
+
     def _resolve_thread_anchor_applescript(
         self, message_id: str,
     ) -> dict[str, Any]:
@@ -3283,12 +3415,11 @@ class AppleMailConnector:
         Raises:
             MailMessageNotFoundError: If no message with the given id exists.
         """
-        from .utils import parse_rfc822_ids
-
         # Accept either the numeric AppleScript id or the RFC Message-ID that
         # the IMAP read path emits, so get_thread can anchor on a search
         # result id regardless of which path produced it (issue F2).
         id_match_clause = _message_id_match_clause(message_id)
+        anchor_record = _anchor_record_applescript("msg", "name of acc")
         anchor_body = f'''
         tell application "Mail"
             set anchorResult to missing value
@@ -3296,16 +3427,8 @@ class AppleMailConnector:
                 repeat with mb in mailboxes of acc
                     try
                         set msg to first message of mb whose ({id_match_clause})
-                        set anchorInReplyTo to ""
-                        set anchorRefs to ""
-                        try
-                            repeat with h in headers of msg
-                                set hname to name of h
-                                if hname is "in-reply-to" then set anchorInReplyTo to (content of h)
-                                if hname is "references" then set anchorRefs to (content of h)
-                            end repeat
-                        end try
-                        set resultData to {{|account|:(name of acc), |rfc_message_id|:(message id of msg), |subject|:(subject of msg), |in_reply_to|:anchorInReplyTo, |references_raw|:anchorRefs}}
+{anchor_record}
+                        set resultData to anchorRecord
                         set anchorResult to resultData
                         exit repeat
                     end try
@@ -3322,17 +3445,7 @@ class AppleMailConnector:
         anchor_script = _wrap_as_json_script(anchor_body, timeout=self.timeout)
         anchor_raw = self._run_applescript(anchor_script)
         raw = cast(dict[str, Any], parse_applescript_json(anchor_raw))
-
-        in_reply_to_raw = raw.get("in_reply_to") or ""
-        references_raw = raw.get("references_raw") or ""
-        return {
-            "internal_id": message_id,
-            "account": cast(str, raw["account"]),
-            "rfc_message_id": cast(str, raw["rfc_message_id"]),
-            "subject": cast(str, raw["subject"]),
-            "in_reply_to": in_reply_to_raw or None,
-            "references": parse_rfc822_ids(references_raw),
-        }
+        return _anchor_from_applescript_record(raw, message_id)
 
     def _collect_thread_applescript(
         self, anchor: dict[str, Any],

@@ -12,6 +12,7 @@ These tests require:
 Run with: MAIL_TEST_MODE=true MAIL_TEST_ACCOUNT=TestAccount pytest --run-integration
 """
 
+import statistics
 import time
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,10 @@ from apple_mail_fast_mcp.mail_connector import (
     _wrap_as_json_script,
     _wrap_with_timeout,
 )
-from apple_mail_fast_mcp.utils import parse_applescript_json
+from apple_mail_fast_mcp.utils import (
+    escape_applescript_string,
+    parse_applescript_json,
+)
 
 # Skip all integration tests by default
 # Run with: pytest --run-integration
@@ -50,6 +54,49 @@ def test_account() -> str:
     """
     import os
     return os.getenv("MAIL_TEST_ACCOUNT", "Gmail")
+
+
+def _newest_inbox_ids(
+    connector: AppleMailConnector, account: str
+) -> tuple[str, str] | None:
+    """Both id forms for one real message in ``account``'s inbox (#419).
+
+    Returns ``(numeric_id, rfc_message_id)``, or ``None`` if the inbox is
+    empty. ``search_messages`` can't provide this: it returns the numeric id
+    on the AppleScript path and the RFC Message-ID on the IMAP path, never
+    both, and the #419 tests need to drive the same message through each.
+
+    Reads Mail.app's unified ``inbox`` and filters by account, so it needs no
+    per-account mailbox-name matching (which is locale-dependent).
+    """
+    account_safe = escape_applescript_string(account)
+    body = f'''
+    tell application "Mail"
+        set resultData to {{}}
+        repeat with m in (messages of inbox)
+            set mAccount to ""
+            try
+                set mAccount to (name of (account of (mailbox of m)))
+            end try
+            if mAccount is "{account_safe}" then
+                set resultData to {{|numeric_id|:(id of m as text), |rfc_message_id|:(message id of m)}}
+                exit repeat
+            end if
+        end repeat
+    end tell
+    '''
+    raw = parse_applescript_json(
+        connector._run_applescript(
+            _wrap_as_json_script(body, timeout=connector.timeout)
+        )
+    )
+    if not isinstance(raw, dict):
+        return None
+    numeric_id = str(raw.get("numeric_id") or "")
+    rfc_message_id = str(raw.get("rfc_message_id") or "")
+    if not numeric_id or not rfc_message_id:
+        return None
+    return numeric_id, rfc_message_id
 
 
 class TestMailIntegration:
@@ -262,6 +309,119 @@ class TestMailIntegration:
             f"get_thread took {elapsed:.1f}s — the #415 unindexed "
             "`whose message id` scan has regressed (freezes Mail)."
         )
+
+    # --- #419: numeric-id anchor resolution ------------------------------
+    #
+    # The tests above take an id from search_messages, which on an
+    # IMAP-configured account is an RFC Message-ID — i.e. the already-fast
+    # path. These cover the NUMERIC id, whose anchor used to cost a full
+    # accounts x mailboxes AppleScript walk (~17s vs ~7.5s on a 33k Gmail).
+
+    def test_numeric_anchor_fast_probe_resolves_real_message(
+        self, connector: AppleMailConnector, test_account: str
+    ) -> None:
+        """#419: direct coverage for the bounded probe's AppleScript.
+
+        Unit tests mock _run_applescript and so cannot catch a bad script.
+        This exercises the three things the probe newly relies on against
+        real Mail: `whose id is N` against the unified `inbox`, walking
+        `account of (mailbox of msg)` back to an account name, and the JSON
+        record emission.
+
+        It also pins the invariant the whole change rests on: get_thread
+        chooses between the probe and the unbounded walk purely on cost, so
+        the two must return the SAME anchor.
+        """
+        ids = _newest_inbox_ids(connector, test_account)
+        if ids is None:
+            pytest.skip("test inbox has no messages")
+        numeric_id, rfc_message_id = ids
+
+        probe_anchor = connector._resolve_numeric_anchor_fast(numeric_id)
+
+        assert probe_anchor is not None, (
+            f"bounded probe failed to place numeric id {numeric_id} that "
+            "AppleScript just read out of the unified inbox"
+        )
+        assert probe_anchor["account"] == test_account
+        assert (
+            probe_anchor["rfc_message_id"].strip("<>")
+            == rfc_message_id.strip("<>")
+        )
+        walk_anchor = connector._resolve_thread_anchor_applescript(numeric_id)
+        assert probe_anchor == walk_anchor
+
+    def test_numeric_anchor_probe_beats_unbounded_walk(
+        self, connector: AppleMailConnector, test_account: str
+    ) -> None:
+        """#419 regression guard on the phase this issue actually changes.
+
+        Deliberately times ANCHOR RESOLUTION rather than whole-of-get_thread:
+        the rest of get_thread is IMAP member collection, which is shared by
+        both id formats, is untouched here, and on a large Gmail account
+        swings by tens of seconds with server-side throttling — noise that
+        would swamp the signal and make this test meaningless.
+
+        Medians of 3 to ride out per-call jitter. Measured on a 33k-message
+        Gmail account: ~1.3s probe vs ~3.0s walk.
+        """
+        ids = _newest_inbox_ids(connector, test_account)
+        if ids is None:
+            pytest.skip("test inbox has no messages")
+        numeric_id, _ = ids
+
+        def _median(fn: Any) -> float:
+            samples = []
+            for _ in range(3):
+                start = time.monotonic()
+                assert fn(numeric_id) is not None
+                samples.append(time.monotonic() - start)
+            return statistics.median(samples)
+
+        probe_s = _median(connector._resolve_numeric_anchor_fast)
+        walk_s = _median(connector._resolve_thread_anchor_applescript)
+
+        assert probe_s < walk_s, (
+            f"bounded probe ({probe_s:.2f}s) is no faster than the "
+            f"accounts x mailboxes walk ({walk_s:.2f}s) it replaced (#419)"
+        )
+        assert probe_s < 10.0, (
+            f"numeric anchor resolution took {probe_s:.1f}s — the #415 "
+            "freeze bound applies to the probe too."
+        )
+
+    def test_get_thread_numeric_and_rfc_anchors_agree(
+        self, connector: AppleMailConnector, test_account: str
+    ) -> None:
+        """#419 acceptance: 'threading results unchanged'.
+
+        Both id forms anchor on the same message, so they must return the
+        same member set. Member collection was always shared; this pins that
+        the numeric anchor still hands it an equivalent anchor.
+        """
+        from apple_mail_fast_mcp.exceptions import MailMessageNotFoundError
+
+        ids = _newest_inbox_ids(connector, test_account)
+        if ids is None:
+            pytest.skip("test inbox has no messages")
+        numeric_id, rfc_message_id = ids
+
+        by_numeric = connector.get_thread(numeric_id)
+        try:
+            by_rfc = connector.get_thread(rfc_message_id)
+        except MailMessageNotFoundError:
+            # The RFC form resolves its anchor over IMAP and has no
+            # AppleScript fallback by design (#415), so an unhealthy or
+            # throttled IMAP account leaves nothing to compare against.
+            pytest.skip("IMAP unavailable — cannot resolve the RFC anchor")
+
+        def _keys(thread: list[dict[str, Any]]) -> set[str]:
+            return {
+                str(m.get("rfc_message_id") or m["id"]).strip("<>")
+                for m in thread
+            }
+
+        assert _keys(by_numeric) == _keys(by_rfc)
 
     def test_get_message(
         self, connector: AppleMailConnector, test_account: str

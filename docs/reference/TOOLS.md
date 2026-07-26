@@ -254,6 +254,8 @@ Uses the connector's tiered IMAP threading dispatch (Tier 1 X-GM-THRID for Gmail
 > **⚡ Performance on large accounts (Gmail especially).** IMAP `SEARCH` runs on **one mailbox at a time** — there is no cross-folder search — so threading cost scales with **how many mailboxes must be checked**, not how many messages you have. A thread's messages are inherently spread across mailboxes (INBOX for received, Sent for replies, plus labels/folders).
 >
 > Gmail is the outlier: it exposes each **label** as a folder and files a copy of a message into *every* label it carries, and accounts routinely have dozens of labels. The shortcut is **All Mail**, which holds every message exactly once — so on Gmail, enable **Settings → Labels → All Mail → "Show in IMAP"** for fast threading (and to search all mail). With All Mail hidden, `get_thread` must walk every label-folder (one `SEARCH` each), which is slow on many-label accounts. Non-Gmail (true folder) accounts usually have a handful of folders with thread members concentrated in INBOX/Sent, so they stay fast without any special mailbox — though an account with genuinely dozens of folders would hit the same per-folder cost.
+>
+> The cost above is **member collection**, and it is identical for both `message_id` forms — they converge on the same tiered dispatch. **Anchor resolution** differs by form: an RFC Message-ID is resolved over IMAP (one indexed `SEARCH HEADER Message-ID`), while a numeric Mail.app id is resolved by AppleScript against Mail's unified `inbox`, then `sent mailbox` — bounded, and locale-independent. A numeric id that is in neither falls back to a scan of every mailbox of every account, which is correct but markedly slower (~3.0s vs ~1.3s on a 33k-message Gmail account, #419).
 
 **Examples:**
 

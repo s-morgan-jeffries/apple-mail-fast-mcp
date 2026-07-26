@@ -89,6 +89,23 @@ per-folder cost — non-Gmail accounts are usually fast only because their mail 
 concentrated in a handful of folders (INBOX/Sent). See #415 and the `get_thread`
 performance callout in `docs/reference/TOOLS.md`.
 
+**Bound the mailbox set on the AppleScript side too — with the unified mailboxes.**
+The same "don't visit every mailbox" rule applies to AppleScript lookups, and Mail.app
+gives you ready-made bounds: the application-level `inbox`, `sent mailbox`, and
+`drafts mailbox` aggregate the corresponding folder across *every* account, so probing
+them needs no per-account mailbox iteration and no name matching (which would break on
+localized names). `whose id is N` works against them, and `account of (mailbox of msg)`
+walks back to the owning account. `_resolve_numeric_anchor_fast` uses this to replace a
+`repeat with acc in accounts / repeat with mb in mailboxes of acc` scan: ~1.3s vs ~3.0s
+on a 33k-message Gmail account (#419). Keep the full walk as a not-found backstop.
+
+**Don't assume IMAP is the fast side.** Indexed does not mean instant at scale: on that
+same account `SEARCH HEADER Message-ID` over a 33k-message All Mail measured ~17s, so
+replacing the AppleScript anchor above with an IMAP lookup would have been ~13× *slower*,
+not faster. Measure per-phase against a real large account before moving work across the
+AppleScript/IMAP boundary — and re-measure, because Gmail's server-side latency swings
+by tens of seconds with throttling.
+
 ## Profiling
 
 No formal benchmarking infrastructure yet (see issue #31). When added:

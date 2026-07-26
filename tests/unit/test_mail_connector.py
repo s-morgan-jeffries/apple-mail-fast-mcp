@@ -1709,6 +1709,15 @@ class TestAppleMailConnector:
     @patch.object(AppleMailConnector, "_collect_thread_applescript")
     @patch.object(AppleMailConnector, "_imap_get_thread")
     @patch.object(AppleMailConnector, "_resolve_thread_anchor_applescript")
+    # #419: a numeric id now tries the bounded probe first. Force it to miss
+    # so these keep exercising the AppleScript-anchor -> member-collection
+    # delegation they were written for. (`new` is passed positionally, so no
+    # extra mock argument is injected into the signatures below.)
+    @patch.object(
+        AppleMailConnector,
+        "_resolve_numeric_anchor_fast",
+        lambda self, mid: None,
+    )
     def test_get_thread_uses_imap_on_success(
         self,
         mock_anchor: MagicMock,
@@ -1732,6 +1741,15 @@ class TestAppleMailConnector:
     @patch.object(AppleMailConnector, "_collect_thread_applescript")
     @patch.object(AppleMailConnector, "_imap_get_thread")
     @patch.object(AppleMailConnector, "_resolve_thread_anchor_applescript")
+    # #419: a numeric id now tries the bounded probe first. Force it to miss
+    # so these keep exercising the AppleScript-anchor -> member-collection
+    # delegation they were written for. (`new` is passed positionally, so no
+    # extra mock argument is injected into the signatures below.)
+    @patch.object(
+        AppleMailConnector,
+        "_resolve_numeric_anchor_fast",
+        lambda self, mid: None,
+    )
     def test_get_thread_falls_back_on_keychain_missing(
         self,
         mock_anchor: MagicMock,
@@ -1764,6 +1782,15 @@ class TestAppleMailConnector:
     @patch.object(AppleMailConnector, "_collect_thread_applescript")
     @patch.object(AppleMailConnector, "_imap_get_thread")
     @patch.object(AppleMailConnector, "_resolve_thread_anchor_applescript")
+    # #419: a numeric id now tries the bounded probe first. Force it to miss
+    # so these keep exercising the AppleScript-anchor -> member-collection
+    # delegation they were written for. (`new` is passed positionally, so no
+    # extra mock argument is injected into the signatures below.)
+    @patch.object(
+        AppleMailConnector,
+        "_resolve_numeric_anchor_fast",
+        lambda self, mid: None,
+    )
     def test_get_thread_falls_back_on_oserror_with_warning(
         self,
         mock_anchor: MagicMock,
@@ -1795,6 +1822,15 @@ class TestAppleMailConnector:
     @patch.object(AppleMailConnector, "_collect_thread_applescript")
     @patch.object(AppleMailConnector, "_imap_get_thread")
     @patch.object(AppleMailConnector, "_resolve_thread_anchor_applescript")
+    # #419: a numeric id now tries the bounded probe first. Force it to miss
+    # so these keep exercising the AppleScript-anchor -> member-collection
+    # delegation they were written for. (`new` is passed positionally, so no
+    # extra mock argument is injected into the signatures below.)
+    @patch.object(
+        AppleMailConnector,
+        "_resolve_numeric_anchor_fast",
+        lambda self, mid: None,
+    )
     def test_get_thread_falls_back_on_login_error(
         self,
         mock_anchor: MagicMock,
@@ -1818,6 +1854,15 @@ class TestAppleMailConnector:
     @patch.object(AppleMailConnector, "_collect_thread_applescript")
     @patch.object(AppleMailConnector, "_imap_get_thread")
     @patch.object(AppleMailConnector, "_resolve_thread_anchor_applescript")
+    # #419: a numeric id now tries the bounded probe first. Force it to miss
+    # so these keep exercising the AppleScript-anchor -> member-collection
+    # delegation they were written for. (`new` is passed positionally, so no
+    # extra mock argument is injected into the signatures below.)
+    @patch.object(
+        AppleMailConnector,
+        "_resolve_numeric_anchor_fast",
+        lambda self, mid: None,
+    )
     def test_get_thread_anchor_not_found_propagates(
         self,
         mock_anchor: MagicMock,
@@ -4317,9 +4362,13 @@ class TestAppleMailConnector:
         ]
         connector._get_thread_applescript("12345")
         anchor_script = mock_run.call_args_list[0][0][0]
-        # All record keys must be |quoted| per the v0.4.1 selector-collision rule.
-        assert "|rfc_message_id|:(message id of msg)" in anchor_script
-        assert "|subject|:(subject of msg)" in anchor_script
+        # All record keys must be |quoted| per the v0.4.1 selector-collision
+        # rule. Values go via locals so `missing value` can be coerced away
+        # before NSJSONSerialization sees them (#419).
+        assert "|rfc_message_id|:anchorRfc" in anchor_script
+        assert "|subject|:anchorSubject" in anchor_script
+        assert "set anchorRfc to (message id of msg)" in anchor_script
+        assert "set anchorSubject to (subject of msg)" in anchor_script
         # #415: a numeric input matches by the INDEXED integer `id` ONLY. The
         # unindexed `message id is` branches (which force Mail to load every
         # message) are dropped for all-digit ids — an RFC Message-ID always
@@ -8976,10 +9025,16 @@ class TestGetThreadNeverScansForRfcId:
             connector.get_thread("missing@x")
         assert scripts == []  # raised instead of scanning
 
-    def test_numeric_id_still_uses_applescript_anchor(
+    def test_numeric_id_falls_back_to_applescript_anchor_when_probe_misses(
         self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """#419: the unbounded accounts x mailboxes walk is retained as the
+        correctness backstop — it runs when the bounded probe can't place the
+        id (e.g. the message lives in neither the unified inbox nor Sent)."""
         seen: dict[str, str] = {}
+        monkeypatch.setattr(
+            connector, "_resolve_numeric_anchor_fast", lambda mid: None
+        )
         monkeypatch.setattr(
             connector, "_resolve_thread_anchor_applescript",
             lambda mid: seen.update(mid=mid) or {
@@ -8992,3 +9047,153 @@ class TestGetThreadNeverScansForRfcId:
         monkeypatch.setattr(connector, "_imap_get_thread", lambda anchor: [])
         connector.get_thread("12345")
         assert seen["mid"] == "12345"
+
+
+class TestNumericAnchorBoundedProbe:
+    """#419: a numeric id resolves its anchor from Mail.app's unified inbox /
+    sent mailbox instead of walking every mailbox of every account. The probe
+    returns the SAME anchor the walk does — the walk survives only as the
+    not-found backstop."""
+
+    FULL_ANCHOR_PAYLOAD = (
+        '{"found": true, "account": "Gmail", "rfc_message_id": "a@b",'
+        ' "subject": "S", "in_reply_to": "<parent@x>",'
+        ' "references_raw": "<root@x> <parent@x>"}'
+    )
+
+    @pytest.fixture
+    def connector(self) -> AppleMailConnector:
+        return AppleMailConnector(timeout=30)
+
+    @staticmethod
+    def _capture_scripts(
+        connector: AppleMailConnector,
+        monkeypatch: pytest.MonkeyPatch,
+        payload: str,
+    ) -> list[str]:
+        scripts: list[str] = []
+
+        def _run(script: str) -> str:
+            scripts.append(script)
+            return payload
+
+        monkeypatch.setattr(connector, "_run_applescript", _run)
+        return scripts
+
+    def test_probe_script_is_bounded(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        scripts = self._capture_scripts(
+            connector, monkeypatch, self.FULL_ANCHOR_PAYLOAD
+        )
+        connector._resolve_numeric_anchor_fast("12345")
+
+        assert len(scripts) == 1
+        script = scripts[0]
+        # Bounded to Mail.app's locale-independent unified mailboxes (#407).
+        assert "of inbox" in script
+        assert "sent mailbox" in script
+        # The cost #419 removes: the accounts x mailboxes walk.
+        assert "repeat with acc in accounts" not in script
+        assert "mailboxes of acc" not in script
+        # Indexed integer match, never the unindexed `message id is` (#415).
+        assert "id is 12345" in script
+        assert "message id is" not in script
+
+    def test_probe_returns_the_same_anchor_shape_as_the_walk(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """get_thread picks between probe and walk purely on cost, so the two
+        must be interchangeable — same keys, same normalization."""
+        self._capture_scripts(
+            connector, monkeypatch, self.FULL_ANCHOR_PAYLOAD
+        )
+        probe_anchor = connector._resolve_numeric_anchor_fast("12345")
+
+        self._capture_scripts(
+            connector, monkeypatch, self.FULL_ANCHOR_PAYLOAD
+        )
+        walk_anchor = connector._resolve_thread_anchor_applescript("12345")
+
+        assert probe_anchor == walk_anchor
+        assert probe_anchor == {
+            "internal_id": "12345",
+            "account": "Gmail",
+            "rfc_message_id": "a@b",
+            "subject": "S",
+            "in_reply_to": "<parent@x>",
+            "references": ["root@x", "parent@x"],
+        }
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            '{"found": false}',
+            '{"found": true, "account": "", "rfc_message_id": "a@b"}',
+            '{"found": true, "account": "Gmail", "rfc_message_id": ""}',
+        ],
+        ids=["not-found", "no-account", "no-message-id"],
+    )
+    def test_probe_returns_none_without_raising(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch,
+        payload: str,
+    ) -> None:
+        """A miss is not an error — the caller falls back to the full walk,
+        which is what still raises MailMessageNotFoundError for a bad id."""
+        self._capture_scripts(connector, monkeypatch, payload)
+        assert connector._resolve_numeric_anchor_fast("12345") is None
+
+    def test_numeric_id_uses_probe_and_never_walks(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        anchor = {
+            "internal_id": "12345", "account": "Gmail",
+            "rfc_message_id": "a@b", "subject": "S",
+            "in_reply_to": None, "references": [],
+        }
+        monkeypatch.setattr(
+            connector, "_resolve_numeric_anchor_fast", lambda mid: dict(anchor)
+        )
+
+        def _never(mid: str) -> dict[str, Any]:
+            raise AssertionError("the accounts x mailboxes walk must not run")
+
+        monkeypatch.setattr(
+            connector, "_resolve_thread_anchor_applescript", _never
+        )
+        monkeypatch.setattr(connector, "_imap_breaker_open", lambda a: False)
+        monkeypatch.setattr(connector, "_imap_clear_breaker", lambda a: None)
+        anchors: list[dict[str, Any]] = []
+        monkeypatch.setattr(
+            connector, "_imap_get_thread",
+            lambda a: anchors.append(a) or [],
+        )
+
+        connector.get_thread("12345")
+        assert anchors == [anchor]
+
+    def test_probe_adds_no_imap_round_trip(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The anchor stays entirely in AppleScript. Routing it through
+        ImapConnector.resolve_anchor instead measured 17s on the 33k Gmail
+        account (SEARCH HEADER over All Mail) — slower than the walk it
+        replaced."""
+        monkeypatch.setattr(
+            connector, "_resolve_numeric_anchor_fast",
+            lambda mid: {
+                "internal_id": mid, "account": "Gmail",
+                "rfc_message_id": "a@b", "subject": "S",
+                "in_reply_to": None, "references": [],
+            },
+        )
+
+        def _never(mid: str) -> dict[str, Any]:
+            raise AssertionError("numeric anchor must not hit IMAP")
+
+        monkeypatch.setattr(connector, "_resolve_anchor_via_imap", _never)
+        monkeypatch.setattr(connector, "_imap_breaker_open", lambda a: False)
+        monkeypatch.setattr(connector, "_imap_clear_breaker", lambda a: None)
+        monkeypatch.setattr(connector, "_imap_get_thread", lambda a: [])
+
+        connector.get_thread("12345")
