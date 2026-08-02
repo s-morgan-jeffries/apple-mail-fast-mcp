@@ -2567,6 +2567,88 @@ class TestTemplateIntegration:
         assert today in rendered["body"]
 
 
+class TestAnchorLookupIncompleteIntegration:
+    """#425: a failed probe must never be reported as a missing message.
+
+    Unit tests mock the whole IMAP layer, so they can prove the branch is
+    wired but not that it holds against the real multi-account resolution
+    path. These drive the real connector with a real Message-ID and only
+    simulate the failure the network actually produces (socket timeout →
+    OSError, which is a member of ``_IMAP_FALLBACK_EXCS``).
+    """
+
+    def _real_rfc_id(
+        self, connector: AppleMailConnector, test_account: str
+    ) -> str:
+        rows = connector.search_messages(
+            account=test_account, mailbox="INBOX", limit=1
+        )
+        if not rows:
+            pytest.skip(f"{test_account} INBOX has no messages to test against")
+        rfc_id = rows[0].get("rfc_message_id") or rows[0].get("id")
+        if not rfc_id or "@" not in rfc_id:
+            pytest.skip(
+                "test_account is not on the IMAP path (no RFC Message-ID)"
+            )
+        return str(rfc_id)
+
+    def test_real_message_never_reported_missing_when_probes_fail(
+        self,
+        connector: AppleMailConnector,
+        test_account: str,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        """The exact #425 failure: the message EXISTS, every probe times out.
+
+        Before the fix this raised MailMessageNotFoundError and told the user
+        to run `setup-imap` on a correctly-configured account.
+        """
+        from apple_mail_fast_mcp.exceptions import (
+            MailAnchorLookupIncompleteError,
+            MailMessageNotFoundError,
+        )
+        from apple_mail_fast_mcp.imap_connector import ImapConnector
+
+        rfc_id = self._real_rfc_id(connector, test_account)
+
+        def _timeout(self: ImapConnector, message_id: str) -> None:
+            raise OSError("cannot read from timed out object")
+
+        monkeypatch.setattr(ImapConnector, "resolve_anchor", _timeout)
+
+        with pytest.raises(MailAnchorLookupIncompleteError) as exc:
+            connector.get_thread(rfc_id)
+        # Regression assertion: the old behavior is specifically excluded.
+        assert not isinstance(exc.value, MailMessageNotFoundError)
+        assert "setup-imap" not in str(exc.value)
+
+    def test_one_failing_account_does_not_break_a_resolvable_anchor(
+        self,
+        connector: AppleMailConnector,
+        test_account: str,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        """Availability is preserved: a probe failure on an account we did not
+        need must not prevent the anchor resolving where it really lives."""
+        from apple_mail_fast_mcp.imap_connector import ImapConnector
+
+        rfc_id = self._real_rfc_id(connector, test_account)
+        host, _port, _email = connector._resolve_imap_config(test_account)
+        original = ImapConnector.resolve_anchor
+
+        def _fail_other_hosts(
+            self: ImapConnector, message_id: str
+        ) -> dict[str, Any] | None:
+            if getattr(self, "_host", None) != host:
+                raise OSError("simulated timeout on an unrelated account")
+            return original(self, message_id)
+
+        monkeypatch.setattr(ImapConnector, "resolve_anchor", _fail_other_hosts)
+
+        thread = connector.get_thread(rfc_id)
+        assert isinstance(thread, list) and len(thread) >= 1
+
+
 class TestFindMessageByMessageIdIntegration:
     """Real-Mail.app round-trip for ``find_message_by_message_id``.
 

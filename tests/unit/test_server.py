@@ -1975,6 +1975,29 @@ class TestGetThread:
         assert result["error_type"] == "unknown"
         assert "boom" in result["error"]
 
+    def test_incomplete_lookup_is_its_own_retryable_error_type(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        """#425: an unchecked account must not read as "no such message".
+        MCP callers need to tell retry-worthy from definitive."""
+        from apple_mail_fast_mcp.exceptions import (
+            MailAnchorLookupIncompleteError,
+        )
+
+        mock_mail.get_thread.side_effect = MailAnchorLookupIncompleteError(
+            "the IMAP probe failed for Gmail"
+        )
+
+        result = get_thread("real@x")
+
+        assert result["success"] is False
+        assert result["error_type"] == "anchor_lookup_incomplete"
+        assert result["retryable"] is True
+        assert "Gmail" in result["error"]
+        # The misleading remediation must not survive into the tool response.
+        assert "setup-imap" not in result["error"]
+        mock_logger.log_operation.assert_not_called()
+
 
 class TestGetStatistics:
     """#378: consolidated inbox-stats aggregation over search_messages."""

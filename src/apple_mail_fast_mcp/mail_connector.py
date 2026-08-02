@@ -31,6 +31,7 @@ from .draft_builder import (
 from .drafts import _validate_draft_id
 from .exceptions import (
     MailAccountNotFoundError,
+    MailAnchorLookupIncompleteError,
     MailAppleScriptError,
     MailAttachmentIndexError,
     MailAttachmentTooLargeError,
@@ -2872,8 +2873,19 @@ class AppleMailConnector:
         INDEXED ``SEARCH HEADER Message-ID`` over a bounded folder set — never
         the unindexed all-mailbox AppleScript scan that freezes Mail. Returns
         the anchor dict with ``account`` filled in for the first account whose
-        server contains the Message-ID, or ``None`` if none resolve it.
+        server contains the Message-ID, or ``None`` if every account gave a
+        definitive "not here".
+
+        Raises:
+            MailAnchorLookupIncompleteError: No account resolved the anchor AND
+                at least one probe *failed* rather than answering — so absence
+                was never established. Returning None here would surface as
+                "no such message" for a message that exists (#425).
         """
+        # Accounts whose probe failed: we could not rule them out. Kept
+        # separate from a clean empty SEARCH result, which genuinely does
+        # rule an account out. (#425)
+        indeterminate: list[str] = []
         for acct in self.list_accounts():
             account = cast(str, acct.get("name") or "")
             if not account or self._imap_breaker_open(account):
@@ -2889,15 +2901,31 @@ class AppleMailConnector:
                     host, port, email, password, pool=self._imap_pool
                 )
                 anchor = imap.resolve_anchor(message_id)
-            except _IMAP_FALLBACK_EXCS as exc:
-                # No creds / breaker / connect failure for this account — try
-                # the next one. (MailKeychainEntryNotFoundError is included.)
+            except MailKeychainEntryNotFoundError as exc:
+                # Benign opt-out: the user has not configured IMAP for this
+                # account. Stable, not transient — not indeterminate.
                 self._log_imap_fallback(account, exc)
+                continue
+            except _IMAP_FALLBACK_EXCS as exc:
+                # Timeout / connect failure / rejected credentials. This
+                # account was NOT checked; remember that before moving on.
+                self._log_imap_fallback(account, exc)
+                indeterminate.append(account)
                 continue
             if anchor is not None:
                 self._imap_clear_breaker(account)
                 anchor["account"] = account
                 return anchor
+        if indeterminate:
+            raise MailAnchorLookupIncompleteError(
+                f"Could not determine whether Message-ID {message_id!r} "
+                f"exists: the IMAP probe failed for "
+                f"{', '.join(sorted(indeterminate))} "
+                f"({len(indeterminate)} of the configured accounts), so those "
+                "accounts were never checked. This is usually a transient "
+                "network timeout — retry the request. The message may well "
+                "exist."
+            )
         return None
 
     def _resolve_numeric_anchor(self, message_id: str) -> dict[str, Any]:

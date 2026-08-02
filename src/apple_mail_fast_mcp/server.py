@@ -18,6 +18,7 @@ from pydantic import BeforeValidator
 from .drafts import DraftStateStore, SeedRecord
 from .exceptions import (
     MailAccountNotFoundError,
+    MailAnchorLookupIncompleteError,
     MailAppleScriptError,
     MailAttachmentIndexError,
     MailAttachmentTooLargeError,
@@ -1556,6 +1557,16 @@ def get_thread(message_id: str) -> dict[str, Any]:
             "count": len(thread),
         }
 
+    except MailAnchorLookupIncompleteError as e:
+        # #425: distinct from message_not_found on purpose — the message may
+        # exist; we just could not check every account. Retryable.
+        logger.error(f"Thread anchor lookup incomplete: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "error_type": "anchor_lookup_incomplete",
+            "retryable": True,
+        }
     except MailMessageNotFoundError as e:
         logger.error(f"Message not found: {e}")
         return {

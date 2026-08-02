@@ -91,6 +91,31 @@ class MailMessageNotFoundError(MailError):
     pass
 
 
+class MailAnchorLookupIncompleteError(MailError):
+    """A thread anchor could not be located, but at least one account could
+    not actually be checked — so absence was never established. (#425)
+
+    ``get_thread`` resolves an RFC Message-ID by probing each IMAP-configured
+    account in turn. A probe that returns no match is a definitive "this
+    account does not have it"; a probe that *fails* (socket timeout, connect
+    error, rejected credentials) tells us nothing. Reporting the second case
+    as ``MailMessageNotFoundError`` is a false negative on a real message, and
+    sends the user to re-run ``setup-imap`` on an account that is configured
+    correctly.
+
+    Deliberately NOT a subclass of MailMessageNotFoundError: callers should be
+    able to tell "retry this" from "give up". Deliberately not in
+    ``_IMAP_FALLBACK_EXCS`` either — falling back to the unindexed AppleScript
+    scan is exactly what #415 forbids.
+
+    A missing Keychain entry does not count: that is the expected, stable
+    "user has not opted in to IMAP for this account" state, not a transient
+    failure.
+    """
+
+    pass
+
+
 class MailAppleScriptError(MailError):
     """AppleScript execution failed."""
 

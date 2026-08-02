@@ -13,6 +13,7 @@ from imapclient.exceptions import LoginError
 
 from apple_mail_fast_mcp.exceptions import (
     MailAccountNotFoundError,
+    MailAnchorLookupIncompleteError,
     MailAppleScriptError,
     MailDraftInvalidIdError,
     MailDraftNotFoundError,
@@ -8979,6 +8980,142 @@ class TestResolveAnchorViaImap:
         assert connector._resolve_anchor_via_imap("nope@x") is None
 
 
+class TestResolveAnchorIndeterminate:
+    """#425: a probe that FAILS is not the same as a probe that says "absent".
+
+    `_IMAP_FALLBACK_EXCS` includes OSError, so a socket timeout on the account
+    that actually holds the Message-ID used to be swallowed by `continue`,
+    exhaust the remaining accounts, return None, and surface to the user as
+    `MailMessageNotFoundError` — a false negative on a real message, with
+    remediation advice (`setup-imap`) that cannot help.
+    """
+
+    @pytest.fixture
+    def connector(self) -> AppleMailConnector:
+        return AppleMailConnector(timeout=30)
+
+    @staticmethod
+    def _imap_by_account(behavior):
+        """Factory keyed on the host, which the tests build from the account
+        name. `behavior` returns an anchor dict, None, or raises."""
+        def _factory(host, port, email, password, pool=None):
+            m = MagicMock()
+            m.resolve_anchor.side_effect = lambda mid: behavior(host)
+            return m
+        return _factory
+
+    def _wire(self, connector, monkeypatch, accounts, behavior, pwd=None):
+        monkeypatch.setattr(
+            connector, "list_accounts", lambda: [{"name": a} for a in accounts]
+        )
+        monkeypatch.setattr(connector, "_imap_breaker_open", lambda a: False)
+        monkeypatch.setattr(connector, "_imap_clear_breaker", lambda a: None)
+        monkeypatch.setattr(connector, "_log_imap_fallback", lambda a, e: None)
+        monkeypatch.setattr(
+            connector, "_resolve_imap_config",
+            lambda a: (f"imap.{a}", 993, f"{a}@x"),
+        )
+        monkeypatch.setattr(
+            connector, "_get_imap_password_with_fallback",
+            pwd or (lambda a, e: "pw"),
+        )
+        monkeypatch.setattr(
+            "apple_mail_fast_mcp.mail_connector.ImapConnector",
+            self._imap_by_account(behavior),
+        )
+
+    def test_timeout_with_no_match_raises_incomplete_not_not_found(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The #425 bug: one account times out, another is a definitive miss.
+        We do NOT know the message is absent, so we must not say so."""
+        def _behavior(host: str):
+            if "Gmail" in host:
+                raise OSError("cannot read from timed out object")
+            return None
+
+        self._wire(connector, monkeypatch, ["iCloud", "Gmail"], _behavior)
+        with pytest.raises(MailAnchorLookupIncompleteError):
+            connector._resolve_anchor_via_imap("real@x")
+
+    def test_incomplete_error_names_the_unchecked_account(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The message must point at the real problem, not at `setup-imap`."""
+        def _behavior(host: str):
+            if "Gmail" in host:
+                raise OSError("cannot read from timed out object")
+            return None
+
+        self._wire(connector, monkeypatch, ["iCloud", "Gmail"], _behavior)
+        with pytest.raises(MailAnchorLookupIncompleteError) as exc:
+            connector._resolve_anchor_via_imap("real@x")
+        assert "Gmail" in str(exc.value)
+        assert "setup-imap" not in str(exc.value)
+
+    def test_hit_after_a_failed_probe_still_resolves(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failure on an account we did not need must not break a lookup
+        that succeeds elsewhere — availability is preserved."""
+        def _behavior(host: str):
+            if "iCloud" in host:
+                raise OSError("timed out")
+            return {"rfc_message_id": "abc@x", "references": [],
+                    "subject": "Hi", "in_reply_to": None}
+
+        self._wire(connector, monkeypatch, ["iCloud", "Gmail"], _behavior)
+        anchor = connector._resolve_anchor_via_imap("abc@x")
+        assert anchor is not None
+        assert anchor["account"] == "Gmail"
+
+    def test_all_definitive_misses_still_return_none(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every account answered "absent" — that IS a real not-found, and the
+        existing MailMessageNotFoundError behavior must be preserved."""
+        self._wire(connector, monkeypatch, ["iCloud", "Gmail"], lambda h: None)
+        assert connector._resolve_anchor_via_imap("nope@x") is None
+
+    def test_keychain_optout_is_definitive_not_indeterminate(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No Keychain entry is the expected, stable "user has not opted in to
+        IMAP" state — not a transient failure. Treating it as indeterminate
+        would fire this error for everyone with one non-IMAP account."""
+        def _pwd(a: str, e: str) -> str:
+            if a == "NoCreds":
+                raise MailKeychainEntryNotFoundError("no opt-in")
+            return "pw"
+
+        self._wire(
+            connector, monkeypatch, ["NoCreds", "Gmail"],
+            lambda h: None, pwd=_pwd,
+        )
+        assert connector._resolve_anchor_via_imap("nope@x") is None
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            OSError("timed out"),
+            LoginError("credentials rejected"),
+            MailKeychainAccessDeniedError("ACL denied"),
+        ],
+    )
+    def test_transient_and_auth_failures_are_indeterminate(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch,
+        exc: Exception,
+    ) -> None:
+        """Anything that isn't a clean "absent" answer or a benign opt-out
+        leaves us unable to rule the account out."""
+        def _behavior(host: str):
+            raise exc
+
+        self._wire(connector, monkeypatch, ["Gmail"], _behavior)
+        with pytest.raises(MailAnchorLookupIncompleteError):
+            connector._resolve_anchor_via_imap("real@x")
+
+
 class TestGetThreadNeverScansForRfcId:
     """#415: an RFC Message-ID anchor resolves via IMAP; get_thread must NEVER
     run the unindexed AppleScript scan for it."""
@@ -9024,6 +9161,30 @@ class TestGetThreadNeverScansForRfcId:
         with pytest.raises(MailMessageNotFoundError):
             connector.get_thread("missing@x")
         assert scripts == []  # raised instead of scanning
+
+    def test_incomplete_lookup_propagates_not_masked_as_not_found(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#425: get_thread must not collapse "we couldn't check" into "no such
+        message". MailAnchorLookupIncompleteError is not a subclass of
+        MailMessageNotFoundError, so callers can distinguish retry from give-up.
+        """
+        scripts: list[str] = []
+        monkeypatch.setattr(
+            connector, "_run_applescript",
+            lambda s: scripts.append(s) or "",
+        )
+
+        def _raise(mid: str) -> None:
+            raise MailAnchorLookupIncompleteError("Gmail could not be checked")
+
+        monkeypatch.setattr(connector, "_resolve_anchor_via_imap", _raise)
+        with pytest.raises(MailAnchorLookupIncompleteError):
+            connector.get_thread("real@x")
+        assert not issubclass(
+            MailAnchorLookupIncompleteError, MailMessageNotFoundError
+        )
+        assert scripts == []  # still no unindexed scan (#415 invariant holds)
 
     def test_numeric_id_falls_back_to_applescript_anchor_when_probe_misses(
         self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
