@@ -289,10 +289,24 @@ class TestMailIntegration:
 
         The bug: a numeric id emitted `message id is "N"` branches (unindexed,
         ~20s/mailbox) across every account × mailbox, and an RFC id fell through
-        to the same AppleScript scan — either wedged Mail's UI for >100s. Both
-        paths are now indexed / IMAP-resolved, so any real anchor must resolve
-        and collect in well under the freeze threshold. A run over ~10s means
-        the scan has crept back; treat it as a hard FAILURE, not a slow test.
+        to the same AppleScript scan — either wedged Mail's UI for >100s.
+
+        Bound re-aimed in #420. The previous version asserted <10s and blamed
+        any breach on the `whose message id` scan. Both were wrong:
+
+        - **Wrong cause.** Measured on a 61,880-message Gmail account, the
+          IMAP primitives are sub-second (`SEARCH HEADER Message-ID` 0.14s,
+          `SELECT` 0.21s, `SEARCH X-GM-THRID` 0.13s). The cost is orchestration
+          — one AppleScript config resolve, Keychain read, connect and login
+          per account, repeated until the anchor's account is reached. Pointing
+          at the scan sent the next reader hunting a regression that isn't there.
+        - **Wrong bound.** Steady state measures ~7.5s median with occasional
+          ~10.7s runs, so 10s flaked on ordinary network variance.
+
+        25s sits above observed variance, below the >100s freeze this actually
+        guards against, and below `OPERATION_TIMEOUT_S` (30s) — so a genuine
+        IMAP timeout takes the degraded-result branch below instead of being
+        misreported here as a code regression.
         """
         matches = connector.search_messages(
             account=test_account, mailbox="INBOX", limit=1
@@ -301,13 +315,26 @@ class TestMailIntegration:
             pytest.skip("test inbox has no messages")
 
         start = time.monotonic()
-        thread = connector.get_thread(matches[0]["id"])
+        thread, degraded_reason = connector._get_thread_with_status(
+            matches[0]["id"]
+        )
         elapsed = time.monotonic() - start
 
         assert isinstance(thread, list) and len(thread) >= 1
-        assert elapsed < 10.0, (
-            f"get_thread took {elapsed:.1f}s — the #415 unindexed "
-            "`whose message id` scan has regressed (freezes Mail)."
+        if degraded_reason is not None:
+            # The IMAP path did not complete, so this run timed the AppleScript
+            # fallback, not the thing under test. A transient stall is not a
+            # code regression — #420 is precisely about not conflating them.
+            pytest.skip(
+                f"IMAP path degraded ({degraded_reason}) after {elapsed:.1f}s "
+                "— nothing to assert about the indexed path on this run"
+            )
+        assert elapsed < 25.0, (
+            f"get_thread took {elapsed:.1f}s on the non-degraded IMAP path. "
+            "The indexed primitives are sub-second, so this is orchestration "
+            "overhead — check for a re-introduced per-account AppleScript "
+            "config resolve, Keychain read, or duplicate connect/login "
+            "(#420), or an unindexed scan creeping back (#415)."
         )
 
     # --- #419: numeric-id anchor resolution ------------------------------
@@ -2647,6 +2674,64 @@ class TestAnchorLookupIncompleteIntegration:
 
         thread = connector.get_thread(rfc_id)
         assert isinstance(thread, list) and len(thread) >= 1
+
+
+class TestGetThreadPartialFlagIntegration:
+    """#420: a degraded thread must announce itself against real Mail.
+
+    Unit tests prove the branch is wired. This proves the AppleScript fallback
+    actually produces a usable result AND reports itself as partial when the
+    IMAP path is knocked out mid-call — the scenario where users on large
+    accounts were silently handed a truncated conversation.
+    """
+
+    def test_forced_imap_failure_yields_a_flagged_partial_thread(
+        self,
+        connector: AppleMailConnector,
+        test_account: str,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        from apple_mail_fast_mcp.imap_connector import ImapConnector
+
+        rows = connector.search_messages(
+            account=test_account, mailbox="INBOX", limit=1
+        )
+        if not rows:
+            pytest.skip(f"{test_account} INBOX has no messages")
+        anchor_id = rows[0].get("rfc_message_id") or rows[0].get("id")
+        if not anchor_id:
+            pytest.skip("search_messages row carries no usable id")
+
+        # Let anchor resolution succeed, then fail collection — exactly the
+        # shape of the real 30s OPERATION_TIMEOUT_S stall.
+        def _timeout(self: ImapConnector, **kwargs: Any) -> None:
+            raise OSError("cannot read from timed out object")
+
+        monkeypatch.setattr(ImapConnector, "find_thread_members", _timeout)
+
+        thread, reason = connector._get_thread_with_status(str(anchor_id))
+
+        assert isinstance(thread, list) and len(thread) >= 1
+        assert reason == "imap_timeout", (
+            f"degraded run reported {reason!r}; a truncated thread must be "
+            "distinguishable from a complete one"
+        )
+
+    def test_healthy_run_reports_complete(
+        self, connector: AppleMailConnector, test_account: str
+    ) -> None:
+        """The flag must not cry wolf — a normal run reports no degradation."""
+        rows = connector.search_messages(
+            account=test_account, mailbox="INBOX", limit=1
+        )
+        if not rows:
+            pytest.skip(f"{test_account} INBOX has no messages")
+        anchor_id = rows[0].get("rfc_message_id") or rows[0].get("id")
+
+        thread, reason = connector._get_thread_with_status(str(anchor_id))
+        assert isinstance(thread, list) and len(thread) >= 1
+        if reason is not None:
+            pytest.skip(f"IMAP genuinely unavailable this run ({reason})")
 
 
 class TestFindMessageByMessageIdIntegration:

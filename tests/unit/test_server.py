@@ -1937,25 +1937,46 @@ class TestGetThread:
     def test_success_returns_thread_and_logs(
         self, mock_mail: MagicMock, mock_logger: MagicMock
     ) -> None:
-        mock_mail.get_thread.return_value = [
+        mock_mail._get_thread_with_status.return_value = ([
             {"id": "1", "subject": "Q3", "sender": "a@b", "date_received": "Mon", "read_status": True, "flagged": False},
             {"id": "2", "subject": "Re: Q3", "sender": "c@d", "date_received": "Tue", "read_status": False, "flagged": False},
-        ]
+        ], None)
 
         result = get_thread("1")
 
         assert result["success"] is True
         assert result["count"] == 2
         assert len(result["thread"]) == 2
-        mock_mail.get_thread.assert_called_once_with("1")
+        # #420: a complete result must say so explicitly, not by omission.
+        assert result["partial"] is False
+        assert "partial_reason" not in result
+        mock_mail._get_thread_with_status.assert_called_once_with("1")
         mock_logger.log_operation.assert_called_once_with(
             "get_thread", {"message_id": "1"}, "success"
         )
 
+    def test_degraded_result_is_flagged_partial_with_a_reason(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        """#420: the fallback can return a smaller thread than IMAP would.
+        The call still succeeds — it just must not claim completeness."""
+        mock_mail._get_thread_with_status.return_value = (
+            [{"id": "1", "subject": "Q3", "sender": "a@b",
+              "date_received": "Mon", "read_status": True, "flagged": False}],
+            "imap_timeout",
+        )
+
+        result = get_thread("1")
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["partial"] is True
+        assert result["partial_reason"] == "imap_timeout"
+
     def test_message_not_found_maps_to_message_not_found(
         self, mock_mail: MagicMock, mock_logger: MagicMock
     ) -> None:
-        mock_mail.get_thread.side_effect = MailMessageNotFoundError("nope")
+        mock_mail._get_thread_with_status.side_effect = MailMessageNotFoundError("nope")
 
         result = get_thread("nope")
 
@@ -1967,7 +1988,7 @@ class TestGetThread:
     def test_unexpected_exception_maps_to_unknown(
         self, mock_mail: MagicMock, mock_logger: MagicMock
     ) -> None:
-        mock_mail.get_thread.side_effect = RuntimeError("boom")
+        mock_mail._get_thread_with_status.side_effect = RuntimeError("boom")
 
         result = get_thread("1")
 
@@ -1984,7 +2005,7 @@ class TestGetThread:
             MailAnchorLookupIncompleteError,
         )
 
-        mock_mail.get_thread.side_effect = MailAnchorLookupIncompleteError(
+        mock_mail._get_thread_with_status.side_effect = MailAnchorLookupIncompleteError(
             "the IMAP probe failed for Gmail"
         )
 

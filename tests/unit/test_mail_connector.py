@@ -9116,6 +9116,199 @@ class TestResolveAnchorIndeterminate:
             connector._resolve_anchor_via_imap("real@x")
 
 
+class TestAnchorConnectionReuse:
+    """#420: anchor resolution and member collection each resolved the IMAP
+    config (an AppleScript round-trip), read the Keychain, and opened their
+    own connection — for the same account, microseconds apart.
+
+    Measured on the live account: 0.49s config + 0.03s Keychain + a second
+    connect/login, ~0.9s of a 7.8s call, for information the anchor loop
+    already had in hand.
+    """
+
+    @pytest.fixture
+    def connector(self) -> AppleMailConnector:
+        return AppleMailConnector(timeout=30)
+
+    def test_imap_get_thread_reuses_the_anchors_connector(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg_calls: list[str] = []
+        monkeypatch.setattr(
+            connector, "_resolve_imap_config",
+            lambda a: cfg_calls.append(a) or ("imap.x", 993, "e@x"),
+        )
+        monkeypatch.setattr(
+            connector, "_get_imap_password_with_fallback",
+            lambda a, e: cfg_calls.append("pw") or "pw",
+        )
+        reused = MagicMock()
+        reused.find_thread_members.return_value = [{"id": "a"}]
+
+        members = connector._imap_get_thread({
+            "account": "Gmail", "rfc_message_id": "abc@x",
+            "references": [], "_imap_connector": reused,
+        })
+
+        assert members == [{"id": "a"}]
+        reused.find_thread_members.assert_called_once()
+        # The whole point: neither AppleScript nor the Keychain was touched.
+        assert cfg_calls == []
+
+    def test_falls_back_to_resolving_config_without_a_carried_connector(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The numeric-id path (#419) builds its anchor via AppleScript and
+        carries no connection, so that route must still work as before."""
+        cfg_calls: list[str] = []
+        monkeypatch.setattr(
+            connector, "_resolve_imap_config",
+            lambda a: cfg_calls.append(a) or ("imap.x", 993, "e@x"),
+        )
+        monkeypatch.setattr(
+            connector, "_get_imap_password_with_fallback", lambda a, e: "pw"
+        )
+        made = MagicMock()
+        made.find_thread_members.return_value = [{"id": "a"}]
+        monkeypatch.setattr(
+            "apple_mail_fast_mcp.mail_connector.ImapConnector",
+            lambda *a, **k: made,
+        )
+
+        members = connector._imap_get_thread({
+            "account": "Gmail", "rfc_message_id": "abc@x", "references": [],
+        })
+
+        assert members == [{"id": "a"}]
+        assert cfg_calls == ["Gmail"]
+
+    def test_resolve_anchor_attaches_the_connector_it_already_built(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            connector, "list_accounts", lambda: [{"name": "Gmail"}]
+        )
+        monkeypatch.setattr(connector, "_imap_breaker_open", lambda a: False)
+        monkeypatch.setattr(connector, "_imap_clear_breaker", lambda a: None)
+        monkeypatch.setattr(
+            connector, "_resolve_imap_config",
+            lambda a: ("imap.x", 993, "e@x"),
+        )
+        monkeypatch.setattr(
+            connector, "_get_imap_password_with_fallback", lambda a, e: "pw"
+        )
+        built = MagicMock()
+        built.resolve_anchor.return_value = {
+            "rfc_message_id": "abc@x", "references": [], "subject": "Hi",
+        }
+        monkeypatch.setattr(
+            "apple_mail_fast_mcp.mail_connector.ImapConnector",
+            lambda *a, **k: built,
+        )
+
+        anchor = connector._resolve_anchor_via_imap("abc@x")
+        assert anchor is not None
+        assert anchor["_imap_connector"] is built
+
+
+class TestGetThreadDegradedStatus:
+    """#420: the IMAP->AppleScript fallback can return a SMALLER thread than
+    IMAP would have (the issue documents 1 member where IMAP returns 2).
+
+    Silently returning a truncated conversation is the actual harm; the
+    latency is secondary. Callers get an explicit flag so a complete result
+    can be trusted and a partial one can be detected.
+    """
+
+    @pytest.fixture
+    def connector(self) -> AppleMailConnector:
+        return AppleMailConnector(timeout=30)
+
+    def _anchor(self, connector, monkeypatch) -> None:
+        monkeypatch.setattr(
+            connector, "_resolve_anchor_via_imap",
+            lambda mid: {"account": "Gmail", "rfc_message_id": "abc@x",
+                         "references": [], "subject": "Hi"},
+        )
+        monkeypatch.setattr(connector, "_imap_breaker_open", lambda a: False)
+        monkeypatch.setattr(connector, "_imap_clear_breaker", lambda a: None)
+        monkeypatch.setattr(connector, "_log_imap_fallback", lambda a, e: None)
+
+    def test_imap_success_reports_no_degradation(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._anchor(connector, monkeypatch)
+        monkeypatch.setattr(
+            connector, "_imap_get_thread",
+            lambda anchor: [{"id": "a"}, {"id": "b"}],
+        )
+        members, reason = connector._get_thread_with_status("abc@x")
+        assert members == [{"id": "a"}, {"id": "b"}]
+        assert reason is None
+
+    @pytest.mark.parametrize(
+        "exc,expected",
+        [
+            # imaplib reports a read timeout as a plain OSError with this
+            # exact text, not as TimeoutError — observed on the live account.
+            (OSError("cannot read from timed out object"), "imap_timeout"),
+            (TimeoutError("socket timeout"), "imap_timeout"),
+            # A non-timeout connection failure is NOT a stall; saying
+            # "imap_timeout" would misdirect whoever reads the field.
+            (OSError("Connection refused"), "imap_unavailable"),
+            (LoginError("rejected"), "imap_auth_failed"),
+            (MailKeychainAccessDeniedError("ACL"), "imap_auth_failed"),
+            (MailKeychainEntryNotFoundError("no opt-in"),
+             "imap_not_configured"),
+        ],
+    )
+    def test_fallback_reports_a_machine_readable_reason(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch,
+        exc: Exception, expected: str,
+    ) -> None:
+        """The reason must distinguish a transient stall from an opt-out —
+        one is worth retrying, the other is the user's steady state."""
+        self._anchor(connector, monkeypatch)
+
+        def _boom(anchor):
+            raise exc
+
+        monkeypatch.setattr(connector, "_imap_get_thread", _boom)
+        monkeypatch.setattr(
+            connector, "_collect_thread_applescript",
+            lambda anchor: [{"id": "a"}],
+        )
+        members, reason = connector._get_thread_with_status("abc@x")
+        assert members == [{"id": "a"}]  # the truncated result is still served
+        assert reason == expected
+
+    def test_open_breaker_is_also_a_degraded_result(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Skipping IMAP because the breaker is open yields the same
+        subject-prefiltered AppleScript result — equally partial."""
+        self._anchor(connector, monkeypatch)
+        monkeypatch.setattr(connector, "_imap_breaker_open", lambda a: True)
+        monkeypatch.setattr(
+            connector, "_collect_thread_applescript",
+            lambda anchor: [{"id": "a"}],
+        )
+        members, reason = connector._get_thread_with_status("abc@x")
+        assert members == [{"id": "a"}]
+        assert reason == "imap_breaker_open"
+
+    def test_public_get_thread_still_returns_a_bare_list(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Backward compatibility: every existing caller and test depends on
+        get_thread returning list[dict], not a tuple."""
+        self._anchor(connector, monkeypatch)
+        monkeypatch.setattr(
+            connector, "_imap_get_thread", lambda anchor: [{"id": "a"}]
+        )
+        assert connector.get_thread("abc@x") == [{"id": "a"}]
+
+
 class TestGetThreadNeverScansForRfcId:
     """#415: an RFC Message-ID anchor resolves via IMAP; get_thread must NEVER
     run the unindexed AppleScript scan for it."""
