@@ -1534,9 +1534,20 @@ def get_thread(message_id: str) -> dict[str, Any]:
         Dictionary with the thread list. Rows are metadata-only —
         id, subject, sender, date_received, read_status, flagged.
 
+        ``partial`` is always present. When it is True the IMAP path could
+        not complete and the rows came from the subject-prefiltered
+        AppleScript fallback, which can return FEWER members than the full
+        thread; ``partial_reason`` then names the cause (``imap_timeout``,
+        ``imap_auth_failed``, ``imap_not_configured``, ``imap_breaker_open``,
+        ``imap_unavailable``). Treat a partial thread as a lower bound.
+
     Example:
         >>> get_thread("12345")
-        {"success": True, "thread": [{...}, {...}], "count": 2}
+        {"success": True, "thread": [{...}, {...}], "count": 2,
+         "partial": False}
+        >>> get_thread("67890")  # IMAP stalled; result may be truncated
+        {"success": True, "thread": [{...}], "count": 1,
+         "partial": True, "partial_reason": "imap_timeout"}
     """
     try:
         rate_err = check_rate_limit("get_thread", {"message_id": message_id})
@@ -1545,17 +1556,28 @@ def get_thread(message_id: str) -> dict[str, Any]:
 
         logger.info(f"Getting thread for message: {message_id}")
 
-        thread = mail.get_thread(message_id)
+        thread, degraded_reason = mail._get_thread_with_status(message_id)
 
         operation_logger.log_operation(
             "get_thread", {"message_id": message_id}, "success"
         )
 
-        return {
+        result: dict[str, Any] = {
             "success": True,
             "thread": thread,
             "count": len(thread),
+            # #420: the AppleScript fallback is subject-prefiltered and can
+            # return FEWER members than IMAP would. Say so rather than pass
+            # off a truncated conversation as the whole thread.
+            "partial": degraded_reason is not None,
         }
+        if degraded_reason is not None:
+            result["partial_reason"] = degraded_reason
+            logger.warning(
+                f"get_thread returned a possibly-incomplete thread "
+                f"({degraded_reason}) for {message_id}"
+            )
+        return result
 
     except MailAnchorLookupIncompleteError as e:
         # #425: distinct from message_not_found on purpose — the message may

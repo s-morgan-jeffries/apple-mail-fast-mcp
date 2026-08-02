@@ -243,13 +243,31 @@ Return all messages in the thread containing the given anchor message, sorted by
      "subject": "Re: Q3 Report", "sender": "bob@x.com",
      "date_received": "Mon Jan 1 2024 14:30:00", "read_status": true, "flagged": false}
   ],
-  "count": 2
+  "count": 2,
+  "partial": false
 }
 ```
 
 Row fields include both `id` (path-native — see `search_messages` for details) and `rfc_message_id` (always RFC 5322 bracketless, or `null` when the message lacks a Message-ID header). See `search_messages` for the dual-emit (#148) rationale.
 
 Uses the connector's tiered IMAP threading dispatch (Tier 1 X-GM-THRID for Gmail per #122, Tier 3 header-search BFS fallback) when IMAP is configured; falls back to AppleScript otherwise.
+
+**Completeness (`partial`) — #420.** `partial` is always present. When `true`, the IMAP path could not complete and the rows came from the AppleScript fallback, which is **subject-prefiltered** and therefore misses thread members whose subject was rewritten mid-conversation — it can return strictly fewer messages than the full thread. `partial_reason` is then present and names the cause:
+
+| `partial_reason` | Meaning | Worth retrying? |
+|---|---|---|
+| `imap_timeout` | IMAP stalled (30s `OPERATION_TIMEOUT_S`) | Yes — usually transient |
+| `imap_unavailable` | Connection failed for another reason | Yes |
+| `imap_auth_failed` | Credentials rejected, or Keychain access denied | No — re-run `setup-imap` |
+| `imap_not_configured` | No Keychain entry; user hasn't opted in to IMAP | No — steady state |
+| `imap_breaker_open` | Circuit breaker open after repeated failures | Yes, after a cooldown |
+
+Treat a partial thread as a **lower bound** on the conversation. Before this field existed, a truncated thread was indistinguishable from a complete one.
+
+```json
+{"success": true, "thread": [{"id": "100", "...": "..."}], "count": 1,
+ "partial": true, "partial_reason": "imap_timeout"}
+```
 
 > **⚡ Performance on large accounts (Gmail especially).** IMAP `SEARCH` runs on **one mailbox at a time** — there is no cross-folder search — so threading cost scales with **how many mailboxes must be checked**, not how many messages you have. A thread's messages are inherently spread across mailboxes (INBOX for received, Sent for replies, plus labels/folders).
 >
@@ -271,7 +289,8 @@ full = get_messages(ids)
 
 **Error Codes:**
 
-- `message_not_found`: Anchor message doesn't exist or was deleted
+- `message_not_found`: Anchor message doesn't exist or was deleted — every configured account was checked and definitively did not have it
+- `anchor_lookup_incomplete`: At least one account could **not** be checked (timeout / connection failure / rejected credentials), so absence was never established. Carries `retryable: true` — the message may well exist. Distinct from `message_not_found` on purpose (#425)
 - `unknown`: Unexpected error occurred
 
 ---

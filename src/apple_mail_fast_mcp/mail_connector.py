@@ -97,6 +97,26 @@ _IMAP_FALLBACK_EXCS: tuple[type[Exception], ...] = (
     UnicodeEncodeError,
 )
 
+
+def _degraded_reason_for(exc: Exception) -> str:
+    """Map a fallback-triggering exception to a stable, machine-readable
+    reason string for the ``partial_reason`` field of get_thread (#420).
+
+    The distinction that matters to a caller is retry-worthy (a transient
+    stall) versus steady-state (the user never opted in to IMAP). Strings are
+    part of the tool's response contract — treat them as append-only.
+    """
+    if isinstance(exc, MailKeychainEntryNotFoundError):
+        return "imap_not_configured"
+    if isinstance(exc, MailKeychainAccessDeniedError | LoginError):
+        return "imap_auth_failed"
+    # imaplib surfaces a read timeout as OSError("cannot read from timed out
+    # object") rather than TimeoutError, so match both (#420).
+    if isinstance(exc, TimeoutError) or "timed out" in str(exc).lower():
+        return "imap_timeout"
+    return "imap_unavailable"
+
+
 # Exceptions that trigger AppleScript fallback for the clean SMTP send path
 # (issue #322). Mirrors _IMAP_FALLBACK_EXCS: Keychain opt-out and connection
 # failures degrade gracefully to `tell theMessage to send`. OSError covers
@@ -2800,8 +2820,29 @@ class AppleMailConnector:
             date_received, read_status, flagged. A thread of 1 is valid
             (anchor with no threading headers).
 
+            Callers that need to know whether the result is complete should
+            use :meth:`_get_thread_with_status` — the AppleScript fallback can
+            return FEWER members than IMAP would (#420).
+
         Raises:
             MailMessageNotFoundError: If no message with the given id exists.
+            MailAnchorLookupIncompleteError: If an account could not be
+                checked, so absence was never established (#425).
+        """
+        return self._get_thread_with_status(message_id)[0]
+
+    def _get_thread_with_status(
+        self, message_id: str,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """:meth:`get_thread` plus whether the result is complete.
+
+        Returns ``(members, degraded_reason)``. ``degraded_reason`` is None
+        when the IMAP path completed; otherwise it names why we fell back, and
+        the members came from the account-scoped, subject-prefiltered
+        AppleScript path — which misses thread members whose subject was
+        rewritten mid-conversation, and so can return a strictly smaller
+        thread. #420 measured 1 member where IMAP returned 2. Returning that
+        silently is the bug; the reason string is how callers detect it.
         """
         # Resolve the anchor without ever running the unindexed all-mailbox
         # `whose message id` scan, which loads every message and freezes Mail
@@ -2824,15 +2865,20 @@ class AppleMailConnector:
             # inbox/Sent, falling back to the all-mailbox walk (#419).
             anchor = self._resolve_numeric_anchor(message_id)
         anchor_account = cast(str, anchor["account"])
-        if not self._imap_breaker_open(anchor_account):
-            try:
-                result = self._imap_get_thread(anchor)
-                self._imap_clear_breaker(anchor_account)
-                return result
-            except _IMAP_FALLBACK_EXCS as exc:
-                self._log_imap_fallback(anchor_account, exc)
-                # fall through to AppleScript (account-scoped, subject-filtered)
-        return self._collect_thread_applescript(anchor)
+        if self._imap_breaker_open(anchor_account):
+            return (
+                self._collect_thread_applescript(anchor),
+                "imap_breaker_open",
+            )
+        try:
+            result = self._imap_get_thread(anchor)
+            self._imap_clear_breaker(anchor_account)
+            return result, None
+        except _IMAP_FALLBACK_EXCS as exc:
+            self._log_imap_fallback(anchor_account, exc)
+            # fall through to AppleScript (account-scoped, subject-filtered)
+            reason = _degraded_reason_for(exc)
+        return self._collect_thread_applescript(anchor), reason
 
     def _imap_get_thread(
         self, anchor: dict[str, Any],
@@ -2853,9 +2899,19 @@ class AppleMailConnector:
             MailAccountNotFoundError: Mail.app doesn't know this account.
         """
         account = cast(str, anchor["account"])
-        host, port, email = self._resolve_imap_config(account)
-        password = self._get_imap_password_with_fallback(account, email)
-        imap = ImapConnector(host, port, email, password, pool=self._imap_pool)
+        # #420: when the anchor came from _resolve_anchor_via_imap it already
+        # carries the connector that found it — same account, same credentials,
+        # microseconds ago. Re-deriving cost an AppleScript round-trip (0.49s),
+        # a Keychain read, and a second connect/login. The numeric-id path
+        # (#419) builds its anchor via AppleScript and carries nothing, so that
+        # route still resolves config here.
+        imap = anchor.get("_imap_connector")
+        if imap is None:
+            host, port, email = self._resolve_imap_config(account)
+            password = self._get_imap_password_with_fallback(account, email)
+            imap = ImapConnector(
+                host, port, email, password, pool=self._imap_pool
+            )
         return imap.find_thread_members(
             anchor_rfc_message_id=cast(str, anchor["rfc_message_id"]),
             anchor_references=cast(list[str], anchor.get("references") or []),
@@ -2915,6 +2971,10 @@ class AppleMailConnector:
             if anchor is not None:
                 self._imap_clear_breaker(account)
                 anchor["account"] = account
+                # Hand the live connector to member collection so it does not
+                # redo config + Keychain + connect for this same account
+                # (#420). Consumed by _imap_get_thread.
+                anchor["_imap_connector"] = imap
                 return anchor
         if indeterminate:
             raise MailAnchorLookupIncompleteError(
