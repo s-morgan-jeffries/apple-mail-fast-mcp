@@ -6108,6 +6108,76 @@ class TestCreateDraft:
         # No diff snapshot when sending.
         assert "set beforeIds to" not in script
 
+    # --- #421: the id-bridging diff must wait for the draft to appear ----
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_id_diff_polls_instead_of_a_single_fixed_delay(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """#421: a saved draft takes 12.6-19.6s to surface in Mail's unified
+        `drafts mailbox` (measured on real Gmail). The old fixed `delay 0.5`
+        scanned once, found nothing, and returned "" — silently, because
+        newDraftId is initialised empty inside a bare `try`.
+
+        #413 caused this: it replaced the nested accounts x mailboxes scan
+        with a single fast pass, and that scan's slowness had been the only
+        thing giving Mail time to materialise the draft.
+        """
+        mock_run.return_value = "1"
+        connector.create_draft(seed="new", to=["a@example.com"],
+                               subject="hi", body="x")
+        script = mock_run.call_args[0][0]
+
+        assert "save theMessage" in script
+        # A bounded retry around the drafts scan, not one scan behind a delay.
+        assert "repeat" in script and "times" in script
+        assert 'if newDraftId is not "" then exit repeat' in script
+        # The scan itself is unchanged (#407 unified, locale-independent).
+        assert "messages of drafts mailbox" in script
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_poll_budget_scales_with_connector_timeout(
+        self, mock_run: MagicMock
+    ) -> None:
+        """The script is wrapped by _wrap_with_timeout(timeout=self.timeout),
+        so a hardcoded poll would blow a caller-supplied shorter timeout.
+        A 20s connector must poll for less wall-clock than a 60s one."""
+        mock_run.return_value = "1"
+        counts = {}
+        for timeout in (20, 60):
+            c = AppleMailConnector(timeout=timeout)
+            with patch.object(c, "_run_applescript", return_value="1") as m:
+                c.create_draft(seed="new", to=["a@example.com"],
+                               subject="hi", body="x")
+            counts[timeout] = c._draft_poll_iterations()
+            assert f"repeat {counts[timeout]} times" in m.call_args[0][0]
+
+        assert counts[20] < counts[60], (
+            "poll budget must shrink with the connector timeout"
+        )
+
+    @pytest.mark.parametrize("timeout", [2, 10, 20, 60, 300])
+    def test_poll_never_exceeds_its_own_timeout(self, timeout: int) -> None:
+        """The poll must leave room for the rest of the script (~5s measured)
+        rather than consuming the whole osascript budget."""
+        c = AppleMailConnector(timeout=timeout)
+        iterations = c._draft_poll_iterations()
+        assert iterations >= 1, "must always scan at least once"
+        assert iterations * 0.5 <= timeout * 0.5 + 0.01, (
+            f"poll of {iterations * 0.5}s exceeds half of a {timeout}s budget"
+        )
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_send_path_has_no_poll(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """send_now returns "SENT" and never diffs drafts — no poll to add."""
+        mock_run.return_value = "SENT"
+        connector.create_draft(seed="new", to=["a@example.com"],
+                               subject="hi", body="x", send_now=True)
+        script = mock_run.call_args[0][0]
+        assert "newDraftId" not in script
+
     @patch.object(AppleMailConnector, "_run_applescript")
     def test_new_with_from_account_sets_display_name_sender(
         self, mock_run: MagicMock, connector: AppleMailConnector

@@ -98,6 +98,17 @@ _IMAP_FALLBACK_EXCS: tuple[type[Exception], ...] = (
 )
 
 
+_DRAFT_POLL_INTERVAL_S: float = 0.5
+"""Seconds between drafts-mailbox rescans while waiting for a just-saved
+draft to surface (#421). Same cadence as the old fixed `delay 0.5` — the bug
+was scanning once, not scanning too coarsely."""
+
+_DRAFT_POLL_MAX_S: float = 30.0
+"""Ceiling on the #421 poll. Measured visibility lag on a real Gmail account
+was 12.6-19.6s, so 30s covers the cold case with headroom. Capped rather than
+open-ended so a long connector timeout can't leave osascript spinning."""
+
+
 def _degraded_reason_for(exc: Exception) -> str:
     """Map a fallback-triggering exception to a stable, machine-readable
     reason string for the ``partial_reason`` field of get_thread (#420).
@@ -6084,20 +6095,30 @@ class AppleMailConnector:
                 return "SENT"
             """
         else:
-            terminal_block = """
+            # #421: poll rather than scan once behind a fixed delay. A saved
+            # draft takes 12.6-19.6s to surface in Mail's unified `drafts
+            # mailbox` (measured, real Gmail); the old `delay 0.5` scanned
+            # before it existed and returned "" — silently, since newDraftId
+            # starts empty inside a bare `try`. #413 exposed this: replacing
+            # the nested accounts x mailboxes scan with one fast pass removed
+            # the accidental slack that had been covering the sync lag.
+            terminal_block = f"""
                 save theMessage
-                delay 0.5
 
                 set newDraftId to ""
-                try
-                    repeat with d in messages of drafts mailbox
-                        set candId to (id of d as text)
-                        if candId is not in beforeIds then
-                            set newDraftId to candId
-                            exit repeat
-                        end if
-                    end repeat
-                end try
+                repeat {self._draft_poll_iterations()} times
+                    try
+                        repeat with d in messages of drafts mailbox
+                            set candId to (id of d as text)
+                            if candId is not in beforeIds then
+                                set newDraftId to candId
+                                exit repeat
+                            end if
+                        end repeat
+                    end try
+                    if newDraftId is not "" then exit repeat
+                    delay {_DRAFT_POLL_INTERVAL_S}
+                end repeat
                 return newDraftId
             """
 
@@ -6193,6 +6214,22 @@ class AppleMailConnector:
             f"unreachable, or a non-RFC reply seed). {tail} Configure or "
             "repair IMAP for the account with `apple-mail-fast-mcp setup-imap`."
         )
+
+    def _draft_poll_iterations(self) -> int:
+        """How many times the AppleScript id-diff rescans the unified drafts
+        mailbox while waiting for a just-saved draft to appear (#421).
+
+        Budgeted from ``self.timeout`` rather than hardcoded: the generated
+        script is wrapped by ``_wrap_with_timeout(..., timeout=self.timeout)``,
+        so a fixed 30s poll would blow a caller-supplied
+        ``AppleMailConnector(timeout=20)``. Half the budget goes to the poll,
+        leaving the rest for the save itself (~5s measured) — and never more
+        than ``_DRAFT_POLL_MAX_S``. Always at least one scan, so a very short
+        timeout degrades to the pre-#421 single-shot behavior rather than
+        skipping the lookup entirely.
+        """
+        budget = min(_DRAFT_POLL_MAX_S, self.timeout * 0.5)
+        return max(1, int(budget / _DRAFT_POLL_INTERVAL_S))
 
     def _effective_from_account(
         self, from_account: str | None, send_now: bool

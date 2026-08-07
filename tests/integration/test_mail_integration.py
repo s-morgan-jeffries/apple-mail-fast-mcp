@@ -1074,11 +1074,64 @@ class TestDraftsLifecycleIntegration:
             self._wait_for_draft(connector, draft_id)
             assert connector.delete_draft(draft_id) is True
 
+    def test_applescript_save_returns_a_usable_draft_id(
+        self,
+        connector: AppleMailConnector,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        """#421 regression, seed="new" variant.
+
+        The empty-draft_id bug lives in the shared terminal block, so it hit
+        every AppleScript save-as-draft — not just replies. The reply test
+        below covers the reported case; this covers compose, which had none.
+
+        The clean IMAP path is forced off rather than relying on this machine
+        having several enabled accounts (which is what made `effective_account`
+        None here and pushed the reported failure onto AppleScript). Without
+        that, a single-account machine would take the IMAP-APPEND path and
+        silently not exercise the fix at all.
+        """
+        monkeypatch.setattr(
+            AppleMailConnector, "_try_clean_create_or_send",
+            lambda self, **kwargs: None,
+        )
+        marker = "ZZZ-AMM-421-APPLESCRIPT-NEW"
+        result = connector.create_draft(
+            seed="new",
+            to=["test1@example.com"],
+            subject=marker,
+            body="body for the #421 id-bridging poll",
+        )
+        draft_id = result["draft_id"]
+        assert draft_id, (
+            "AppleScript save returned an empty draft_id — the id-bridging "
+            "diff ran before Mail materialised the draft (#421)"
+        )
+        assert "@" not in draft_id, (
+            f"expected Mail's internal numeric id from the AppleScript path; "
+            f"got {draft_id!r}"
+        )
+        try:
+            # The id must be immediately usable — that is the whole point of
+            # waiting for it inside the script.
+            state = connector.get_draft_state(draft_id)
+            assert state["subject"] == marker
+        finally:
+            assert connector.delete_draft(draft_id) is True
+
     def test_reply_save_preserves_threading_headers(
         self,
         connector: AppleMailConnector,
         anchor_message_id: str,
     ) -> None:
+        """#421 regression, the reported case.
+
+        `anchor_message_id` is Mail's numeric internal id, and
+        `_try_imap_reply_forward_draft` requires an RFC Message-ID (`"@" in
+        seed_id`) — so this always exercises the AppleScript save path, on any
+        machine. Before the fix `draft_id` came back `''` every time and the
+        threading assertions below never ran.
+        """
         result = connector.create_draft(
             seed="reply",
             seed_id=anchor_message_id,
