@@ -4,6 +4,7 @@ import logging
 import smtplib
 import time
 import warnings
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -5263,6 +5264,13 @@ class TestNonJsonPathsThreadTimeout:
     def test_find_message_by_message_id(self, mock_run: MagicMock) -> None:
         connector = AppleMailConnector(timeout=122)
         mock_run.return_value = MagicMock(returncode=0, stdout="42", stderr="")
+        # #432: the RFC path now consults IMAP for the arrival date before
+        # touching AppleScript. Stub that so this stays a test about the
+        # timeout clause on the AppleScript it then emits.
+        connector._locate_via_imap = lambda mid: {  # type: ignore[assignment]
+            "folder": "INBOX",
+            "internaldate": datetime(2026, 8, 9, 11, 3, 51),
+        }
         connector.find_message_by_message_id("<abc@example.com>")
         assert "with timeout of 122 seconds" in self._script_from(mock_run)
 
@@ -5695,7 +5703,114 @@ class TestFindMessageByMessageId:
 
     @pytest.fixture
     def connector(self) -> AppleMailConnector:
-        return AppleMailConnector(timeout=30)
+        c = AppleMailConnector(timeout=30)
+        # #432: the RFC path is IMAP-assisted. Default every test in this
+        # class to "IMAP located it on 2026-08-09" unless it says otherwise.
+        c._locate_via_imap = lambda mid: {  # type: ignore[assignment]
+            "folder": "[Gmail]/All Mail",
+            "internaldate": datetime(2026, 8, 9, 11, 3, 51),
+        }
+        return c
+
+    # --- #432: no unindexed all-mailbox scan, ever -----------------------
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_script_never_walks_accounts_x_mailboxes(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """The freeze: `whose message id` is UNINDEXED, so pairing it with an
+        accounts x mailboxes walk loads tens of thousands of messages on
+        Mail's UI thread. Measured: Gmail INBOX 33,569 / All Mail 62,085."""
+        mock_run.return_value = "160989"
+        connector.find_message_by_message_id("<abc@example.com>")
+        script = mock_run.call_args[0][0]
+        assert "repeat with acc in accounts" not in script
+        assert "mailboxes of acc" not in script
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_script_binary_searches_by_index(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """Messages are strictly newest-first and positional access is cheap
+        (verified: idx 1 = 2026-08-09, idx 33,569 = 2004-11-12; a read at
+        33,568 is ~instant). So the date from IMAP locates the message in
+        ~log2(n) property reads instead of a scan."""
+        mock_run.return_value = "160989"
+        connector.find_message_by_message_id("<abc@example.com>")
+        script = mock_run.call_args[0][0]
+        assert "div 2" in script, "expected a binary search"
+        assert "date received" in script
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_script_guards_the_newest_first_assumption(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """#242 records that Mail's iteration order CHANGED once already. A
+        silent reversal would make the binary search return wrong answers, so
+        the script must verify descending order before trusting it."""
+        mock_run.return_value = "160989"
+        connector.find_message_by_message_id("<abc@example.com>")
+        script = mock_run.call_args[0][0]
+        assert "ORDER_UNEXPECTED" in script
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_date_is_built_from_components_never_a_string_literal(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """AppleScript parses `date "..."` against the user's LOCALE. On a real
+        machine `date "2026-08-09 11:03:51"` evaluated to "October 8, 12177" —
+        a 10,000-year error that silently made the window match nothing, with
+        no error raised. Component assignment is locale-independent."""
+        mock_run.return_value = "160989"
+        connector.find_message_by_message_id("<abc@example.com>")
+        script = mock_run.call_args[0][0]
+        assert 'date "' not in script, "locale-dependent date literal"
+        assert "set year of targetDate to 2026" in script
+        assert "set month of targetDate to 8" in script
+        assert "set day of targetDate to 9" in script
+        # `day` reset to 1 first, or setting month can overflow the day.
+        assert script.index("set day of targetDate to 1") < script.index(
+            "set month of targetDate to 8"
+        )
+
+    def test_imap_failure_is_indeterminate_not_absent(
+        self, connector: AppleMailConnector
+    ) -> None:
+        """#425's lesson: a lookup that could not run is not a message that
+        does not exist. Returning None here would make callers report
+        'no such message' for a message that is simply unreachable."""
+        def _boom(mid: str) -> None:
+            raise OSError("cannot read from timed out object")
+
+        connector._locate_via_imap = _boom  # type: ignore[assignment]
+        with pytest.raises(MailAnchorLookupIncompleteError):
+            connector.find_message_by_message_id("<abc@example.com>")
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_window_miss_is_indeterminate_not_absent(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """IMAP proved the message exists; the date-bounded window failed to
+        find it in Mail. That is 'could not determine', not 'absent'."""
+        mock_run.return_value = "WINDOW_MISS"
+        with pytest.raises(MailAnchorLookupIncompleteError):
+            connector.find_message_by_message_id("<abc@example.com>")
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_ordering_guard_trip_is_indeterminate(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        mock_run.return_value = "ORDER_UNEXPECTED"
+        with pytest.raises(MailAnchorLookupIncompleteError):
+            connector.find_message_by_message_id("<abc@example.com>")
+
+    def test_imap_says_absent_returns_none(
+        self, connector: AppleMailConnector
+    ) -> None:
+        """A clean IMAP answer of 'not in any probed folder' IS definitive —
+        All Mail mirrors every message — so None (absent) is correct here."""
+        connector._locate_via_imap = lambda mid: None  # type: ignore[assignment]
+        assert connector.find_message_by_message_id("<gone@example.com>") is None
 
     @patch.object(AppleMailConnector, "_run_applescript")
     def test_returns_internal_id_on_match(
@@ -5707,11 +5822,13 @@ class TestFindMessageByMessageId:
         )
         assert result == "160989"
 
-    @patch.object(AppleMailConnector, "_run_applescript")
     def test_returns_none_on_not_found(
-        self, mock_run: MagicMock, connector: AppleMailConnector
+        self, connector: AppleMailConnector
     ) -> None:
-        mock_run.return_value = "NOT_FOUND"
+        """#432 moved the absence decision to IMAP, which answers definitively
+        (Gmail's All Mail mirrors every message). AppleScript no longer emits
+        a NOT_FOUND sentinel — it is never asked to search blind."""
+        connector._locate_via_imap = lambda mid: None  # type: ignore[assignment]
         result = connector.find_message_by_message_id(
             "<missing@example.com>"
         )
@@ -5740,22 +5857,26 @@ class TestFindMessageByMessageId:
         """Quotes/backslashes in the Message-ID must be escaped to prevent
         AppleScript injection. Real Message-IDs almost never contain these
         but we shouldn't trust the wire."""
-        mock_run.return_value = "NOT_FOUND"
+        mock_run.return_value = "160989"
         connector.find_message_by_message_id('<weird"id@host>')
         script = mock_run.call_args[0][0]
         # Escaped quote inside the AppleScript string literal.
         assert '\\"' in script
 
     @patch.object(AppleMailConnector, "_run_applescript")
-    def test_script_uses_whose_message_id_clause(
+    def test_script_matches_message_id_without_a_whose_clause(
         self, mock_run: MagicMock, connector: AppleMailConnector
     ) -> None:
-        mock_run.return_value = "NOT_FOUND"
+        """#432 inverts the old assertion. `whose message id is ...` is the
+        UNINDEXED filter that makes Mail load every message in the mailbox;
+        the match now happens per-message inside the date-bounded window,
+        where the candidate set is ~a day of mail."""
+        mock_run.return_value = "160989"
         connector.find_message_by_message_id("<x@y>")
         script = mock_run.call_args[0][0]
-        # Compound clause queries both bare and bracketed forms (#205 follow-up).
-        assert "whose" in script
-        assert "message id is" in script
+        assert "whose message id" not in script
+        assert "whose (message id" not in script
+        assert "message id of m" in script
 
     @patch.object(AppleMailConnector, "_run_applescript")
     def test_bracketless_input_queries_both_forms(
@@ -5767,12 +5888,12 @@ class TestFindMessageByMessageId:
         resolver therefore queries both forms in a single ``whose``
         clause so a caller doesn't need to know the storage convention.
         """
-        mock_run.return_value = "NOT_FOUND"
+        mock_run.return_value = "160989"
         connector.find_message_by_message_id("abc@example.com")
         script = mock_run.call_args[0][0]
-        assert 'message id is "abc@example.com"' in script
-        assert 'message id is "<abc@example.com>"' in script
-        assert "whose" in script and " or " in script
+        assert 'mid is "abc@example.com"' in script
+        assert 'mid is "<abc@example.com>"' in script
+        assert " or " in script
 
     @patch.object(AppleMailConnector, "_run_applescript")
     def test_bracketed_input_queries_both_forms(
@@ -5782,11 +5903,11 @@ class TestFindMessageByMessageId:
         already include brackets; strip them and query both forms so
         we don't depend on Mail.app's storage convention.
         """
-        mock_run.return_value = "NOT_FOUND"
+        mock_run.return_value = "160989"
         connector.find_message_by_message_id("<abc@example.com>")
         script = mock_run.call_args[0][0]
-        assert 'message id is "abc@example.com"' in script
-        assert 'message id is "<abc@example.com>"' in script
+        assert 'mid is "abc@example.com"' in script
+        assert 'mid is "<abc@example.com>"' in script
         assert "<<" not in script and ">>" not in script
 
     @patch.object(AppleMailConnector, "_run_applescript")
@@ -6107,6 +6228,25 @@ class TestCreateDraft:
         assert "tell theMessage to send" in script
         # No diff snapshot when sending.
         assert "set beforeIds to" not in script
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_reply_seed_lookup_never_walks_accounts_x_mailboxes(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """#432: the creation block used to re-walk every mailbox of every
+        account to find the seed its caller had *just* resolved. Fixing only
+        find_message_by_message_id would have left this second walk in place,
+        so the freeze would have survived.
+
+        Mail's `id` is an indexed integer, so the two unified mailboxes
+        answer instantly."""
+        mock_run.return_value = "160989"
+        connector.create_draft(seed="reply", seed_id="12345", body="x")
+        script = mock_run.call_args[0][0]
+        assert "repeat with acc in accounts" not in script
+        assert "mailboxes of acc" not in script
+        assert "first message of inbox whose id is 12345" in script
+        assert "first message of sent mailbox whose id is 12345" in script
 
     # --- #421: the id-bridging diff must wait for the draft to appear ----
 
@@ -6453,7 +6593,9 @@ class TestCreateDraft:
         mock_resolve.assert_called_once_with("abc-123@example.com")
         script = mock_run.call_args[0][0]
         # AppleScript looks up by Mail's internal id, not the RFC id.
-        assert 'whose id is "160989"' in script
+        # #432: the id is an INDEXED integer property, so it is emitted
+        # unquoted now; the old quoted form compared int to string.
+        assert 'whose id is 160989' in script
         assert "abc-123@example.com" not in script
 
     @patch.object(AppleMailConnector, "find_message_by_message_id")
@@ -6475,7 +6617,9 @@ class TestCreateDraft:
         )
         mock_resolve.assert_called_once_with("abc-123@example.com")
         script = mock_run.call_args[0][0]
-        assert 'whose id is "160989"' in script
+        # #432: the id is an INDEXED integer property, so it is emitted
+        # unquoted now; the old quoted form compared int to string.
+        assert 'whose id is 160989' in script
 
     @patch.object(AppleMailConnector, "find_message_by_message_id")
     @patch.object(AppleMailConnector, "_run_applescript")
@@ -6496,7 +6640,9 @@ class TestCreateDraft:
         )
         mock_resolve.assert_not_called()
         script = mock_run.call_args[0][0]
-        assert 'whose id is "160989"' in script
+        # #432: the id is an INDEXED integer property, so it is emitted
+        # unquoted now; the old quoted form compared int to string.
+        assert 'whose id is 160989' in script
 
     # No from_account → create_draft would auto-resolve a sole account
     # (#321) via list_accounts; stub it out so this test isolates the RFC

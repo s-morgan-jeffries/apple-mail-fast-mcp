@@ -3449,11 +3449,18 @@ class AppleMailConnector:
         emits Mail's INDEXED integer ``id is N`` (#415/#416).
 
         Measured on a 33k-message Gmail account: 1.3s here vs 3.0s for the
-        full walk. (Handing the id to ``ImapConnector.resolve_anchor``
-        instead — the other obvious route to the same anchor — measured 17s
-        on that account, because ``SEARCH HEADER Message-ID`` over a 33k All
-        Mail is anything but instant. Hence AppleScript on both sides of this
-        branch.)
+        full walk.
+
+        (An earlier version of this note claimed that routing through
+        ``ImapConnector.resolve_anchor`` "measured 17s … ``SEARCH HEADER
+        Message-ID`` over a 33k All Mail is anything but instant". That
+        attribution was wrong and #420 corrected it: measured directly, the
+        SEARCH is **0.14s** over 61,880 messages — it is server-indexed. The
+        17s was orchestration, one AppleScript config resolve plus Keychain
+        read plus connect/login per account until the anchor's account came
+        up. AppleScript is still right for *this* branch, but because a
+        numeric id hits Mail's own indexed integer ``id``, not because IMAP
+        is slow. #432 depends on the corrected fact.)
 
         Returns:
             The anchor dict, or ``None`` when the id is in neither probed
@@ -4837,38 +4844,180 @@ class AppleMailConnector:
         """
         if not rfc5322_message_id:
             return None
-        bare = _bare_message_id(rfc5322_message_id)
-        bracketed = f"<{bare}>"
-        safe_bare = escape_applescript_string(sanitize_input(bare))
-        safe_bracketed = escape_applescript_string(sanitize_input(bracketed))
 
+        # Stage 1 (#432): ask IMAP WHERE and WHEN. Indexed server-side —
+        # measured 0.14s over 61,880 messages. Failures here are
+        # "could not determine", never "absent" (#425).
+        try:
+            located = self._locate_via_imap(rfc5322_message_id)
+        except _IMAP_FALLBACK_EXCS as exc:
+            raise MailAnchorLookupIncompleteError(
+                f"Could not determine whether Message-ID "
+                f"{rfc5322_message_id!r} exists: the IMAP lookup failed "
+                f"({type(exc).__name__}: {exc}). Mail.app's `message id` is "
+                "unindexed, so there is no cheap AppleScript fallback — "
+                "scanning for it freezes Mail (#432). Retry, or run "
+                "`apple-mail-fast-mcp setup-imap` if this account has no "
+                "IMAP credentials."
+            ) from exc
+        if located is None:
+            # A clean IMAP answer. The probe set is Gmail's All Mail (which
+            # mirrors every message) or INBOX+Sent — so this is definitive.
+            return None
+
+        # Stage 2: binary-search Mail by the date IMAP reported.
+        return self._find_by_message_id_near_date(
+            rfc5322_message_id, cast(_datetime, located["internaldate"])
+        )
+
+    def _locate_via_imap(self, rfc5322_message_id: str) -> dict[str, Any] | None:
+        """Ask each IMAP-configured account where/when a Message-ID lives.
+
+        Returns the first hit's ``{folder, uid, internaldate}``, or ``None``
+        when every configured account answered cleanly that it doesn't have
+        it. Raises on failure so the caller can distinguish "absent" from
+        "could not check" (#425).
+        """
+        last_exc: Exception | None = None
+        for acct in self.list_accounts():
+            account = cast(str, acct.get("name") or "")
+            if not account or self._imap_breaker_open(account):
+                continue
+            try:
+                host, port, email = self._resolve_imap_config(account)
+                if not host:
+                    continue
+                password = self._get_imap_password_with_fallback(account, email)
+                imap = ImapConnector(
+                    host, port, email, password, pool=self._imap_pool
+                )
+                found = imap.locate_message(rfc5322_message_id)
+            except MailKeychainEntryNotFoundError as exc:
+                # Benign opt-out, same as _resolve_anchor_via_imap (#425).
+                self._log_imap_fallback(account, exc)
+                continue
+            except _IMAP_FALLBACK_EXCS as exc:
+                self._log_imap_fallback(account, exc)
+                last_exc = exc
+                continue
+            if found is not None:
+                self._imap_clear_breaker(account)
+                return found
+        if last_exc is not None:
+            raise last_exc
+        return None
+
+    def _find_by_message_id_near_date(
+        self, rfc5322_message_id: str, when: _datetime
+    ) -> str | None:
+        """Binary-search Mail's unified mailboxes for a Message-ID known to
+        have arrived around ``when``, and return Mail's internal id (#432).
+
+        Mail orders messages strictly newest-first with cheap positional
+        access — verified on a 33,569-message INBOX: index 1 is 2026-08-09,
+        index 33,569 is 2004-11-12, and a read at index 33,568 is ~instant.
+        So the arrival date locates the message in ~log2(n) property reads
+        instead of the unindexed scan that freezes Mail.
+
+        The +/-1 day window absorbs the measured Mail-vs-IMAP date skew:
+        exact at indices 1/50/500/5000, but 1 hour adrift at index 20,000
+        (a DST/timezone artifact). A day of margin costs ~100 messages to
+        scan linearly and is cheap; a tight window would silently miss.
+        """
+        bare = _bare_message_id(rfc5322_message_id)
+        safe_bare = escape_applescript_string(sanitize_input(bare))
+        safe_bracketed = escape_applescript_string(
+            sanitize_input(f"<{bare}>")
+        )
+        # Build the date from COMPONENTS, never `date "..."`. AppleScript
+        # parses date-string literals against the user's locale: on this
+        # machine `date "2026-08-09 11:03:51"` yields "October 8, 12177",
+        # which silently makes any window comparison meaningless. Setting
+        # `day` to 1 first avoids overflow when the current day-of-month
+        # exceeds the target month's length.
+        secs_into_day = when.hour * 3600 + when.minute * 60 + when.second
         script = _wrap_with_timeout(
             f"""tell application "Mail"
+            set targetDate to (current date)
+            set day of targetDate to 1
+            set year of targetDate to {when.year}
+            set month of targetDate to {when.month}
+            set day of targetDate to {when.day}
+            set time of targetDate to {secs_into_day}
+            set loDate to targetDate - (1 * days)
+            set hiDate to targetDate + (1 * days)
             set foundId to ""
-            repeat with acc in accounts
-                try
-                    repeat with mb in mailboxes of acc
-                        try
-                            set m to first message of mb whose (message id is "{safe_bare}" or message id is "{safe_bracketed}")
-                            set foundId to (id of m as text)
-                            exit repeat
-                        end try
-                    end repeat
-                end try
+            set sawOrderProblem to false
+
+            repeat with mb in {{inbox, sent mailbox}}
+                set n to (count of messages of mb)
+                if n > 0 then
+                    -- #242: Mail's iteration order has changed before. A
+                    -- silent reversal would make the search below return
+                    -- wrong answers, so verify descending order first.
+                    if n > 1 then
+                        set firstDate to (date received of (message 1 of mb))
+                        set lastDate to (date received of (message n of mb))
+                        if firstDate < lastDate then set sawOrderProblem to true
+                    end if
+
+                    if not sawOrderProblem then
+                        -- First index whose date is at or below the window
+                        -- top (dates DESCEND as the index grows).
+                        set lo to 1
+                        set hi to n
+                        repeat while lo < hi
+                            set midIdx to (lo + hi) div 2
+                            if (date received of (message midIdx of mb)) > hiDate then
+                                set lo to midIdx + 1
+                            else
+                                set hi to midIdx
+                            end if
+                        end repeat
+
+                        -- Linear scan of the window only.
+                        repeat with i from lo to n
+                            set m to message i of mb
+                            if (date received of m) < loDate then exit repeat
+                            set mid to ""
+                            try
+                                set mid to message id of m
+                            end try
+                            if mid is "{safe_bare}" or mid is "{safe_bracketed}" then
+                                set foundId to (id of m as text)
+                                exit repeat
+                            end if
+                        end repeat
+                    end if
+                end if
                 if foundId is not "" then exit repeat
+                if sawOrderProblem then exit repeat
             end repeat
-            if foundId is "" then
-                return "NOT_FOUND"
-            else
-                return foundId
-            end if
+
+            if sawOrderProblem then return "ORDER_UNEXPECTED"
+            if foundId is "" then return "WINDOW_MISS"
+            return foundId
         end tell""",
             timeout=self.timeout,
         )
 
         result = self._run_applescript(script).strip()
-        if result == "NOT_FOUND" or not result:
-            return None
+        if result == "ORDER_UNEXPECTED":
+            raise MailAnchorLookupIncompleteError(
+                f"Could not locate Message-ID {rfc5322_message_id!r}: Mail is "
+                "not enumerating messages newest-first, so the indexed "
+                "date-bounded search is unsafe. Refusing to fall back to the "
+                "unindexed scan, which freezes Mail (#432/#242)."
+            )
+        if result == "WINDOW_MISS" or not result:
+            raise MailAnchorLookupIncompleteError(
+                f"Could not locate Message-ID {rfc5322_message_id!r} in Mail. "
+                f"IMAP reports it arrived {when:%Y-%m-%d %H:%M:%S}, but it is "
+                "not in the unified inbox or sent mailbox within a day of "
+                "that. It may live in another mailbox; searching every "
+                "mailbox by Message-ID is what freezes Mail, so that is not "
+                "attempted (#432)."
+            )
         return result
 
     def get_draft_state(self, draft_id: str) -> dict[str, Any]:
@@ -5080,19 +5229,30 @@ class AppleMailConnector:
             verb = "reply to all" if reply_all else "reply"
         else:  # forward
             verb = "forward"
+        # #432: this used to walk `accounts x mailboxes`, re-finding a message
+        # its caller had just resolved. Mail's `id` is an INDEXED integer, so
+        # probing the two unified mailboxes (locale-independent aggregations
+        # across every account, per #407/#419) is both correct and instant —
+        # and it is where find_message_by_message_id searched, so a seed it
+        # resolved is reachable here.
+        #
+        # The id is emitted UNQUOTED when numeric: `id` is an integer, and
+        # comparing it against a quoted string is what the old form did.
+        id_literal = (
+            seed_id_safe
+            if seed_id_safe and seed_id_safe.isdigit()
+            else f'"{seed_id_safe}"'
+        )
         return f"""
             set origMsg to missing value
-            repeat with acc in accounts
+            try
+                set origMsg to first message of inbox whose id is {id_literal}
+            end try
+            if origMsg is missing value then
                 try
-                    repeat with mb in mailboxes of acc
-                        try
-                            set origMsg to first message of mb whose id is "{seed_id_safe}"
-                            exit repeat
-                        end try
-                    end repeat
+                    set origMsg to first message of sent mailbox whose id is {id_literal}
                 end try
-                if origMsg is not missing value then exit repeat
-            end repeat
+            end if
             if origMsg is missing value then error "SEED_NOT_FOUND"
             set theMessage to {verb} origMsg opening window false
         """

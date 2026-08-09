@@ -2798,6 +2798,66 @@ class TestFindMessageByMessageIdIntegration:
     survives any specific Message-ID being deleted.
     """
 
+    def test_mail_stays_responsive_during_lookup(
+        self, connector: AppleMailConnector, test_account: str
+    ) -> None:
+        """#432: the point of this fix is that Mail keeps drawing.
+
+        The old `whose message id` walk ran on Mail's UI thread across every
+        mailbox of every account — measured here at 33,569 messages in Gmail's
+        INBOX and 62,085 in All Mail — so Mail stopped responding entirely and
+        stayed wedged after the 60s timeout killed our osascript client.
+
+        This asserts the observable symptom, not a proxy for it: a second,
+        trivial AppleScript must get an answer WHILE the lookup runs. Against
+        the pre-fix code it does not.
+        """
+        import subprocess
+        import threading
+
+        rows = connector.search_messages(
+            account=test_account, mailbox="INBOX", limit=1
+        )
+        if not rows:
+            pytest.skip(f"{test_account} INBOX has no messages")
+        rfc_id = rows[0].get("rfc_message_id") or rows[0].get("id")
+        if not rfc_id or "@" not in rfc_id:
+            pytest.skip("test_account is not on the IMAP path")
+
+        done = threading.Event()
+
+        def _lookup() -> None:
+            try:
+                connector.find_message_by_message_id(str(rfc_id))
+            finally:
+                done.set()
+
+        t = threading.Thread(target=_lookup, daemon=True)
+        t.start()
+        try:
+            probe_start = time.monotonic()
+            probe = subprocess.run(
+                ["/usr/bin/osascript", "-e",
+                 'tell application "Mail" to return (count of accounts) as text'],
+                capture_output=True, text=True, timeout=30,
+            )
+            probe_elapsed = time.monotonic() - probe_start
+        except subprocess.TimeoutExpired:
+            pytest.fail(
+                "Mail did not answer a trivial AppleScript within 30s while "
+                "find_message_by_message_id was running — the UI thread is "
+                "blocked, i.e. the #432 freeze is back"
+            )
+        finally:
+            done.wait(timeout=120)
+        t.join(timeout=5)
+
+        assert probe.returncode == 0, f"probe failed: {probe.stderr}"
+        assert probe_elapsed < 25.0, (
+            f"Mail took {probe_elapsed:.1f}s to answer `count of accounts` "
+            "during the lookup — the UI thread is being starved (#432)"
+        )
+
     def test_find_by_bare_rfc_id_from_search_messages(
         self, connector: AppleMailConnector, test_account: str
     ) -> None:

@@ -1290,6 +1290,59 @@ class ImapConnector:
                 entry.get(b"BODYSTRUCTURE")
             )
 
+    def locate_message(self, message_id: str) -> dict[str, Any] | None:
+        """Locate an RFC 5322 Message-ID and return where and *when* it is.
+
+        Returns ``{"folder": str, "uid": int, "internaldate": datetime}`` for
+        the first probed folder containing the Message-ID, or ``None`` when no
+        probed folder has it.
+
+        The ``internaldate`` is the point of this method (#432). Mail.app's
+        ``message id`` property is UNINDEXED, so matching it in AppleScript
+        loads every message in a mailbox and freezes Mail's UI. Mail *does*
+        order messages newest-first with cheap positional access, so a caller
+        that knows roughly WHEN a message arrived can binary-search to it in
+        ~log2(n) property reads instead of scanning. This supplies that date
+        from the server side, where the lookup IS indexed (measured 0.14s over
+        61,880 messages).
+
+        Shares the bounded probe-folder set with :meth:`resolve_anchor` — for
+        locating, Gmail's All Mail is ideal rather than a liability, since it
+        mirrors every message and so answers for any folder.
+
+        Raises:
+            IMAPClientError / OSError / LoginError: connection/auth failures,
+                so the caller can distinguish "not there" from "could not
+                check" (#425).
+        """
+        bracketed = _bracket_message_id(message_id)
+        with self._session() as client:
+            for folder in self._anchor_probe_folders(client):
+                try:
+                    client.select_folder(folder, readonly=True)
+                    uids = client.search(["HEADER", "Message-ID", bracketed])
+                except IMAPClientError as exc:
+                    logger.debug(
+                        "locate_message: skipping %s (%s)", folder, exc
+                    )
+                    continue
+                if not uids:
+                    continue
+                try:
+                    fetched = client.fetch([uids[0]], [b"INTERNALDATE"])
+                except IMAPClientError:
+                    continue
+                entry = fetched.get(uids[0]) or {}
+                internaldate = entry.get(b"INTERNALDATE")
+                if internaldate is None:
+                    continue
+                return {
+                    "folder": folder,
+                    "uid": uids[0],
+                    "internaldate": internaldate,
+                }
+        return None
+
     def resolve_anchor(self, message_id: str) -> dict[str, Any] | None:
         """Resolve an RFC 5322 Message-ID to a get_thread anchor via
         server-side, INDEXED ``SEARCH HEADER Message-ID`` (#415).
