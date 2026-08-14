@@ -19,7 +19,11 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          # Node 22 (active LTS). 20 went EOL in April 2026 and this step is
+          # only exercised by a real `v*` tag, so a stale runtime here would
+          # surface during a release rather than in CI. Needed for
+          # `npx @anthropic-ai/mcpb` in scripts/build-mcpb.sh.
+          node-version: '22'
 
       - name: Extract version from tag
         id: version
