@@ -171,21 +171,34 @@ def _bare_message_id(message_id: str) -> str:
     return mid
 
 
-def _construct_as_date_var(var: str, year: int, month: int, day: int) -> str:
-    """Emit AppleScript that constructs an AS date object at midnight (local
-    time) on the given (year, month, day).
+def _construct_as_date_var(
+    var: str, year: int, month: int, day: int, seconds: int = 0
+) -> str:
+    """Emit AppleScript that constructs an AS date object on the given
+    (year, month, day), at ``seconds`` into that day (default: midnight).
 
     Why this exists: AppleScript's `date "YYYY-MM-DD"` literal does NOT
     parse ISO dates — `date "2026-05-28"` evaluates to year-12196, silently
-    breaking any filter that depends on it. The property-setter pattern
-    below is locale-independent and gives exactly midnight on the target
-    date.
+    breaking any filter that depends on it. Observed again in #436 with a
+    timestamp form: `date "2026-08-09 11:03:51"` yields "October 8, 12177".
+    Neither raises. The property-setter pattern below is locale-independent
+    and gives exactly the intended instant.
+
+    THIS IS THE ONLY SUPPORTED WAY to get a date into generated AppleScript.
+    `scripts/check_applescript_safety.sh` (Check 6) fails the build on a
+    `date "..."` literal so the trap cannot be re-introduced.
 
     The leading `set day of var to 1` is a defense against current-date
     quirks: if `current date` is e.g. 2026-01-31 and we immediately
     `set month of var to 2`, AppleScript would try to roll into Feb 31 and
     misbehave. Resetting day to 1 first, then year/month/day in that
     order, avoids all such edge cases. (#242)
+
+    Args:
+        seconds: Seconds into the day (0-86399). `set time of` takes
+            seconds-since-midnight, so an hour/minute/second timestamp is
+            passed as ``h * 3600 + m * 60 + s``. Defaults to 0 (midnight),
+            which is what date-only filters like ``date_from`` want. (#436)
     """
     indent = "\n            "
     return indent.join([
@@ -194,7 +207,7 @@ def _construct_as_date_var(var: str, year: int, month: int, day: int) -> str:
         f"set year of {var} to {year}",
         f"set month of {var} to {month}",
         f"set day of {var} to {day}",
-        f"set time of {var} to 0",
+        f"set time of {var} to {seconds}",
     ])
 
 
@@ -4929,21 +4942,18 @@ class AppleMailConnector:
         safe_bracketed = escape_applescript_string(
             sanitize_input(f"<{bare}>")
         )
-        # Build the date from COMPONENTS, never `date "..."`. AppleScript
-        # parses date-string literals against the user's locale: on this
-        # machine `date "2026-08-09 11:03:51"` yields "October 8, 12177",
-        # which silently makes any window comparison meaningless. Setting
-        # `day` to 1 first avoids overflow when the current day-of-month
-        # exceeds the target month's length.
-        secs_into_day = when.hour * 3600 + when.minute * 60 + when.second
+        # Dates go through _construct_as_date_var, never a `date "..."`
+        # literal — see its docstring for why (#242/#436).
+        target_date = _construct_as_date_var(
+            "targetDate",
+            when.year,
+            when.month,
+            when.day,
+            when.hour * 3600 + when.minute * 60 + when.second,
+        )
         script = _wrap_with_timeout(
             f"""tell application "Mail"
-            set targetDate to (current date)
-            set day of targetDate to 1
-            set year of targetDate to {when.year}
-            set month of targetDate to {when.month}
-            set day of targetDate to {when.day}
-            set time of targetDate to {secs_into_day}
+            {target_date}
             set loDate to targetDate - (1 * days)
             set hiDate to targetDate + (1 * days)
             set foundId to ""

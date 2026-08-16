@@ -28,6 +28,7 @@ from apple_mail_fast_mcp.exceptions import (
 )
 from apple_mail_fast_mcp.mail_connector import (
     AppleMailConnector,
+    _construct_as_date_var,
     _message_id_match_clause,
     _wrap_as_json_script,
     _wrap_with_timeout,
@@ -9097,6 +9098,55 @@ class TestSmtpSendPath:
         )
         assert connector._resolve_smtp_config("Gmail") == ("", 0, "")
         assert called == []
+
+
+class TestConstructAsDateVar:
+    """#242/#436: the ONLY supported way to get a date into generated
+    AppleScript.
+
+    `date "..."` string literals parse against the user's LOCALE and fail
+    silently — `date "2026-05-28"` gives year 12196, and
+    `date "2026-08-09 11:03:51"` gives October 8, 12177. Neither raises, so a
+    filter built on one just quietly matches nothing.
+    """
+
+    def test_emits_no_date_string_literal(self) -> None:
+        script = _construct_as_date_var("d", 2026, 8, 9)
+        assert 'date "' not in script
+
+    def test_defaults_to_midnight(self) -> None:
+        """Date-only callers (search_messages date_from/date_to) rely on this
+        default; changing it would silently shift their bounds."""
+        script = _construct_as_date_var("dateFromVar", 2026, 8, 9)
+        assert "set time of dateFromVar to 0" in script
+
+    def test_seconds_into_day_is_honoured(self) -> None:
+        """#436: `set time of` takes seconds-since-midnight, so a timestamp
+        arrives as h*3600 + m*60 + s. 11:03:51 -> 39831."""
+        script = _construct_as_date_var("targetDate", 2026, 8, 9, 39831)
+        assert "set time of targetDate to 39831" in script
+
+    def test_day_is_reset_to_one_before_the_month_is_set(self) -> None:
+        """Ordering guard: with `current date` on the 31st, setting month to a
+        30-day month before resetting day rolls into the next month."""
+        script = _construct_as_date_var("d", 2026, 2, 28)
+        assert script.index("set day of d to 1") < script.index(
+            "set month of d to 2"
+        )
+        # ...and the real day is applied after the month.
+        assert script.index("set month of d to 2") < script.index(
+            "set day of d to 28"
+        )
+
+    def test_year_month_day_all_present(self) -> None:
+        script = _construct_as_date_var("d", 2026, 8, 9)
+        for expected in (
+            "set d to current date",
+            "set year of d to 2026",
+            "set month of d to 8",
+            "set day of d to 9",
+        ):
+            assert expected in script
 
 
 class TestResolveAnchorViaImap:

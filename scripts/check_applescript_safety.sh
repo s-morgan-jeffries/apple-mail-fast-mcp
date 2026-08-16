@@ -63,6 +63,38 @@ if [ -n "$HARDCODED" ]; then
     echo "$HARDCODED" | sed 's/^/    /'
 fi
 
+# Check 6: AppleScript `date "..."` string literals (#242 / #436)
+#
+# AppleScript parses date-string literals against the USER'S LOCALE and fails
+# silently: `date "2026-05-28"` evaluates to year 12196, and
+# `date "2026-08-09 11:03:51"` to October 8, 12177. Neither raises, so a filter
+# built on one just quietly matches nothing — #436 cost an integration cycle
+# to a bad window that reported a clean "not found" for a message at index 1.
+#
+# The only supported way to build a date is _construct_as_date_var().
+#
+# Prose vs code: every legitimate mention of the trap is inside backticks,
+# because it is documentation. So flag `date "` NOT preceded by a backtick.
+# Scans all of src/ (not just $CONNECTOR) so a literal landing in a future
+# module is caught too.
+echo ""
+echo "Check 6: AppleScript date string literals..."
+# --include='*.py' matters: without it this matches compiled bytecode in
+# __pycache__/*.pyc, which reports as a binary-file hit and is never actionable.
+DATE_LITERALS=$(grep -rnE --include='*.py' '[^`]date "' src/ 2>/dev/null || true)
+if [ -n "$DATE_LITERALS" ]; then
+    echo "  ERROR: AppleScript date string literal(s) found:"
+    echo "$DATE_LITERALS" | sed 's/^/    /'
+    echo ""
+    echo "  AppleScript parses these against the user's locale and fails"
+    echo "  SILENTLY (date \"2026-08-09\" -> year 12177). Build dates with"
+    echo "  _construct_as_date_var() instead."
+    echo "  If you are DOCUMENTING the trap, wrap it in backticks."
+    ERRORS=$((ERRORS + 1))
+else
+    echo "  OK: no unquoted date literals (dates go via _construct_as_date_var)."
+fi
+
 echo ""
 if [ $ERRORS -gt 0 ]; then
     echo "FAILED: $ERRORS safety issue(s) found."

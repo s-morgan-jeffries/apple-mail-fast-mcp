@@ -75,6 +75,40 @@ def escape_applescript_string(s: str) -> str:
 
 **Rule:** Every string interpolated into AppleScript MUST go through `escape_applescript_string()`. No exceptions. Check via `check_applescript_safety.sh`.
 
+## Dates: never use a `date "..."` literal
+
+AppleScript parses date-string literals against the **user's locale**, and gets it wrong *silently*:
+
+```applescript
+date "2026-05-28"           --> year 12196
+date "2026-08-09 11:03:51"  --> Wednesday, October 8, 12177
+```
+
+Neither raises. Nothing warns. A filter built on one of these just quietly matches nothing — and because the surrounding code behaves correctly, the bug is invisible above the AppleScript boundary.
+
+**Bug story (#436):** a date literal bounded a message-search window. The window was ~10,000 years off, so it matched nothing, and the failure surfaced as a clean, plausible `MailAnchorLookupIncompleteError` for a message sitting at **index 1 of the INBOX**. Cost a full integration cycle. The trap had already been documented — in a helper docstring inside a 6,000-line module, which is not where anyone writing new AppleScript looks. Hence this section.
+
+**Always build dates from components** via `_construct_as_date_var()` in `mail_connector.py`:
+
+```python
+_construct_as_date_var("targetDate", 2026, 8, 9, 39831)  # 39831 = 11:03:51
+```
+
+which emits:
+
+```applescript
+set targetDate to current date
+set day of targetDate to 1        -- FIRST: see below
+set year of targetDate to 2026
+set month of targetDate to 8
+set day of targetDate to 9
+set time of targetDate to 39831   -- seconds since midnight
+```
+
+**Why `set day to 1` comes first:** if `current date` is the 31st and you set month to a 30-day month, AppleScript rolls into the next month. Resetting the day first makes the sequence safe for every date.
+
+**Rule:** every date in generated AppleScript goes through `_construct_as_date_var()`. `check_applescript_safety.sh` (Check 6) fails the build on a `date "..."` literal in `src/`. If you are *documenting* the trap rather than committing it, wrap the example in backticks — that is how the check distinguishes prose from code.
+
 ## Attachment Handling
 
 Attachments use POSIX file references:
@@ -120,7 +154,11 @@ messages whose sender contains "user" and subject contains "report"
 ## Known Mail.app Automation Limitations
 
 1. **No scheduled sending** — Mail.app has no AppleScript support for delayed/scheduled sends
-2. **Thread reconstruction is possible but not native** — Mail.app has no `thread` or `conversation` class. Reconstruct threads by reading `headers of msg` for `in-reply-to`, `references`, and matching against `message id of msg` (the RFC 822 header value) across candidate messages. **`whose message id is "X"` is NOT indexed** (~21s per lookup on a real mailbox); always subject-prefilter first. See `get_thread` in `mail_connector.py`.
+2. **Thread reconstruction is possible but not native** — Mail.app has no `thread` or `conversation` class. Reconstruct threads by reading `headers of msg` for `in-reply-to`, `references`, and matching against `message id of msg` (the RFC 822 header value) across candidate messages. See `get_thread` in `mail_connector.py`.
+
+   **`whose message id is "X"` is NOT indexed**, and AppleScript runs on Mail's UI thread — so it loads every message in the mailbox and *freezes the app*, not merely slowly (measured: 33,569 messages in one INBOX, 62,085 in Gmail's All Mail). The `_run_applescript` timeout does not rescue Mail; it kills our `osascript` client while Mail keeps grinding.
+
+   Resolve an RFC Message-ID by **IMAP first** — `SEARCH HEADER Message-ID` is server-indexed (measured 0.14s over 61,880 messages) and returns the arrival date — then binary-search the mailbox by that date. Messages enumerate strictly newest-first with cheap positional access, so that is ~log₂(n) property reads. See `find_message_by_message_id` (#432/#434). Mail's numeric `id` *is* indexed, so `whose id is N` stays instant and needs none of this.
 3. **Rule management is partial** — Rules are *readable* (`rules` collection, `name`, `enabled`, conditions/actions), but have no stable `id` and must be addressed positionally or by non-unique name. Mutation paths (creating, updating, deleting) are more complex and not yet implemented.
 4. **No smart mailbox access** — Smart mailboxes are not exposed to AppleScript
 5. **Rich text body** — `content of message` returns plain text; HTML body requires alternate approach
@@ -154,8 +192,9 @@ if result.startswith("ERROR:"):
 
 1. [ ] All user strings escaped with `escape_applescript_string()`
 2. [ ] All inputs sanitized with `sanitize_input()`
-3. [ ] Error handling with `try/on error` in AppleScript
-4. [ ] Timeout considered (complex operations may need > 60s)
-5. [ ] Integration test written against real Mail.app
-6. [ ] `check_applescript_safety.sh` passes
-7. [ ] Gmail compatibility considered (does this operation work with labels?)
+3. [ ] Any dates built via `_construct_as_date_var()`, never a `date "..."` literal
+4. [ ] Error handling with `try/on error` in AppleScript
+5. [ ] Timeout considered (complex operations may need > 60s)
+6. [ ] Integration test written against real Mail.app
+7. [ ] `check_applescript_safety.sh` passes
+8. [ ] Gmail compatibility considered (does this operation work with labels?)
