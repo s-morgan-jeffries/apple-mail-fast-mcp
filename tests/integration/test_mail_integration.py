@@ -2729,6 +2729,92 @@ class TestAnchorLookupIncompleteIntegration:
         assert isinstance(thread, list) and len(thread) >= 1
 
 
+class TestBulkRfcIdDoesNotFreezeMail:
+    """#437: a bulk mutation given RFC Message-IDs and NO account/mailbox is
+    the exact shape that froze Mail.
+
+    `_bulk_repeat_block` used to match `message id` inline when the numeric
+    `id` arm missed — which it always does for an RFC id. That match is
+    unindexed and AppleScript runs on Mail's UI thread, so it loaded every
+    message in scope (33,569 in Gmail's INBOX, 62,085 in All Mail) once per
+    id. Ids are now resolved up front, so the emitted match is the indexed
+    `whose id is N`.
+
+    `flag_color` is used deliberately: IMAP cannot set Mail's
+    `\\$MailFlagBit*` keywords, so it is guaranteed to take the AppleScript
+    fallback rather than an IMAP fast path.
+    """
+
+    def test_bulk_flag_by_rfc_id_completes_and_keeps_mail_responsive(
+        self, connector: AppleMailConnector, test_account: str
+    ) -> None:
+        import subprocess
+        import threading
+
+        rows = connector.search_messages(
+            account=test_account, mailbox="INBOX", limit=1
+        )
+        if not rows:
+            pytest.skip(f"{test_account} INBOX has no messages")
+        rfc_id = rows[0].get("rfc_message_id") or rows[0].get("id")
+        if not rfc_id or "@" not in rfc_id:
+            pytest.skip("test_account is not on the IMAP path")
+
+        done = threading.Event()
+        result: dict[str, Any] = {}
+
+        def _bulk() -> None:
+            try:
+                # No account / source_mailbox on purpose — the freezing shape.
+                result["count"] = connector.update_message(
+                    [str(rfc_id)], flag_color="orange"
+                )
+            except BaseException as exc:  # noqa: BLE001 - reported below
+                result["error"] = exc
+            finally:
+                done.set()
+
+        t = threading.Thread(target=_bulk, daemon=True)
+        t.start()
+        try:
+            probe_start = time.monotonic()
+            probe = subprocess.run(
+                ["/usr/bin/osascript", "-e",
+                 'tell application "Mail" to return (count of accounts) as text'],
+                capture_output=True, text=True, timeout=30,
+            )
+            probe_elapsed = time.monotonic() - probe_start
+        except subprocess.TimeoutExpired:
+            pytest.fail(
+                "Mail did not answer a trivial AppleScript within 30s while a "
+                "bulk RFC-id update was running — the UI thread is blocked, "
+                "i.e. the #437 freeze is back"
+            )
+        finally:
+            done.wait(timeout=180)
+        t.join(timeout=5)
+
+        assert probe.returncode == 0, f"probe failed: {probe.stderr}"
+        assert probe_elapsed < 25.0, (
+            f"Mail took {probe_elapsed:.1f}s to answer during the bulk "
+            "update — the UI thread is being starved (#437)"
+        )
+        assert "error" not in result, f"bulk update raised: {result.get('error')}"
+        # >= 1, not == 1: the cross-scan visits every mailbox of every account
+        # and has no `exit repeat` after a match, so a Gmail message visible
+        # under several labels increments the counter once per mailbox. That
+        # over-count predates #437 (the old unindexed arm matched the same way
+        # in each mailbox) and is tracked separately — what this test pins is
+        # that the id RESOLVED and the mutation ran without freezing Mail.
+        assert result.get("count", 0) >= 1, (
+            f"expected at least 1 message flagged, got {result.get('count')} "
+            "— the RFC id did not resolve to a real message"
+        )
+
+        # Leave no trace: clear the flag we set.
+        connector.update_message([str(rfc_id)], flag_color="none")
+
+
 class TestGetThreadPartialFlagIntegration:
     """#420: a degraded thread must announce itself against real Mail.
 

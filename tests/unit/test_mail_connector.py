@@ -63,9 +63,28 @@ class TestAppleMailConnector:
     """Tests for AppleMailConnector."""
 
     @pytest.fixture
-    def connector(self) -> AppleMailConnector:
-        """Create a connector instance."""
-        return AppleMailConnector(timeout=30)
+    def connector(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> AppleMailConnector:
+        """Create a connector instance.
+
+        #437: the bulk-mutation tools now resolve RFC Message-IDs to Mail's
+        internal numeric ids before generating AppleScript (so the match is
+        the indexed `whose id is N` rather than the unindexed `message id`
+        scan that froze Mail). Tests in this class use placeholder ids like
+        `a@x` while exercising IMAP fast-path SELECTION, not resolution, and
+        mock the whole AppleScript layer — so an unstubbed resolver would try
+        a real `list_accounts` against a mocked `_run_applescript`.
+
+        Stub it to a fixed numeric id. Resolution itself is covered by
+        `TestResolveBulkIds`, and the "RFC ids never reach AppleScript"
+        guarantee by `TestBulkBlockHasNoUnindexedArm`.
+        """
+        c = AppleMailConnector(timeout=30)
+        monkeypatch.setattr(
+            c, "find_message_by_message_id", lambda mid: "1"
+        )
+        return c
 
     @patch("subprocess.run")
     def test_run_applescript_success(
@@ -4987,17 +5006,153 @@ class TestWhoseIdQuoting:
         mock_run.assert_not_called()
 
 
-class TestUpdateMessageMatchesRfcMessageId:
-    """Bug A / #205-family: the AppleScript pass must match the RFC 5322
-    ``message id`` as well as Mail's internal numeric ``id``.
+class TestResolveBulkIds:
+    """#437: resolve RFC Message-IDs to Mail's internal numeric ids BEFORE
+    generating AppleScript, so the emitted match is the indexed
+    `whose id is N` and the unindexed `message id` arm can be deleted.
 
-    Read tools hand back the RFC 5322 Message-ID on the IMAP path. The
-    AppleScript fallback used to match only ``whose id is msgId`` (numeric
-    ``id``), which an RFC string never equals — so flag/read patches that
-    can't use the IMAP fast path (e.g. ``flag_color``, which IMAP can't
-    set) matched nothing and silently returned ``updated:0``. Matching
-    ``(id is msgId or message id is msgId)`` in the same pass fixes it
-    with no extra round-trip (no per-id all-mailbox scan).
+    That arm is the freeze: `message id` is not indexed and AppleScript runs
+    on Mail's UI thread, so it loads every message in scope — 33,569 in
+    Gmail's INBOX, 62,085 in All Mail — once per id, up to the 100-item cap.
+
+    This reverses #205's "match inline, no separate resolver round-trip"
+    choice. That was reasonable when the resolver meant an all-mailbox scan;
+    since #434 the resolver is indexed IMAP + binary search, while the inline
+    match still freezes Mail.
+    """
+
+    @pytest.fixture
+    def connector(self) -> AppleMailConnector:
+        return AppleMailConnector(timeout=30)
+
+    def test_numeric_ids_pass_through_without_any_lookup(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Numeric ids already take Mail's INDEXED integer `id`. They must not
+        acquire an IMAP round-trip they never needed."""
+        calls: list[str] = []
+        monkeypatch.setattr(
+            connector, "find_message_by_message_id",
+            lambda mid: calls.append(mid) or "999",
+        )
+        assert connector._resolve_bulk_ids(["123", "456"]) == ["123", "456"]
+        assert calls == []
+
+    def test_rfc_ids_are_resolved_to_internal_ids(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            connector, "find_message_by_message_id", lambda mid: "160989"
+        )
+        assert connector._resolve_bulk_ids(["abc@example.com"]) == ["160989"]
+
+    def test_mixed_batch_resolves_only_the_rfc_ids(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            connector, "find_message_by_message_id", lambda mid: "777"
+        )
+        assert connector._resolve_bulk_ids(
+            ["123", "abc@example.com", "456"]
+        ) == ["123", "777", "456"]
+
+    def test_definitively_absent_id_is_dropped(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """None means IMAP answered: not present. Dropping it matches the
+        existing best-effort partial-success convention (the tools return a
+        count, not per-id errors)."""
+        monkeypatch.setattr(
+            connector, "find_message_by_message_id",
+            lambda mid: None if "gone" in mid else "555",
+        )
+        assert connector._resolve_bulk_ids(
+            ["gone@example.com", "here@example.com"]
+        ) == ["555"]
+
+    def test_all_indeterminate_raises_rather_than_reporting_zero(
+        self, connector: AppleMailConnector
+    ) -> None:
+        """#425's lesson: 'we could not check' must not be presented as
+        'nothing matched'. A silent updated:0 here would be that bug again."""
+        def _boom(mid: str) -> None:
+            raise MailAnchorLookupIncompleteError("probe timed out")
+
+        connector.find_message_by_message_id = _boom  # type: ignore[assignment]
+        with pytest.raises(MailAnchorLookupIncompleteError):
+            connector._resolve_bulk_ids(["a@x.com", "b@x.com"])
+
+    def test_partial_indeterminate_still_proceeds(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One unreachable id must not fail a batch that has real work."""
+        def _mixed(mid: str) -> str:
+            if mid.startswith("bad"):
+                raise MailAnchorLookupIncompleteError("timed out")
+            return "321"
+
+        monkeypatch.setattr(connector, "find_message_by_message_id", _mixed)
+        assert connector._resolve_bulk_ids(
+            ["bad@x.com", "good@x.com"]
+        ) == ["321"]
+
+
+class TestBulkBlockHasNoUnindexedArm:
+    """#437: the emitted AppleScript must never contain the unindexed
+    `message id` match, on EITHER branch.
+
+    The narrow (account + source_mailbox) branch was equally affected — the
+    docstring's advice to pass account+source_mailbox removed the
+    accounts x mailboxes multiplier but not the scan itself, and `sourceMb`
+    is routinely a 33,569-message INBOX.
+    """
+
+    @pytest.fixture
+    def connector(self) -> AppleMailConnector:
+        return AppleMailConnector(timeout=30)
+
+    @pytest.mark.parametrize(
+        "account,source_mailbox",
+        [(None, None), ("Gmail", "INBOX")],
+        ids=["cross-scan", "narrow"],
+    )
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_emitted_script_matches_only_the_indexed_id(
+        self, mock_run: MagicMock, connector: AppleMailConnector,
+        monkeypatch: pytest.MonkeyPatch,
+        account: str | None, source_mailbox: str | None,
+    ) -> None:
+        mock_run.return_value = "1"
+        monkeypatch.setattr(
+            connector, "find_message_by_message_id", lambda mid: "160989"
+        )
+        connector.update_message(
+            ["abc@example.com"], flag_color="orange",
+            account=account, source_mailbox=source_mailbox,
+        )
+        script = mock_run.call_args[0][0]
+        assert "message id is" not in script, (
+            "unindexed message-id match present — this is the #437 freeze"
+        )
+        assert "midBare" not in script
+        assert "whose id is" in script
+
+
+class TestUpdateMessageMatchesRfcMessageId:
+    """Bug A / #205-family: an RFC 5322 Message-ID must still produce a real
+    update, not a silent ``updated:0``.
+
+    Read tools hand back the RFC Message-ID on the IMAP path, which Mail's
+    numeric ``id`` never equals. #205 fixed that by matching ``message id``
+    inline in the same AppleScript pass, explicitly to avoid "a separate
+    resolver round-trip".
+
+    **#437 reverses the mechanism, not the guarantee.** That inline match is
+    UNINDEXED and freezes Mail (33,569 messages in Gmail's INBOX, per id).
+    The id is now resolved up front via `_resolve_bulk_ids`, so the pass
+    matches on the indexed numeric ``id``. These tests pin the *guarantee* —
+    an RFC id still updates — while `TestBulkBlockHasNoUnindexedArm` pins the
+    new mechanism.
     """
 
     RFC_ID = (
@@ -5018,22 +5173,26 @@ class TestUpdateMessageMatchesRfcMessageId:
         connector: AppleMailConnector,
     ) -> None:
         mock_run.return_value = "1"
+        mock_find.return_value = "160989"
 
         result = connector.update_message([self.RFC_ID], flag_color="orange")
 
         assert result == 1
-        # The pass must try the RFC message id (not only the numeric id),
-        # in the single existing AppleScript pass — no separate resolver
-        # round-trip.
+        # The guarantee (#205): an RFC id produces a real update, not a
+        # silent updated:0. The mechanism (#437): it was resolved to Mail's
+        # internal id first, so the emitted match is the INDEXED numeric one.
+        mock_find.assert_called_once_with(self.RFC_ID)
         script = mock_run.call_args[0][0]
-        # The pass tries the RFC message id; the message-id arm queries
-        # both the bare and <bracketed> forms (mirrors #232 /
-        # find_message_by_message_id), so other providers' bracketed
-        # storage still matches.
-        assert "message id is midBare" in script
-        assert 'message id is ("<" & midBare & ">")' in script
-        assert f'"{self.RFC_ID}"' in script
-        mock_find.assert_not_called()
+        assert '"160989"' in script
+        assert f'"{self.RFC_ID}"' not in script, (
+            "the raw RFC id reached AppleScript — it would hit the unindexed "
+            "message-id match and freeze Mail (#437)"
+        )
+        assert "message id is" not in script
+        # (#205 asserted `mock_find.assert_not_called()` here — the whole
+        # point of that fix was to avoid a resolver round-trip. #437 reverses
+        # that: the resolver is now indexed IMAP + binary search, while the
+        # inline match it was avoiding freezes Mail.)
         mock_run.assert_called_once()
 
     @patch.object(AppleMailConnector, "_run_applescript")

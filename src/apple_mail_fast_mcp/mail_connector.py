@@ -811,29 +811,30 @@ def _bulk_repeat_block(
         source_mailbox: Source mailbox name, or None.
         actions: One or more AppleScript statements to run inside the
             loop once a message is matched (under `if matched then`).
-            Each id is matched in TWO sequential attempts — first by
-            Mail's internal numeric `id`, then (if that misses) by the
-            RFC 5322 `message id`. This lets callers pass either form:
-            read tools hand back the RFC Message-ID on the IMAP path,
-            which a numeric `id` never equals (the cause of silent
-            `updated:0` patches; #205-family). The two predicates are
-            kept in SEPARATE `whose` clauses on purpose — combining them
-            as `whose (id is X or message id is X)` makes Mail's query
-            compiler fail the whole filter when X is a non-numeric RFC
-            id (the `id is X` integer comparison poisons the `or`),
-            matching nothing. The `message id` arm itself queries BOTH
-            the bare and `<bracketed>` forms (`message id is A or message
-            id is B` — safe, both are string comparisons), mirroring
-            `find_message_by_message_id`: IMAP-backed accounts store the
-            id bare, but other paths may store it bracketed per RFC 5322
-            (#232). The counter increment is appended automatically.
+            Ids are matched ONLY by Mail's internal numeric `id`, which is
+            an integer and INDEXED, so the match is instant. The counter
+            increment is appended automatically.
 
-            Performance: on the cross-scan path (no `source_mailbox`) the
-            `message id` fallback is NOT indexed (~20s/mailbox on a real
-            account; see APPLESCRIPT_GOTCHAS.md) and fires once per mailbox
-            for any RFC id, since the numeric `id` arm always misses for
-            those. Callers holding an RFC id should pass `account` +
-            `source_mailbox` to take the narrow single-mailbox path.
+            **Callers must pass numeric ids.** Route the caller's list
+            through `AppleMailConnector._resolve_bulk_ids` first — it
+            converts RFC 5322 Message-IDs (what read tools emit on the IMAP
+            path, #148) to internal ids via the indexed resolver.
+
+            This block used to carry a second arm matching `message id`
+            inline, so either id form worked without a resolver round-trip
+            (#205-family). That arm was the #437 freeze: `message id` is
+            UNINDEXED, and AppleScript runs on Mail's UI thread, so it
+            loaded every message in scope — once per id, up to the 100-item
+            bulk cap — on BOTH branches. Scoping to `source_mailbox` only
+            removed the mailbox-count multiplier, not the scan: `sourceMb`
+            is routinely a 33,569-message INBOX.
+
+            Historical note, in case anyone reintroduces a dual match: the
+            two predicates were deliberately in SEPARATE `whose` clauses,
+            never combined as `whose (id is X or message id is X)` — the
+            integer comparison poisons the `or` for a non-numeric RFC id and
+            Mail's query compiler then fails the whole filter, matching
+            nothing.
         counter_var: Name of the AppleScript counter variable (e.g.
             "updateCount", "moveCount") that gets incremented per success.
 
@@ -889,14 +890,6 @@ def _bulk_repeat_block(
             f"                    set msg to first message of sourceMb whose id is mid\n"
             f"                    set matched to true\n"
             f"                end try\n"
-            f"                if not matched then\n"
-            f"                    try\n"
-            f"                        set midBare to mid\n"
-            f'                        if midBare starts with "<" and midBare ends with ">" then set midBare to text 2 thru -2 of midBare\n'
-            f'                        set msg to first message of sourceMb whose (message id is midBare or message id is ("<" & midBare & ">"))\n'
-            f"                        set matched to true\n"
-            f"                    end try\n"
-            f"                end if\n"
             f"                if matched then\n"
             f"{action_lines}\n"
             f"{_success_tail(' ' * 20)}\n"
@@ -917,14 +910,6 @@ def _bulk_repeat_block(
         f"                            set msg to first message of mb whose id is mid\n"
         f"                            set matched to true\n"
         f"                        end try\n"
-        f"                        if not matched then\n"
-        f"                            try\n"
-        f"                                set midBare to mid\n"
-        f'                                if midBare starts with "<" and midBare ends with ">" then set midBare to text 2 thru -2 of midBare\n'
-        f'                                set msg to first message of mb whose (message id is midBare or message id is ("<" & midBare & ">"))\n'
-        f"                                set matched to true\n"
-        f"                            end try\n"
-        f"                        end if\n"
         f"                        if matched then\n"
         f"{action_lines}\n"
         f"{_success_tail(' ' * 28)}\n"
@@ -2501,6 +2486,11 @@ class AppleMailConnector:
         )
 
         # Build list of IDs (sanitize and escape each)
+        # #437: resolve RFC Message-IDs to Mail's internal numeric ids so
+        # the emitted match is the INDEXED `whose id is N`. Must come AFTER
+        # any IMAP fast path above — those batch the RFC ids themselves.
+        message_ids = self._resolve_bulk_ids(message_ids)
+
         id_list = ", ".join(
             f'"{escape_applescript_string(sanitize_input(mid))}"'
             for mid in message_ids
@@ -3994,6 +3984,11 @@ class AppleMailConnector:
         mailbox_safe = escape_applescript_string(
             sanitize_input(destination_mailbox)
         )
+        # #437: resolve RFC Message-IDs to Mail's internal numeric ids so
+        # the emitted match is the INDEXED `whose id is N`. Must come AFTER
+        # any IMAP fast path above — those batch the RFC ids themselves.
+        message_ids = self._resolve_bulk_ids(message_ids)
+
         id_list = ", ".join(
             f'"{escape_applescript_string(sanitize_input(mid))}"'
             for mid in message_ids
@@ -4069,6 +4064,11 @@ class AppleMailConnector:
 
         flag_index = get_flag_index(flag_color)
         flagged_status = "true" if flag_color != "none" else "false"
+        # #437: resolve RFC Message-IDs to Mail's internal numeric ids so
+        # the emitted match is the INDEXED `whose id is N`. Must come AFTER
+        # any IMAP fast path above — those batch the RFC ids themselves.
+        message_ids = self._resolve_bulk_ids(message_ids)
+
         id_list = ", ".join(
             f'"{escape_applescript_string(sanitize_input(mid))}"'
             for mid in message_ids
@@ -4235,6 +4235,11 @@ class AppleMailConnector:
             actions=actions,
             counter_var="updateCount",
         )
+
+        # #437: resolve RFC Message-IDs to Mail's internal numeric ids so
+        # the emitted match is the INDEXED `whose id is N`. Must come AFTER
+        # any IMAP fast path above — those batch the RFC ids themselves.
+        message_ids = self._resolve_bulk_ids(message_ids)
 
         id_list = ", ".join(
             f'"{escape_applescript_string(sanitize_input(mid))}"'
@@ -4613,6 +4618,11 @@ class AppleMailConnector:
             )
             if imap_count is not None:
                 return imap_count
+
+        # #437: resolve RFC Message-IDs to Mail's internal numeric ids so
+        # the emitted match is the INDEXED `whose id is N`. Must come AFTER
+        # any IMAP fast path above — those batch the RFC ids themselves.
+        message_ids = self._resolve_bulk_ids(message_ids)
 
         id_list = ", ".join(
             f'"{escape_applescript_string(sanitize_input(mid))}"'
@@ -6384,6 +6394,70 @@ class AppleMailConnector:
             f"unreachable, or a non-RFC reply seed). {tail} Configure or "
             "repair IMAP for the account with `apple-mail-fast-mcp setup-imap`."
         )
+
+    def _resolve_bulk_ids(self, message_ids: list[str]) -> list[str]:
+        """Resolve RFC 5322 Message-IDs to Mail's internal numeric ids so the
+        bulk AppleScript can match on the INDEXED ``whose id is N`` (#437).
+
+        The alternative — matching ``message id`` inline, which is what
+        `_bulk_repeat_block` used to do — is UNINDEXED. AppleScript runs on
+        Mail's UI thread, so that match loads every message in scope (33,569
+        in Gmail's INBOX, 62,085 in All Mail) once per id, up to the 100-item
+        bulk cap. Mail freezes, and a mid-batch freeze leaves the mutation
+        partially applied.
+
+        This reverses the #205-family decision to match inline rather than pay
+        "a separate resolver round-trip". That was sound when resolving meant
+        an all-mailbox scan; since #434 the resolver is an indexed IMAP lookup
+        plus a binary search, while the inline match still freezes Mail.
+
+        **Call this AFTER the IMAP fast paths**, never before: those want the
+        RFC ids and batch them through ``_resolve_uids_batch`` /
+        ``_or_message_id_criteria`` (#316) into one OR-SEARCH per 50 ids.
+        Handing them numeric ids would defeat that batching.
+
+        Numeric ids pass through untouched — they already take the indexed
+        path and must not acquire a round-trip they never needed.
+
+        Failure handling mirrors #425:
+          * resolved            -> use it
+          * ``None`` (absent)   -> drop; matches the tools' best-effort
+                                   partial-success convention (they return a
+                                   count, not per-id errors)
+          * indeterminate       -> drop from this batch, but remember
+
+        Raises:
+            MailAnchorLookupIncompleteError: nothing resolved AND at least one
+                id could not be checked. Reporting ``updated: 0`` there would
+                be #425's "couldn't check presented as doesn't exist" again.
+        """
+        resolved: list[str] = []
+        indeterminate: list[str] = []
+        for mid in message_ids:
+            if "@" not in mid:
+                resolved.append(mid)
+                continue
+            try:
+                internal = self.find_message_by_message_id(mid)
+            except MailAnchorLookupIncompleteError as exc:
+                logger.warning(
+                    "bulk id %s could not be resolved (%s); skipping it in "
+                    "this batch", mid, exc,
+                )
+                indeterminate.append(mid)
+                continue
+            if internal is not None:
+                resolved.append(internal)
+        if not resolved and indeterminate:
+            raise MailAnchorLookupIncompleteError(
+                f"None of the {len(message_ids)} requested message(s) could "
+                f"be resolved, and {len(indeterminate)} could not be checked "
+                f"at all ({', '.join(indeterminate[:3])}"
+                f"{'...' if len(indeterminate) > 3 else ''}). Reporting 0 "
+                "updated would imply they do not exist. This is usually a "
+                "transient IMAP timeout — retry."
+            )
+        return resolved
 
     def _draft_poll_iterations(self) -> int:
         """How many times the AppleScript id-diff rescans the unified drafts
