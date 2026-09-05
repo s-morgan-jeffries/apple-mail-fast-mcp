@@ -1,6 +1,6 @@
 {
   "name": "apple-mail-fast",
-  "version": "0.10.2",
+  "version": "0.11.0",
   "description": "Apple Mail for Claude Code — search, read, organize, draft, templates, rules, and inbox stats via MCP, with an IMAP fast path. macOS only.",
   "author": {
     "name": "Morgan Jeffries"

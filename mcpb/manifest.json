@@ -2,7 +2,7 @@
   "manifest_version": "0.4",
   "name": "apple-mail-fast-mcp",
   "display_name": "Apple Mail (Fast MCP)",
-  "version": "0.10.2",
+  "version": "0.11.0",
   "description": "MCP server for Apple Mail — search, read, organize, draft, templates, rules, and inbox stats, with an IMAP fast path and a security-first design.",
   "long_description": "A local, security-first MCP server for Apple Mail on macOS. Reads and organizes mail via AppleScript with an optional IMAP fast path for large mailboxes. 25 tools across search/read, drafts, mailbox & rule CRUD, attachments, templates, and inbox statistics. No telemetry; destructive operations are gated; a --read-only mode is available. See the README for IMAP setup and the read/write server split.",
   "author": {
