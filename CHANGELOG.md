@@ -5,6 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-08-28
+
+A large release dominated by one theme: **Mail.app no longer freezes.** Mail does not index the RFC 5322 `message id` property, and AppleScript runs on Mail's UI thread — so every `whose message id is "X"` lookup loaded tens of thousands of message objects on the thread that draws the app. Four separate code paths did this (#415, #419, #432, #437); all four are now indexed or bounded, and an integration test asserts Mail answers a trivial AppleScript *while* each operation runs. Also here: the draft lifecycle works on localized Mail.app and Gmail, threads that come back incomplete now say so, and one new tool (24 → 25).
+
+### Added
+
+**`get_statistics` (#378):** consolidated inbox statistics over a mailbox and time window — message volume, read/unread/flagged counts, read ratio, and top senders by address or domain. A read-only roll-up computed from a single `search_messages` pass.
+
+**Claude Desktop `.mcpb` bundle (#332):** releases now attach an installable uv-type MCP bundle, built by [`scripts/build-mcpb.sh`](scripts/build-mcpb.sh).
+
+**Claude Code plugin (#398):** a marketplace manifest so the server can be installed as a Claude Code plugin.
+
+**Wrapper-free send (#322):** `create_draft(send_now=True)` submits a clean RFC 822 message over the account's SMTP server, so sent mail no longer carries Mail.app's cite-blockquote wrapper (FB11734014). Falls back to AppleScript when SMTP isn't configured. In test mode every resolved recipient is re-checked against the reserved-domain allowlist at the transport boundary (#175).
+
+**Guided IMAP app-password setup (#384):** `setup-imap` is provider-aware, walking through app-password creation per provider, with `--host` / `--port` overrides for accounts whose IMAP port Mail.app misreports (#405).
+
+**Richer IMAP reads (#389):** message bodies are decoded to text, `To`/`Cc` are surfaced, and attachment enumeration is reliable on the IMAP path.
+
+**Partial-thread signal on `get_thread` (#420):** responses carry an always-present `partial` boolean and, when true, a `partial_reason` (`imap_timeout`, `imap_unavailable`, `imap_auth_failed`, `imap_not_configured`, `imap_breaker_open`). The AppleScript fallback is subject-prefiltered and can return strictly fewer members than the full thread; previously a truncated conversation was indistinguishable from a complete one.
+
+### Changed
+
+**Import package renamed `apple_mail_mcp` → `apple_mail_fast_mcp` (#336):** breaking for anything importing the package directly. The distribution name and MCP tool surface are unchanged.
+
+**Keychain service prefixes rebranded (#337):** with a read-through fallback, so existing entries keep working without re-running `setup-imap`.
+
+**`find_message_by_message_id` resolves via IMAP, not an all-mailbox scan (#432):** an indexed `SEARCH HEADER Message-ID` (measured 0.14s over 61,880 messages) supplies the arrival date, then Mail is binary-searched by index — messages enumerate strictly newest-first with cheap positional access, so this is ~log₂(n) property reads. Accounts without IMAP now get a precise error rather than a scan; a lookup that cannot be completed raises instead of reporting the message absent.
+
+**Bulk mutations resolve ids before generating AppleScript (#437):** `update_message`, `delete_messages`, `flag_message`, `mark_as_read` and the verified-move path convert RFC Message-IDs to Mail's internal numeric ids up front, so the emitted match is always the indexed `whose id is N`. This reverses the #205-family decision to match `message id` inline and avoid a resolver round-trip — sound when resolving meant an all-mailbox scan, but the inline match froze Mail while the resolver no longer does.
+
+### Fixed
+
+**`get_thread` froze Mail on large mailboxes (#415, #419):** an RFC Message-ID anchor fell through to the unindexed all-mailbox scan, and a numeric id emitted `message id is "N"` branches across every account × mailbox — either wedged Mail's UI for >100s. RFC ids now resolve over indexed IMAP; numeric ids take a bounded probe of Mail's unified `inbox` / `sent mailbox` (1.3s vs 3.0s for the full walk on a 33k-message account).
+
+**Bulk mutations froze Mail once per id (#437):** the two-arm match in `_bulk_repeat_block` fell to the unindexed `message id` arm for every RFC id, on **both** the cross-scan and the "narrow" single-mailbox path — scoping removed the mailbox-count multiplier but never the scan, and `sourceMb` is routinely a 33,569-message INBOX. The arm is deleted rather than avoided.
+
+**A real message could be reported as missing (#425):** `_resolve_anchor_via_imap` could not distinguish "this account does not have it" from "this account could not be checked" — `OSError` is a fallback exception, so a socket timeout on the account holding the message was swallowed, and `get_thread` raised `MailMessageNotFoundError` advising the user to re-run `setup-imap` on a correctly configured account. Indeterminate lookups now raise `MailAnchorLookupIncompleteError` (`error_type: "anchor_lookup_incomplete"`, `retryable: true`); only an all-accounts-definitive miss reports absence.
+
+**`create_draft(seed="reply")` returned an empty `draft_id` (#421):** the id-bridging diff scanned Mail's unified drafts mailbox 0.5s after saving, but a saved draft takes 12.6–19.6s to surface — so the scan found nothing and returned the empty string it was initialised to, silently. #407 exposed this by making the scan fast; its slowness had been the only thing covering the sync lag. The wait is now a bounded poll budgeted from the connector timeout. Affected every AppleScript save-as-draft, not just replies.
+
+**Draft lifecycle broke on localized Mail.app and Gmail (#407):** `delete_draft` / `update_draft` / `get_draft_state` returned `draft_not_found` on non-English Mail.app (folder-name matching missed e.g. "Entwürfe") and on Gmail (the account-wide resolver returned the All Mail *mirror* of the draft, whose id the Drafts-scoped loops can never match). Both now iterate Mail's unified, locale-independent `drafts mailbox`.
+
+**AppleScript date literals parsed against the user's locale (#436):** `date "2026-08-09 11:03:51"` evaluated to *October 8, 12177* — silently, raising nothing, so any filter built on it just matched nothing. All dates are built from components via `_construct_as_date_var`, and [`check_applescript_safety.sh`](scripts/check_applescript_safety.sh) now fails the build on a `date "..."` literal.
+
+**Non-ASCII IMAP search and encoded-word headers (#392):** Korean (and other non-ASCII) search terms work, and encoded-word headers decode correctly.
+
+**Forwarded `rfc822` 0-byte payload and IMAP attachment-enumeration divergence (#385, #386).**
+
+**Reverse-DNS stall inflating CI (#408):** `make_msgid` resolved the FQDN on every call; switched to `getfqdn` at import.
+
+### Chore
+
+Dependency lockfile refreshed to clear all `pip-audit` advisories (#348); `actions/checkout` 6 → 7 (#395) and `actions/setup-node` 4 → 7 with the pinned Node moved off EOL 20 to 22 (#423); `uvx` / `pip install` documented now that the package is on PyPI (#397). Research: a measured spike on a local-DB fast read path (#376, GO recommendation) and a competitive feature-gap analysis (#331).
+
 ## [0.10.2] - 2026-06-13
 
 A bug-fix patch release for four reliability and data-integrity issues surfaced from real Claude Desktop usage on Gmail and iCloud: a full-body read that could crash the whole server, a Gmail label move that silently trashed the message, an IMAP search that silently dropped matching results, and an attachment save that hung for minutes on Gmail. No new tools (still 24).
