@@ -14,4 +14,7 @@
 # Entries are per-release; prune old ones freely. See
 # docs/guides/RELEASE_ARTIFACTS.md.
 
+v0.11.0 benchmark #450 CANNOT be captured: #437 made bulk mutations cost ~16s per RFC Message-ID (measured 1 id=15.3s, 10 ids=167s), and the bulk benchmarks use 50 ids x 5 runs, so the suite cannot finish. Refreshing is blocked on #450, not skipped for convenience. NOTE: this release changed perf substantially (#415/#419/#432/#434/#437), so the shipped baseline is knowingly stale and v0.11.1 must not trust it for comparison.
+v0.11.0 eval #373 OPENROUTER_API_KEY unavailable on this runner (same cause as v0.10.2). Staler than last release: the tool surface grew 24 -> 25 (get_statistics, #378) and get_thread gained partial/partial_reason fields (#420), so scores are NOT expected to reproduce unchanged. Re-run tracked in #373.
+
 v0.10.2 eval #373 additive tool-surface change (still 24 tools: added optional account/mailbox to save_attachments, content_truncated to get_messages, deprecated gmail_mode); OPENROUTER_API_KEY unavailable on the release runner, scores expected to reproduce, re-run tracked. (Benchmark baseline IS refreshed this release — #364 changed move_messages timing.)

@@ -55,6 +55,14 @@ A large release dominated by one theme: **Mail.app no longer freezes.** Mail doe
 
 **Reverse-DNS stall inflating CI (#408):** `make_msgid` resolved the FQDN on every call; switched to `getfqdn` at import.
 
+### Known issues
+
+**Bulk mutations are slow for RFC Message-IDs (#450).** Removing the freeze (#437) meant resolving each RFC 5322 Message-ID to Mail's internal id before generating AppleScript, and that resolution measures **~16s per id** (1 id 15.3s, 10 ids 167s). It affects `mark_as_read`, `update_message`, `delete_messages`, `flag_message` and the verified move — but only on the AppleScript fallback, and only for RFC ids; **numeric ids are unaffected** (0.0000s). `mark_as_read` has no IMAP fast path, so it always pays; the others avoid it when `account` + `source_mailbox` engage the IMAP path.
+
+On accounts large enough that the old code froze Mail this is a clear improvement; on accounts where the unindexed scan happened to survive it is a real slowdown. Pass `account` + `source_mailbox`, or numeric ids, to stay off the slow path. Tracked in #450.
+
+**The shipped benchmark baseline is stale (#450).** It is stamped `0.10.2` because the bulk benchmarks cannot complete at the cost above. Do not treat it as a v0.11.0 reference.
+
 ### Chore
 
 Dependency lockfile refreshed to clear all `pip-audit` advisories (#348); `actions/checkout` 6 → 7 (#395) and `actions/setup-node` 4 → 7 with the pinned Node moved off EOL 20 to 22 (#423); `uvx` / `pip install` documented now that the package is on PyPI (#397). Research: a measured spike on a local-DB fast read path (#376, GO recommendation) and a competitive feature-gap analysis (#331).
