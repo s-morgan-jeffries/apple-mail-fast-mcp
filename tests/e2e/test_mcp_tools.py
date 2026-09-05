@@ -151,11 +151,15 @@ INVOCATION_CASES: list[tuple[str, dict[str, Any], str, Any]] = [
         {"id": "msg-1", "subject": "s", "from": "a@example.com"},
     ),
     (
+        # #420: the tool reads `_get_thread_with_status`, not `get_thread` —
+        # it returns (members, degraded_reason) so a partial thread can be
+        # flagged rather than passed off as complete.
         "get_thread",
         {"message_id": "msg-1"},
-        "get_thread",
-        [{"id": "msg-1", "subject": "Q3", "sender": "a@b",
-          "date_received": "Mon", "read_status": True, "flagged": False}],
+        "_get_thread_with_status",
+        ([{"id": "msg-1", "subject": "Q3", "sender": "a@b",
+           "date_received": "Mon", "read_status": True, "flagged": False}],
+         None),
     ),
     (
         "get_statistics",
