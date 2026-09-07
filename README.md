@@ -189,7 +189,10 @@ If IMAP is working, the call returns in ~1 second. If it logs a WARNING about fa
 - **Gmail:** requires 2-Step Verification enabled. If your Google Workspace admin has disabled app passwords at the tenant level, IMAP setup isn't possible for that account.
 - **Gmail thread retrieval — All Mail visibility tradeoff.** `find_thread_members` (used internally by thread-aware queries) is fastest when `[Gmail]/All Mail` is exposed over IMAP — that path is ~5 round-trips, mailbox-count-independent. Many users hide All Mail (Gmail Settings → Forwarding and POP/IMAP → Folder size limits → "Do not show in IMAP") because it duplicates every message. When hidden, the connector falls back to a per-mailbox X-GM-THRID iteration (still ~6× faster than the universal BFS, but proportional to your label count — ~25s on a 92-label account). Expose All Mail if you want the headline speed; keep it hidden if you prefer the cleaner IMAP folder list.
 
-**Write operations** (`create_draft`, `update_draft`, including the `send_now=true` send path) always use AppleScript regardless of IMAP configuration — these need Mail.app's compose UI.
+**Compose operations** can use IMAP APPEND for drafts and SMTP for `send_now=true`
+when the required credentials and account/seed information are available. Eligible
+calls fall back to AppleScript when those paths cannot engage. See the
+[architecture reference](docs/reference/ARCHITECTURE.md) for dispatch details.
 
 ## Development
 
@@ -225,10 +228,10 @@ server.py (FastMCP tools — thin orchestration, validation, elicitation gates)
      -> IMAP fast path:    imap_connector.py -> the account's IMAP server          (when hinted + Keychain creds)
 ```
 
-**Dispatch model.** AppleScript is the always-available baseline. When a read/mutation call supplies
-an `account` (and, where relevant, `mailbox`) hint **and** the account has Keychain IMAP credentials,
-the connector takes a server-side IMAP fast path; on any IMAP failure it falls back to AppleScript, so
-you never lose functionality — you only gain speed. See
+**Dispatch model.** AppleScript is the baseline for many operations. When a read/mutation call
+supplies an `account` (and, where relevant, `mailbox`) hint **and** the account has IMAP credentials,
+the connector can take a server-side IMAP fast path. Eligible failures use AppleScript fallback
+where available; some operations require IMAP, and fallback can be slower or less complete. See
 [docs/reference/ARCHITECTURE.md](docs/reference/ARCHITECTURE.md) for the full dispatch model, the
 dual-emit message-ID scheme, the drafts lifecycle, and the IMAP thread tiers.
 
@@ -256,6 +259,8 @@ Docs:
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow, coding standards, and PR process.
+For agent-assisted development, start with [AGENTS.md](AGENTS.md) and the
+[Codex setup guide](docs/guides/CODEX.md).
 
 ## License
 
