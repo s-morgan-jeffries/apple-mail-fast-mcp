@@ -4,6 +4,9 @@ How to develop on the Apple Mail MCP server. For *installing/configuring* the se
 the [README](../../README.md). For coding standards and the PR process, see
 [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
+For Codex or Claude Code, start with [AGENTS.md](../../AGENTS.md). The
+[Codex setup guide](CODEX.md) covers shared instructions and workflow automation.
+
 ## Environment
 
 The project uses [`uv`](https://docs.astral.sh/uv/). One command sets up a virtualenv with all dev
@@ -25,12 +28,13 @@ apple_mail_fast_mcp.server`). `uv sync` also installs the `apple-mail-fast-mcp` 
 |------|---------|-------|
 | Lint | `uv run ruff check src/ tests/` | blocking |
 | Type check | `uv run mypy src/` | blocking (strict) |
-| Unit tests | `uv run pytest -m "not integration and not e2e and not benchmark"` | blocking; coverage ≥ 90% |
+| Unit tests | `uv run pytest -m "not integration and not e2e and not benchmark"` | blocking; use `make coverage` for the separate 90% coverage gate |
 | Complexity | `./scripts/check_complexity.sh` | blocking — see below |
 | Version sync | `./scripts/check_version_sync.sh` | versions consistent across files |
 | Client/server parity | `./scripts/check_client_server_parity.sh` | every public connector method is exposed |
+| Doc drift | `./scripts/check_docs.sh` | tool docs, instruction links, and generated eval descriptions |
 
-CI runs the same lint / type / unit / complexity / version / parity gates (`.github/workflows/test.yml`).
+CI runs the same gates plus coverage (`.github/workflows/test.yml`).
 **Integration, e2e, and benchmark tests are *not* in CI** (they need real Mail.app) — run those
 locally; see [TESTING.md](TESTING.md).
 

@@ -77,7 +77,12 @@ maintained = [
     if "plans" not in p.relative_to(ROOT).parts
     and "research" not in p.relative_to(ROOT).parts
 ]
-for f in [readme, *maintained]:
+agent_entry_points = [
+    ROOT / "AGENTS.md",
+    ROOT / ".claude/CLAUDE.md",
+    ROOT / ".claude/commands/merge-and-status.md",
+]
+for f in [readme, ROOT / "CONTRIBUTING.md", *agent_entry_points, *maintained]:
     base = f.parent
     for i, line in enumerate(f.read_text().splitlines(), 1):
         for target in LINK.findall(line):

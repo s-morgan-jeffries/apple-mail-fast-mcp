@@ -19,6 +19,10 @@ uv sync --dev
 
 ## Development Workflow
 
+Codex and Claude Code share [AGENTS.md](AGENTS.md). See
+[Codex setup](docs/guides/CODEX.md) for instruction discovery, local setup, and
+the mapping from Claude hooks to shared workflow steps.
+
 0. **Before you start coding,** open an issue (or comment on an existing one) describing what you plan to fix or build. This lets us flag duplicate or in-flight work and saves you from rebases or wasted effort.
 
    **Claiming an existing issue:** if you want to take an existing issue, leave a comment saying so. If the issue has **no assignee** AND no comment indicating someone's already on it, you can start work in parallel — you don't need to wait for a maintainer response before beginning. The maintainer typically replies within ~24h to acknowledge your claim; if you don't hear back within ~3 days, feel free to @-mention `@s-morgan-jeffries` directly and keep going. GitHub only lets repository collaborators be set as assignees, so for external contributors the canonical "this is taken" signal is a **maintainer comment acknowledging the claim** (an assignee is used when the claimant is a collaborator). Either way, please respect an issue someone has already claimed.
