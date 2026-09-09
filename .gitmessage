@@ -8,3 +8,7 @@
 # Subject: 50 chars or less, imperative mood
 # Body: Wrap at 72 chars, explain WHAT and WHY
 # Footer: Reference issues (Closes #N), breaking changes
+# AI-assisted work: add the actual contributing agent after a blank line.
+# Codex example (uncomment only when Codex contributed):
+# Co-authored-by: Codex <codex@openai.com>
+# Preserve existing human and Claude co-author trailers when squash merging.

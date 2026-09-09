@@ -17,10 +17,18 @@ for merging and tagging; retain the contributor and milestone reporting below.
    gh pr checks <number> --watch
    ```
 
-3. **Squash merge** the PR and delete the branch:
+3. **Preserve attribution, then squash merge** the PR and delete the branch.
+   Read the PR's commit messages and description; collect legitimate
+   `Co-authored-by` trailers (including human contributors and any contributing
+   agents). Write the final squash body to a temporary file with a blank line
+   before the deduplicated trailers. Do not rely on GitHub's default squash
+   message to retain them. Keep the human author identity unchanged.
    ```bash
-   gh pr merge <number> --squash --delete-branch
+   gh pr merge <number> --squash --delete-branch --body-file /tmp/merge-body.md
    ```
+   Use the exact prepared file path. After merging, inspect the resulting commit
+   body and verify the trailers. A missing trailer must be reported; do not
+   silently rewrite published history to repair it.
 
 4. **Switch to main and pull:**
    ```bash

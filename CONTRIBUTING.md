@@ -61,6 +61,25 @@ make test-integration  # Real Mail.app tests
 3. Update `docs/reference/TOOLS.md` if you added/changed a tool
 4. PR description references the issue (`Closes #N`)
 
+## AI-assisted contributions
+
+Preserve the human contributor's Git author identity and credit an AI agent that
+materially contributed with a `Co-authored-by` trailer after a blank line in the
+commit message. Use `Co-authored-by: Codex <codex@openai.com>` for Codex. For Claude,
+retain the existing convention of the known Claude model name and
+`noreply@anthropic.com`. Do not add agent credit to unrelated human-only work.
+
+Include the attribution in the PR description, preserve legitimate trailers in
+the final squash message, and inspect the merged commit to verify they survived.
+GitHub account/contributor-graph linking depends on the email's association with
+a GitHub account; recording a trailer does not guarantee that display.
+
+For already-merged work, a correction in the PR description plus an explicitly
+linked follow-up commit can record omitted credit without rewriting history.
+Neither changes the original commit's authorship. Rewriting a published commit
+requires explicit maintainer authorization and compatible branch protections;
+do not disable protections just to change attribution.
+
 ## Coding Standards
 
 - **Type annotations** on all functions (mypy strict mode)
