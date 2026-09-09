@@ -63,6 +63,24 @@ GitHub is the source of truth for planned work and status. Follow
 merge, not the ordinary PR squash workflow. Read the release reference only when
 performing release work; setup or feature work does not execute a release.
 
+## Commit attribution
+
+Keep the human contributor's Git author identity. For work materially authored
+with an AI agent, append the appropriate `Co-authored-by` trailer to the commit
+message, separated from the body by a blank line. Codex contributions use:
+
+```text
+Co-authored-by: Codex <codex@openai.com>
+```
+
+For Claude-assisted work, retain the established Claude model attribution using
+`noreply@anthropic.com`; use the actual known model name, not a guessed version.
+Credit only agents that contributed to the change, and preserve other authors.
+Include the same attribution in PR descriptions. Before squash merging, assemble
+an explicit merge message preserving all legitimate co-author trailers, then
+verify the merged commit. A PR-body edit alone cannot change a merged commit's
+authorship. See [CONTRIBUTING.md](CONTRIBUTING.md) for retrospective corrections.
+
 ## Setup and validation
 
 ```bash

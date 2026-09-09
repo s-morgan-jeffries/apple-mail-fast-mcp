@@ -78,3 +78,12 @@ also be needed. Never use production mail or send email to validate Codex setup.
 This setup overlaps the orientation cleanup in GitHub #424: shared guidance drops
 derived counts and documents both network backends. A broader audit of historical
 domain examples remains separate; check current code and API docs when using them.
+
+## Attribution correction for the initial setup
+
+Codex co-authored the initial setup in [PR #453](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/pull/453),
+merged as `ed0cfbc3f2da376e8d96b379c0caabce481d870b`. Its commit message omitted
+the co-author trailer. This acknowledgment and the follow-up tracked in
+[#454](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/issues/454) record
+that credit retrospectively without changing the original commit's metadata.
+Future contributions follow the attribution rules in [AGENTS.md](../../AGENTS.md).
