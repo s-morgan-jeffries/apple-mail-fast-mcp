@@ -91,6 +91,22 @@ class MailMessageNotFoundError(MailError):
     pass
 
 
+class MailAnchorProbeIncompleteError(MailError):
+    """One or more folder probes failed while resolving an anchor, so absence
+    was not established for THAT ACCOUNT.
+
+    Distinct from a transport or auth failure on purpose. Reusing
+    ``IMAPClientError`` for this made the session look unhealthy: the caller
+    routes those through the IMAP-fallback logger, which opens the
+    account-wide circuit breaker — so one bad mailbox hint degraded every
+    later IMAP call on a perfectly healthy account. The connection is fine
+    here; only the question went unanswered.
+
+    Callers should record the account as indeterminate (#425) and continue,
+    WITHOUT opening the breaker.
+    """
+
+
 class MailAnchorLookupIncompleteError(MailError):
     """A thread anchor could not be located, but at least one account could
     not actually be checked — so absence was never established. (#425)

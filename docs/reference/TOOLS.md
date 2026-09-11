@@ -298,6 +298,22 @@ full = get_messages(ids)
 
 ---
 
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `message_id` | string | Yes | - | RFC 5322 Message-ID or Mail.app numeric id of any message in the thread |
+| `account` | string | No | None | Account the message lives in — display name or UUID. Narrows anchor resolution to that account. |
+| `mailbox` | string | No | None | Folder the message lives in — pass the one `search_messages` returned it from. Probed before folder discovery. |
+
+**When the hints are needed.** Without them, anchor resolution probes a bounded folder set: Gmail's All-Mail when the account has it, otherwise INBOX and Sent. A message filed elsewhere by a rule resolves as `message_not_found`. The hints add one indexed SEARCH in a named folder and never trigger the unindexed all-mailbox scan.
+
+**Message-ID resolution only.** Numeric Mail.app ids use the AppleScript resolver, which the hints do not affect.
+
+**`message_not_found` semantics.** With `account` supplied the search is narrowed to that account, so the error means "not in that account", not "not anywhere".
+
+**Errors:** `account_not_found` (the `account` hint names no known account), `anchor_lookup_incomplete` (a probe failed or a breaker was open, so absence was never established — retryable).
 ### get_statistics
 
 Aggregate inbox statistics over a mailbox and time window — message volume, read/unread/flagged counts, read ratio, and top senders (by address or domain). A read-only roll-up computed from a single `search_messages` pass; per-folder unread counts live on `list_mailboxes` and are not duplicated here.

@@ -245,6 +245,8 @@ mid-conversation are missed on the AppleScript fallback path
 **Parameters:**
 
 - `message_id` (string, required): Internal id of any message in the thread (from ``search_messages`` or ``get_messages`` results).
+- `account` (string, optional): Optional account the message lives in. Skips probing every configured account during anchor resolution.
+- `mailbox` (string, optional): Optional folder the message lives in — pass the one ``search_messages`` returned it from. Without it only INBOX and Sent are probed, so a message filed elsewhere by a rule resolves as ``message_not_found``.
 
 ### list_accounts
 

@@ -42,6 +42,7 @@ from imapclient.response_types import Envelope
 
 from .draft_builder import ForwardedAttachment, extract_attachment_payloads
 from .exceptions import (
+    MailAnchorProbeIncompleteError,
     MailImapMoveUnsupportedError,
     MailImapTrashNotFoundError,
     MailMessageNotFoundError,
@@ -1343,7 +1344,9 @@ class ImapConnector:
                 }
         return None
 
-    def resolve_anchor(self, message_id: str) -> dict[str, Any] | None:
+    def resolve_anchor(
+        self, message_id: str, mailbox: str | None = None
+    ) -> dict[str, Any] | None:
         """Resolve an RFC 5322 Message-ID to a get_thread anchor via
         server-side, INDEXED ``SEARCH HEADER Message-ID`` (#415).
 
@@ -1359,13 +1362,32 @@ class ImapConnector:
         probed folder that contains the Message-ID, or ``None`` if not found.
         The caller supplies ``account``.
 
+        ``mailbox`` optionally names the folder the caller already knows the
+        message is in (e.g. the mailbox a prior ``search_messages`` returned
+        it from). It is probed first. Without it, a message filed outside
+        INBOX/Sent resolves to ``None`` and surfaces as "not found".
+
         Raises:
             IMAPClientError / OSError / LoginError: connection/auth failures,
                 so the caller can fall through to the next account.
         """
+        if mailbox:
+            # Connector-wide invariant. NOT sanitization: '/', Unicode, quotes
+            # and hierarchy separators are all legitimate IMAP folder syntax
+            # and IMAPClient quotes/encodes them correctly. Only control
+            # characters are rejected.
+            _reject_control_chars(mailbox, "mailbox")
         bracketed = _bracket_message_id(message_id)
+        # #425's invariant: returning None asserts "definitively not here", and
+        # the caller relies on that to report message_not_found. A folder whose
+        # SELECT/SEARCH/FETCH *failed* never answered the question, so counting
+        # it as an empty result manufactures evidence of absence. Track those
+        # and refuse to claim absence at the end. The mailbox hint makes this
+        # reachable in normal use: a hinted folder is exactly the one that may
+        # be misspelled, renamed, or unselectable.
+        probe_failed = False
         with self._session() as client:
-            for folder in self._anchor_probe_folders(client):
+            for folder in self._anchor_probe_folders(client, mailbox):
                 try:
                     client.select_folder(folder, readonly=True)
                     uids = client.search(["HEADER", "Message-ID", bracketed])
@@ -1373,6 +1395,7 @@ class ImapConnector:
                     logger.debug(
                         "resolve_anchor: skipping %s (%s)", folder, exc
                     )
+                    probe_failed = True
                     continue
                 if not uids:
                     continue
@@ -1386,20 +1409,58 @@ class ImapConnector:
                         ],
                     )
                 except IMAPClientError:
+                    probe_failed = True
                     continue
                 entry = fetched.get(uids[0])
                 if entry:
                     return _anchor_from_fetch(entry)
+                # SEARCH matched but FETCH returned nothing usable — the
+                # message is there; we just could not read it.
+                probe_failed = True
+        if probe_failed:
+            # Not found AND not ruled out. Raising (rather than returning None)
+            # is what makes _resolve_anchor_via_imap mark this account
+            # indeterminate instead of concluding absence. (#425)
+            # NOT IMAPClientError: that type means the session is unhealthy
+            # and the caller opens the account-wide circuit breaker on it. The
+            # connection is fine here — one folder just did not answer, so a
+            # bad mailbox hint must not degrade later calls on this account.
+            raise MailAnchorProbeIncompleteError(
+                f"anchor probe for {message_id!r} did not complete: at least "
+                f"one folder failed to answer, so absence was not established"
+            )
         return None
 
-    def _anchor_probe_folders(self, client: IMAPClient) -> list[str]:
+    def _anchor_probe_folders(
+        self, client: IMAPClient, mailbox: str | None = None
+    ) -> Iterator[str]:
         """Bounded folder set for #415 anchor resolution: Gmail All Mail
         (mirrors every message) if present, else INBOX + Sent. Never lists
-        all folders — that's the cost we're removing."""
+        all folders — that's the cost we're removing.
+
+        ``mailbox`` is an optional caller-supplied hint, probed FIRST. Without
+        it an anchor that lives outside the bounded set is reported as "not
+        found" — a clean empty SEARCH is indistinguishable from absence — which
+        makes get_thread unusable on accounts that file mail out of INBOX
+        (rules, smart folders, a many-project hierarchy). The hint keeps the
+        cost profile identical: one extra INDEXED SEARCH in a named folder,
+        never the unindexed all-mailbox scan #415 removed.
+        """
+        seen: set[str] = set()
+        if mailbox:
+            # Yielded BEFORE discovery so a hint that resolves immediately
+            # costs no LIST at all. Ordering the hint first in a pre-built list
+            # would still pay for discovering folders nobody probes.
+            seen.add(mailbox)
+            yield mailbox
         all_mail = self._find_all_mail_folder(client)
-        if all_mail:
-            return [all_mail]
-        return list(self._anchor_lookup_folders(client))
+        rest = [all_mail] if all_mail else list(
+            self._anchor_lookup_folders(client)
+        )
+        for folder in rest:
+            if folder not in seen:
+                seen.add(folder)
+                yield folder
 
     def find_thread_members(
         self,

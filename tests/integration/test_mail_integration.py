@@ -2691,7 +2691,9 @@ class TestAnchorLookupIncompleteIntegration:
 
         rfc_id = self._real_rfc_id(connector, test_account)
 
-        def _timeout(self: ImapConnector, message_id: str) -> None:
+        def _timeout(
+            self: ImapConnector, message_id: str, mailbox: str | None = None
+        ) -> None:
             raise OSError("cannot read from timed out object")
 
         monkeypatch.setattr(ImapConnector, "resolve_anchor", _timeout)
@@ -2717,11 +2719,11 @@ class TestAnchorLookupIncompleteIntegration:
         original = ImapConnector.resolve_anchor
 
         def _fail_other_hosts(
-            self: ImapConnector, message_id: str
+            self: ImapConnector, message_id: str, mailbox: str | None = None
         ) -> dict[str, Any] | None:
             if getattr(self, "_host", None) != host:
                 raise OSError("simulated timeout on an unrelated account")
-            return original(self, message_id)
+            return original(self, message_id, mailbox)
 
         monkeypatch.setattr(ImapConnector, "resolve_anchor", _fail_other_hosts)
 

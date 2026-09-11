@@ -1509,7 +1509,11 @@ def update_message(
 @_tool(
     {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
 )
-def get_thread(message_id: str) -> dict[str, Any]:
+def get_thread(
+    message_id: str,
+    account: str | None = None,
+    mailbox: str | None = None,
+) -> dict[str, Any]:
     """
     Return all messages in the thread containing the given message.
 
@@ -1529,6 +1533,12 @@ def get_thread(message_id: str) -> dict[str, Any]:
     Args:
         message_id: Internal id of any message in the thread
             (from ``search_messages`` or ``get_messages`` results).
+        account: Optional account the message lives in. Skips probing
+            every configured account during anchor resolution.
+        mailbox: Optional folder the message lives in — pass the one
+            ``search_messages`` returned it from. Without it only
+            INBOX and Sent are probed, so a message filed elsewhere
+            by a rule resolves as ``message_not_found``.
 
     Returns:
         Dictionary with the thread list. Rows are metadata-only —
@@ -1550,16 +1560,23 @@ def get_thread(message_id: str) -> dict[str, Any]:
          "partial": True, "partial_reason": "imap_timeout"}
     """
     try:
-        rate_err = check_rate_limit("get_thread", {"message_id": message_id})
+        rate_err = check_rate_limit(
+            "get_thread",
+            {"message_id": message_id, "account": account, "mailbox": mailbox},
+        )
         if rate_err:
             return rate_err
 
         logger.info(f"Getting thread for message: {message_id}")
 
-        thread, degraded_reason = mail._get_thread_with_status(message_id)
+        thread, degraded_reason = mail._get_thread_with_status(
+            message_id, account, mailbox
+        )
 
         operation_logger.log_operation(
-            "get_thread", {"message_id": message_id}, "success"
+            "get_thread",
+            {"message_id": message_id, "account": account, "mailbox": mailbox},
+            "success",
         )
 
         result: dict[str, Any] = {
@@ -1579,6 +1596,19 @@ def get_thread(message_id: str) -> dict[str, Any]:
             )
         return result
 
+    except MailAccountNotFoundError as e:
+        logger.error(f"Account not found in get_thread: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "error_type": "account_not_found",
+        }
+    except ValueError as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "error_type": "validation_error",
+        }
     except MailAnchorLookupIncompleteError as e:
         # #425: distinct from message_not_found on purpose — the message may
         # exist; we just could not check every account. Retryable.

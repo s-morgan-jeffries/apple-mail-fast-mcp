@@ -8,7 +8,10 @@ import pytest
 from imapclient.exceptions import IMAPClientError
 from imapclient.response_types import Address, Envelope
 
-from apple_mail_fast_mcp.exceptions import MailMessageNotFoundError
+from apple_mail_fast_mcp.exceptions import (
+    MailAnchorProbeIncompleteError,
+    MailMessageNotFoundError,
+)
 from apple_mail_fast_mcp.imap_connector import (
     _MSGID_SEARCH_CHUNK,
     CONNECT_TIMEOUT_S,
@@ -3962,3 +3965,150 @@ class TestResolveAnchor:
         client.search.return_value = []
         conn = ImapConnector("h", 993, "e@x", "pw")
         assert conn.resolve_anchor("nope@x") is None
+
+
+class TestAnchorProbeMailboxHint:
+    """#415's bounded probe set makes get_thread unusable on a filed mailbox.
+
+    resolve_anchor probes Gmail's \\All if present, else INBOX + Sent. On an
+    account with no All-Mail folder whose mail is filed into project folders by
+    rules, the anchor is in none of those, the SEARCH comes back clean-empty,
+    and absence is indistinguishable from "not here" — get_thread reports
+    message_not_found for a message the caller just listed.
+
+    Live-reproduced on a real iCloud account: two messages returned by
+    search_messages from a named mailbox were both unresolvable by get_thread.
+    """
+
+    def _client(self, folders: list[str]) -> MagicMock:
+        client = MagicMock()
+        client.list_folders.return_value = [((), b"/", f) for f in folders]
+        return client
+
+    def test_hinted_mailbox_is_probed_first(self) -> None:
+        conn = ImapConnector("imap.mail.me.com", 993, "u@e.com", "pw")
+        client = self._client(["INBOX", "Sent", "Projects/Filed"])
+
+        folders = list(conn._anchor_probe_folders(client, "Projects/Filed"))
+
+        assert folders[0] == "Projects/Filed", (
+            "the caller's hint must be probed before the bounded set"
+        )
+
+    def test_bounded_set_still_probed_after_the_hint(self) -> None:
+        """The hint ADDS a folder; it does not narrow the search."""
+        conn = ImapConnector("imap.mail.me.com", 993, "u@e.com", "pw")
+        client = self._client(["INBOX", "Sent", "Projects/Filed"])
+
+        folders = list(conn._anchor_probe_folders(client, "Projects/Filed"))
+
+        assert "INBOX" in folders
+
+    def test_hint_naming_inbox_does_not_duplicate_it(self) -> None:
+        conn = ImapConnector("imap.mail.me.com", 993, "u@e.com", "pw")
+        client = self._client(["INBOX", "Sent"])
+
+        folders = list(conn._anchor_probe_folders(client, "INBOX"))
+
+        assert folders.count("INBOX") == 1
+
+    def test_no_hint_preserves_the_bounded_set_exactly(self) -> None:
+        """Regression guard: the #415 cost profile is unchanged without a hint."""
+        conn = ImapConnector("imap.mail.me.com", 993, "u@e.com", "pw")
+        client = self._client(["INBOX", "Sent", "Projects/Filed"])
+
+        assert list(conn._anchor_probe_folders(client)) == list(
+            conn._anchor_probe_folders(client, None)
+        )
+        assert "Projects/Filed" not in list(conn._anchor_probe_folders(client))
+
+
+class TestAnchorProbeEvidenceOfAbsence:
+    """#425: returning None asserts "definitively not here".
+
+    A folder whose SELECT, SEARCH, or FETCH *failed* never answered, so
+    counting it as an empty result manufactures evidence of absence and the
+    caller reports message_not_found for a message that exists. The mailbox
+    hint makes this reachable in normal use — a hinted folder is exactly the
+    one that may be misspelled, renamed, or unselectable.
+    """
+
+    def _conn(self) -> ImapConnector:
+        return ImapConnector("imap.mail.me.com", 993, "u@e.com", "pw")
+
+    def _client(self, folders: list[str]) -> MagicMock:
+        client = MagicMock()
+        client.list_folders.return_value = [((), b"/", f) for f in folders]
+        return client
+
+    def test_select_failure_does_not_become_absence(self) -> None:
+        conn = self._conn()
+        client = self._client(["INBOX", "Sent"])
+        client.select_folder.side_effect = IMAPClientError("NO such mailbox")
+
+        with patch.object(conn, "_session") as sess:
+            sess.return_value.__enter__.return_value = client
+            with pytest.raises(MailAnchorProbeIncompleteError, match="absence was not"):
+                conn.resolve_anchor("abc@example.com", "Filed/Somewhere")
+
+    def test_search_failure_does_not_become_absence(self) -> None:
+        conn = self._conn()
+        client = self._client(["INBOX", "Sent"])
+        client.search.side_effect = IMAPClientError("SEARCH failed")
+
+        with patch.object(conn, "_session") as sess:
+            sess.return_value.__enter__.return_value = client
+            with pytest.raises(MailAnchorProbeIncompleteError, match="absence was not"):
+                conn.resolve_anchor("abc@example.com")
+
+    def test_fetch_failure_does_not_become_absence(self) -> None:
+        """SEARCH matched, so the message IS there — FETCH just failed."""
+        conn = self._conn()
+        client = self._client(["INBOX", "Sent"])
+        client.search.return_value = [42]
+        client.fetch.side_effect = IMAPClientError("FETCH failed")
+
+        with patch.object(conn, "_session") as sess:
+            sess.return_value.__enter__.return_value = client
+            with pytest.raises(MailAnchorProbeIncompleteError, match="absence was not"):
+                conn.resolve_anchor("abc@example.com")
+
+    def test_clean_empty_search_still_returns_none(self) -> None:
+        """The invariant cuts both ways: a real empty answer IS absence."""
+        conn = self._conn()
+        client = self._client(["INBOX", "Sent"])
+        client.search.return_value = []
+
+        with patch.object(conn, "_session") as sess:
+            sess.return_value.__enter__.return_value = client
+            assert conn.resolve_anchor("abc@example.com") is None
+
+    def test_control_characters_in_mailbox_hint_are_rejected(self) -> None:
+        """Not sanitization — '/', quotes and Unicode stay legal."""
+        conn = self._conn()
+        with pytest.raises(ValueError):
+            conn.resolve_anchor("abc@example.com", "Filed\r\nInjected")
+
+    def test_legitimate_folder_syntax_is_accepted(self) -> None:
+        conn = self._conn()
+        client = self._client(["INBOX", "Sent"])
+        client.search.return_value = []
+
+        with patch.object(conn, "_session") as sess:
+            sess.return_value.__enter__.return_value = client
+            # Hierarchy separators, spaces and Unicode are all valid.
+            assert conn.resolve_anchor("a@b.com", "Projects/Filed 한글") is None
+
+    def test_hinted_folder_resolving_immediately_costs_no_list(self) -> None:
+        """The hint is probed before discovery, not merely ordered first."""
+        conn = self._conn()
+        client = self._client(["INBOX", "Sent"])
+        probe = conn._anchor_probe_folders(client, "Filed/Here")
+
+        # Consume ONLY the hint, as resolve_anchor does when it hits.
+        assert next(probe) == "Filed/Here"
+        client.list_folders.assert_not_called()
+
+        # Discovery happens only when the hint did not resolve.
+        next(probe)
+        assert client.list_folders.called
