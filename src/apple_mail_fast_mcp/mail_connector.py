@@ -3,6 +3,7 @@ AppleScript-based connector for Apple Mail.
 """
 
 import logging
+import os
 import re
 import smtplib
 import subprocess
@@ -144,6 +145,22 @@ _SMTP_FALLBACK_EXCS: tuple[type[Exception], ...] = (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _get_default_account_env() -> str | None:
+    """Return the ``MAIL_DEFAULT_ACCOUNT`` env var, or ``None`` if unset or
+    blank.
+
+    Lets a caller with more than one enabled Mail account (where
+    ``_resolve_implicit_account``'s sole-enabled-account heuristic never
+    fires) configure its intended sender once per session/process instead
+    of passing ``from_account`` on every ``create_draft`` call. Mirrors the
+    ``MAIL_TEST_ACCOUNT`` convention in ``security.py``.
+    """
+    value = os.environ.get("MAIL_DEFAULT_ACCOUNT")
+    if value and value.strip():
+        return value.strip()
+    return None
 
 # Strict ISO 8601 YYYY-MM-DD — search_messages's date_from/date_to filters
 # reject anything else to prevent AppleScript injection via the date clause.
@@ -6146,7 +6163,10 @@ class AppleMailConnector:
         # #321: with no explicit account the clean IMAP draft path can't
         # engage (it must name the account for creds + From); adopt the
         # sole enabled account when there is one (it's Mail's default
-        # sender anyway, so the From is unchanged).
+        # sender anyway, so the From is unchanged), or the account named by
+        # MAIL_DEFAULT_ACCOUNT when several are enabled — which, unlike the
+        # sole-account case, *can* change the From header if it names an
+        # account other than Mail's own default sender.
         effective_account = self._effective_from_account(from_account, send_now)
 
         # Clean (wrapper-free) paths that avoid Mail.app's cite-blockquote
@@ -6543,21 +6563,45 @@ class AppleMailConnector:
         )
 
     def _resolve_implicit_account(self) -> str | None:
-        """Return the sole enabled Mail account's name, or ``None`` (#321).
+        """Return the account create_draft should adopt when no
+        ``from_account`` is supplied, or ``None`` (#321).
 
-        ``create_draft`` uses this when no ``from_account`` is supplied: the
-        clean IMAP-APPEND draft path needs to name the account (for creds
-        and the From header), so it can't engage on an anonymous call. With
-        exactly one enabled account, Mail's default sender already *is* that
-        account, so adopting it is behavior-preserving for the From header.
-        With zero or several enabled accounts we return ``None`` and the
-        caller keeps Mail's default (AppleScript) behavior.
+        The clean IMAP-APPEND draft path needs an account name (for creds
+        and the From header), so it can't engage on an anonymous call.
+
+        A caller with more than one enabled account never satisfies the
+        sole-enabled-account heuristic below, so it can name its intended
+        sender once via the ``MAIL_DEFAULT_ACCOUNT`` env var instead of
+        passing ``from_account`` on every call. Accepts either an account
+        name or UUID, same as ``from_account`` itself — matching by UUID
+        also disambiguates same-named accounts (e.g. two "Gmail" entries),
+        which a name-only match couldn't. Honored only when it names a
+        currently-enabled account; an unset, blank, or stale/mismatched
+        value is ignored rather than trusted blindly, and resolution falls
+        through to the heuristic below.
+
+        With exactly one enabled account (and no env var, or one that
+        doesn't match), that account is adopted — it's Mail's default
+        sender already, so adopting it is behavior-preserving for the From
+        header. With zero or several enabled accounts and no matching env
+        var, we return ``None`` and the caller keeps Mail's default
+        (AppleScript) behavior.
         """
         try:
             accounts = self.list_accounts()
         except Exception:
             return None
         enabled = [a for a in accounts if a.get("enabled")]
+        configured = _get_default_account_env()
+        if configured is not None:
+            for account in enabled:
+                if configured in (account.get("id"), account.get("name")):
+                    return configured
+            logger.warning(
+                "MAIL_DEFAULT_ACCOUNT=%r does not match any enabled Mail "
+                "account; falling back to the sole-enabled-account "
+                "heuristic.", configured,
+            )
         if len(enabled) != 1:
             return None
         name = enabled[0].get("name")
