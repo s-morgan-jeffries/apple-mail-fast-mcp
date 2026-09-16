@@ -14,7 +14,7 @@ stays out of the fast unit suite per #298).
 
 from pathlib import Path
 
-from hypothesis import given
+from hypothesis import example, given
 from hypothesis import strategies as st
 
 from apple_mail_fast_mcp.drafts import _DRAFT_ID_RE, _validate_draft_id
@@ -25,16 +25,30 @@ from apple_mail_fast_mcp.exceptions import (
 from apple_mail_fast_mcp.templates import _NAME_RE, _validate_name
 from apple_mail_fast_mcp.utils import escape_applescript_string, sanitize_input
 
+# Every token these four functions are documented to reject or escape, plus a
+# few characters they pass through. `st.text()` spans all of Unicode, so the
+# shapes that actually matter here are rare in a default 100-example run: it
+# produces a `"` or a `\` in under 4% of examples, and reaches a structure
+# like ".." or an otherwise-valid id with a trailing "\n" only by chance.
+# A property test drawing from it alone can therefore stay green against a
+# broken function for a whole run. That is measured, not hypothetical: see
+# the detection rates in #456. Drawing additionally from a small hostile
+# alphabet puts those shapes within easy reach on every run, while the
+# unrestricted `st.text()` stays in the union so the tests keep exploring
+# inputs no one has thought to pin as an @example.
+_HOSTILE_ALPHABET = 'aZ0._-@+=/\\"\r\n\x00<>'
+_boundary_text = st.one_of(st.text(), st.text(alphabet=_HOSTILE_ALPHABET, max_size=8))
+
 
 class TestSanitizeInputProperties:
-    @given(st.text())
+    @given(_boundary_text)
     def test_strips_nulls_and_bounds_length(self, s: str) -> None:
         out = sanitize_input(s)
         assert isinstance(out, str)
         assert "\x00" not in out
         assert len(out) <= 10000
 
-    @given(st.text())
+    @given(_boundary_text)
     def test_idempotent(self, s: str) -> None:
         once = sanitize_input(s)
         assert sanitize_input(once) == once
@@ -55,7 +69,7 @@ class TestSanitizeInputProperties:
 
 
 class TestEscapeApplescriptStringProperties:
-    @given(st.text())
+    @given(_boundary_text)
     def test_no_break_out(self, s: str) -> None:
         """After removing every escape pair, no bare delimiter remains — so
         no input can terminate the string literal early (injection) or leave
@@ -65,12 +79,12 @@ class TestEscapeApplescriptStringProperties:
         assert '"' not in stripped
         assert "\\" not in stripped
 
-    @given(st.text())
+    @given(_boundary_text)
     def test_only_adds_escaping_backslashes(self, s: str) -> None:
         esc = escape_applescript_string(s)
         assert len(esc) == len(s) + s.count('"') + s.count("\\")
 
-    @given(st.text())
+    @given(_boundary_text)
     def test_composes_with_sanitize_without_nulls(self, s: str) -> None:
         esc = escape_applescript_string(sanitize_input(s))
         assert "\x00" not in esc
@@ -84,7 +98,9 @@ class TestValidateNameProperties:
     # tmp_path, so we don't use one.
     _BASE = Path("/amm/property/base")
 
-    @given(st.text())
+    @given(_boundary_text)
+    @example("report\n")  # #325: `$` + re.match let a trailing newline pass
+    @example("..")
     def test_reject_or_path_contained(self, s: str) -> None:
         """Any input is either rejected, or accepted and provably contained
         directly under the base directory (no `..`, no separators, no
@@ -107,7 +123,9 @@ class TestValidateNameProperties:
 class TestValidateDraftIdProperties:
     _FORBIDDEN = ('"', "\\", "/", "\n", "\r", "\x00", "..")
 
-    @given(st.text())
+    @given(_boundary_text)
+    @example("160991\n")  # #325: `$` + re.match let a trailing newline pass
+    @example("..")  # #325: "." is in the charset, so ".." matched the regex
     def test_reject_or_safe_charset(self, s: str) -> None:
         """Any input is either rejected, or accepted and free of AppleScript-
         breaking / path-traversal characters."""
