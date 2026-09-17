@@ -294,6 +294,11 @@ def _bracket_message_id(message_id: str) -> str:
     for every ``SEARCH HEADER "Message-ID" "<id>"`` construction so no call
     site can build a bracketed id without the CRLF-injection guard.
     """
+    # Surrounding fold whitespace is not part of the id (see
+    # _strip_brackets). Drop it before the guard runs so a legitimately
+    # folded header is not mistaken for an injection attempt; control
+    # characters *inside* the id are still rejected.
+    message_id = message_id.strip()
     _reject_control_chars(message_id, "message_id")
     if message_id.startswith("<") and message_id.endswith(">"):
         return message_id
@@ -517,6 +522,17 @@ def _decode_mime_header(raw: bytes | bytearray | str | None) -> str:
 
 
 def _strip_brackets(s: str) -> str:
+    """Return a wire Message-ID in its bare ``id@host`` form.
+
+    Strips fold whitespace before the brackets. RFC 5322 §2.2.3 permits
+    folding a header onto a continuation line, and some IMAP servers return
+    the ENVELOPE message-id field without unfolding it, so the value can
+    arrive as ``"\t<id@host>"``. The whitespace belongs to the fold, not to
+    the id; leaving it in makes the id unusable for every later
+    ``SEARCH HEADER "Message-ID"`` lookup (#458). The AppleScript path
+    already strips — see ``mail_connector._bare_message_id``.
+    """
+    s = s.strip()
     if s.startswith("<") and s.endswith(">"):
         return s[1:-1]
     return s
