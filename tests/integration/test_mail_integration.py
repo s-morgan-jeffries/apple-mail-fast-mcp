@@ -2309,6 +2309,114 @@ class TestDraftsLifecycleIntegration:
             except Exception:
                 pass
 
+    def test_combined_move_never_reports_success_while_still_in_source(
+        self,
+        connector: AppleMailConnector,
+        test_account: str,
+    ) -> None:
+        """A read+move patch always takes the AppleScript pass (the IMAP fast
+        path is move-only). On Gmail that pass only adds the label, and the
+        combined path used to skip the #364 landing check, so it reported
+        success with the message still in the source. Now it must either
+        really move (verified over IMAP) or raise MailImapRequiredError.
+        """
+        import time as _time
+        import uuid as _uuid
+        from datetime import datetime, timezone
+        from email.utils import format_datetime
+
+        from imapclient import IMAPClient
+
+        from apple_mail_fast_mcp.exceptions import MailImapRequiredError
+        from apple_mail_fast_mcp.keychain import get_imap_password
+
+        suffix = _uuid.uuid4().hex[:8]
+        src = f"ZZZ-AMM-COMBO-SRC-{suffix}"
+        dst = f"ZZZ-AMM-COMBO-DST-{suffix}"
+        msg_id_local = f"{_uuid.uuid4().hex}@apple-mail-fast-mcp-test.invalid"
+        bracketed = f"<{msg_id_local}>"
+
+        host, port, email = connector._resolve_imap_config(test_account)
+        pw = get_imap_password(test_account, email)
+
+        assert connector.create_mailbox(account=test_account, name=src)
+        assert connector.create_mailbox(account=test_account, name=dst)
+        try:
+            now = format_datetime(datetime.now(tz=timezone.utc))
+            raw = (
+                f"From: sender@apple-mail-fast-mcp-test.invalid\r\n"
+                f"To: rcpt@apple-mail-fast-mcp-test.invalid\r\n"
+                f"Subject: AMM combined move test\r\n"
+                f"Date: {now}\r\n"
+                f"Message-ID: {bracketed}\r\n"
+                f"\r\n"
+                f"body\r\n"
+            ).encode()
+
+            append_client = IMAPClient(host, port=port, ssl=True, timeout=30)
+            append_client.login(email, pw)
+            try:
+                append_client.append(src, raw, flags=[])
+            finally:
+                append_client.logout()
+
+            # Numeric id from the AppleScript search: the RFC-id resolver
+            # skips accounts whose IMAP breaker is open, so it cannot be used
+            # while the breaker forces the AppleScript pass.
+            connector._imap_failure_until[test_account] = (
+                _time.monotonic() + 60
+            )
+            numeric_id = None
+            for _ in range(10):
+                rows = connector._search_messages_applescript(
+                    account=test_account, mailbox=src, limit=10,
+                )
+                numeric_id = next(
+                    (str(r["id"]) for r in rows
+                     if str(r.get("rfc_message_id") or "").strip("<>")
+                     == msg_id_local),
+                    None,
+                )
+                if numeric_id:
+                    break
+                _time.sleep(3)
+            else:
+                raise AssertionError(
+                    "Mail.app never surfaced the APPENDed message within 30s"
+                )
+
+            try:
+                moved = connector.update_message(
+                    [numeric_id],
+                    read_status=True,
+                    destination_mailbox=dst,
+                    account=test_account,
+                    source_mailbox=src,
+                )
+            except MailImapRequiredError:
+                return  # refused loudly: the acceptable Gmail outcome
+
+            assert moved == 1
+            _time.sleep(5)  # let Mail push the move to the server
+            verify = IMAPClient(host, port=port, ssl=True, timeout=30)
+            verify.login(email, pw)
+            try:
+                verify.select_folder(src, readonly=True)
+                src_uids = verify.search(["HEADER", "Message-ID", bracketed])
+            finally:
+                verify.logout()
+            assert src_uids == [], (
+                f"reported moved but still in source: {src_uids}"
+            )
+        finally:
+            for name in (src, dst):
+                try:
+                    connector.delete_mailbox(
+                        account=test_account, name=name, delete_messages=True
+                    )
+                except Exception:
+                    pass
+
     def test_update_mailbox_renames_in_place(
         self,
         connector: AppleMailConnector,

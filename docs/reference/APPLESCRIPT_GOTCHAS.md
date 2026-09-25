@@ -55,8 +55,12 @@ quotes/backslashes fail silently with a generic "Can't make" error and no indica
 
 ## Gmail label-based system
 
-Gmail doesn't support standard IMAP move. `update_message` / `move_messages` use `gmail_mode=true`
-(copy + delete) for Gmail accounts.
+Gmail's mailboxes are labels. `set mailbox of msg` can leave a Gmail message in the source label
+(the silent no-op), and `duplicate` + `delete` routes through Trash, which strips every label, the
+destination included (#364). Every AppleScript move, alone or combined with read/flag changes, runs
+through `_run_verified_move`, which checks the message left the source and raises
+`MailImapRequiredError` when it did not. The reliable Gmail move is IMAP `UID MOVE`. `gmail_mode` is
+deprecated and ignored (#369).
 
 ## Attachment paths
 

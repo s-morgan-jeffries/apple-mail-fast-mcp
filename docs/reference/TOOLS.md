@@ -423,7 +423,7 @@ Patch one or more messages: change read state, flag color, and/or move to anothe
 | `source_mailbox` | string \| null | No | null | Optional narrow-path hint — narrows the AppleScript scan to one mailbox. Required to unlock the IMAP fast path on move-only patches (#149) — without it, the move runs via AppleScript even when IMAP is configured. |
 | `gmail_mode` | boolean | No | false | **Deprecated and ignored (#364).** The move strategy is chosen automatically; this flag does nothing. Slated for removal at v1.0 (#369). |
 
-> **Gmail label moves (#364).** The old `gmail_mode` copy+delete strategy silently routed Gmail INBOX→label moves through `[Gmail]/Trash` (stripping the destination label) and reported success anyway — data loss. It has been removed. Moves now run via IMAP `UID MOVE` when the account has IMAP configured (the reliable Gmail relabel); otherwise via a **verified** AppleScript `set mailbox`. If a move can't be confirmed (the Gmail silent-no-op), `update_message` returns `error_type: "imap_required"` instead of falsely succeeding — configure IMAP with `apple-mail-fast-mcp setup-imap --account <name>` and pass `source_mailbox`.
+> **Gmail label moves (#364).** The old `gmail_mode` copy+delete strategy silently routed Gmail INBOX→label moves through `[Gmail]/Trash` (stripping the destination label) and reported success anyway — data loss. It has been removed. Moves now run via IMAP `UID MOVE` when the account has IMAP configured (the reliable Gmail relabel); otherwise via a **verified** AppleScript `set mailbox`. If a move can't be confirmed (the Gmail silent-no-op), `update_message` returns `error_type: "imap_required"` instead of falsely succeeding — configure IMAP with `apple-mail-fast-mcp setup-imap --account <name>` and pass `source_mailbox`. Combined patches (move + read/flag) always run via AppleScript and get the same check; their read/flag changes are applied even when the move is refused, so on Gmail send the move as its own move-only call.
 
 **Patch semantics:** caller specifies only the fields they want changed. At least one field parameter must be set; otherwise returns `validation_error`.
 
@@ -495,7 +495,7 @@ update_message(
 - `validation_error`: Too many IDs, no fields set, or missing `account` for move
 - `account_not_found`: `account` does not match a configured Mail.app account
 - `not_found`: `destination_mailbox` not found on the account
-- `imap_required`: A move could not be confirmed via AppleScript (the Gmail silent-no-op) and the account has no IMAP configured (#364). Run `apple-mail-fast-mcp setup-imap --account <name>` and pass `source_mailbox`.
+- `imap_required`: A move could not be confirmed via AppleScript (the Gmail silent-no-op, #364). Run `apple-mail-fast-mcp setup-imap --account <name>` and send the move as a move-only call with `source_mailbox`; a combined move + read/flag patch always takes the AppleScript path.
 - `unknown`: Unexpected error occurred
 
 ---

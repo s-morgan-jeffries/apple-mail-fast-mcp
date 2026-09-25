@@ -23,20 +23,20 @@ if accEmails is missing value then set accEmails to {}
 
 ## Gmail Label-Based System
 
-Gmail doesn't support standard IMAP move operations. The `update_message` tool has a `gmail_mode` parameter (when used with `destination_mailbox`):
+Gmail's mailboxes are labels, and AppleScript has no reliable Gmail move:
 
-```python
-# Standard IMAP (Exchange, iCloud, etc.)
-move message to destination_mailbox
+```applescript
+-- Standard IMAP (Exchange, iCloud, custom IMAP): a real move
+set mailbox of msg to destMailbox
 
-# Gmail mode (copy + delete)
-duplicate message to destination_mailbox
-delete message  # Removes from source label
+-- Gmail: the same statement can leave the message in the source label
+-- (the silent no-op). Copy + delete is worse: `delete` routes through
+-- Trash, and Gmail's Trash strips every label, the destination included.
 ```
 
-**Bug story:** Early versions silently failed when moving Gmail messages. The move appeared to succeed but the message stayed in the source mailbox. `gmail_mode` was added to handle this.
+**Bug story:** a move that reported success while the message stayed in the source led to `gmail_mode` (copy + delete), which on Gmail sent the message to Trash only (#364). Now every AppleScript move, alone or combined with read/flag changes, verifies the message left the source and raises `MailImapRequiredError` otherwise; the reliable Gmail move is IMAP `UID MOVE`.
 
-**When to use:** Always expose `gmail_mode` as an optional parameter on any tool that moves or archives messages.
+**When to use:** never add a `gmail_mode`-style flag (it is deprecated, #369). Route moves through `_run_verified_move`.
 
 ## Message ID Lookup
 
