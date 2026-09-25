@@ -792,14 +792,16 @@ def _resolve_id_list_to_messages(
     headers_only: bool = False,
     include_attachments: bool = False,
     body_format: str = "text",
+    missing_out: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Resolve a mixed list of ids and ``SELECTED`` tokens to message dicts.
 
     ``SELECTED`` tokens expand inline to Mail.app's current UI selection
     (zero-or-more messages). Real ids are looked up via
-    ``mail.get_message()``. Missing ids drop out silently
-    (partial-results convention). The connector ``get_selected_messages``
-    is called at most once even if ``SELECTED`` appears multiple times.
+    ``mail.get_message()``. Missing ids drop out (partial-results
+    convention); pass ``missing_out`` to collect them so the caller can
+    report them. The connector ``get_selected_messages`` is called at most
+    once even if ``SELECTED`` appears multiple times.
 
     Used by both ``search_messages.source`` (metadata mode,
     ``include_content=False``) and ``get_messages.message_ids`` (bodies
@@ -829,7 +831,9 @@ def _resolve_id_list_to_messages(
                 )
                 out.append(msg)
             except MailMessageNotFoundError:
-                # Partial-results: missing ids drop out silently.
+                # Partial-results: the id drops out, recorded if asked.
+                if missing_out is not None:
+                    missing_out.append(id_or_token)
                 continue
     return _annotate_injection(_bound_message_bodies(out))
 
@@ -1227,9 +1231,9 @@ def get_messages(
             token ``"SELECTED"``, which the server resolves at call time
             to Mail.app's current UI selection (zero-or-more messages).
             Mixed lists like ``["SELECTED", "12345"]`` are valid. Empty
-            list is a no-op (returns empty result, no error). Missing ids
-            drop out silently (partial-results convention) — the response
-            contains whatever was found.
+            list is a no-op (returns empty result, no error). Ids that
+            cannot be resolved drop out of ``messages`` (partial-results
+            convention) and are listed in ``not_found``.
         include_content: Include message bodies (default: True).
         headers_only: Skip body fetch on the IMAP path for explicit ids
             (default: False). Silently ignored on the AppleScript fallback.
@@ -1254,7 +1258,8 @@ def get_messages(
             plain text and is unaffected by this flag.
 
     Returns:
-        Dictionary containing the list of messages and count. Each message
+        Dictionary containing the list of messages and count, plus
+        ``not_found`` (the unresolved ids) when any id dropped out. Each message
         includes ``to`` and ``cc`` (recipient strings) on the IMAP path.
         Each message body is bounded to 1 MB of UTF-8 text (override via
         ``APPLE_MAIL_MCP_MAX_BODY_BYTES``) and scrubbed of transport-hostile
@@ -1289,6 +1294,7 @@ def get_messages(
 
         logger.info(f"Getting messages: {len(message_ids)} ids")
 
+        not_found: list[str] = []
         messages = _resolve_id_list_to_messages(
             message_ids,
             include_content=include_content,
@@ -1297,6 +1303,7 @@ def get_messages(
             headers_only=headers_only,
             include_attachments=include_attachments,
             body_format=body_format,
+            missing_out=not_found,
         )
 
         operation_logger.log_operation(
@@ -1305,11 +1312,14 @@ def get_messages(
             "success"
         )
 
-        return {
+        result: dict[str, Any] = {
             "success": True,
             "messages": messages,
             "count": len(messages),
         }
+        if not_found:
+            result["not_found"] = not_found
+        return result
 
     except Exception as e:
         logger.error(f"Error getting messages: {e}")

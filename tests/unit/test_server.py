@@ -1583,7 +1583,8 @@ class TestGetMessages:
     def test_nonexistent_id_skipped_partial_results(
         self, mock_mail: MagicMock
     ) -> None:
-        """Per-id MailMessageNotFoundError is dropped silently (partial-results)."""
+        """Per-id MailMessageNotFoundError drops the id from ``messages``
+        (partial-results) and lists it in ``not_found``."""
         mock_mail.get_message.side_effect = [
             MailMessageNotFoundError("missing"),
             {"id": "good", "subject": "found"},
@@ -1593,6 +1594,29 @@ class TestGetMessages:
 
         assert result["success"] is True
         assert [m["id"] for m in result["messages"]] == ["good"]
+        assert result["not_found"] == ["bogus"]
+
+    def test_all_ids_missing_are_reported_not_hidden(
+        self, mock_mail: MagicMock
+    ) -> None:
+        """An empty result says which ids failed instead of looking like a
+        clean empty answer."""
+        mock_mail.get_message.side_effect = MailMessageNotFoundError("nope")
+
+        result = get_messages(["12372"])
+
+        assert result["success"] is True
+        assert result["count"] == 0
+        assert result["not_found"] == ["12372"]
+
+    def test_no_not_found_key_when_everything_resolved(
+        self, mock_mail: MagicMock
+    ) -> None:
+        mock_mail.get_message.return_value = {"id": "1", "subject": "Hi"}
+
+        result = get_messages(["1"])
+
+        assert "not_found" not in result
 
     def test_imap_hint_params_pass_through_per_id(
         self, mock_mail: MagicMock
