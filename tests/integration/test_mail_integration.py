@@ -611,9 +611,10 @@ class TestMailIntegration:
         test confirms the AppleScript `save (item i of theAtts) in (POSIX
         file tp)` round-trip actually writes files in real Mail.app and that
         nothing lands outside the directory. Scans a few INBOX messages for
-        one with attachments; skips if none is found.
+        one with attachments; skips if none is found. Numeric ids from the
+        AppleScript search keep this on the AppleScript path (#415).
         """
-        matches = connector.search_messages(
+        matches = connector._search_messages_applescript(
             account=test_account, mailbox="INBOX", limit=10
         )
         target_id = next(
@@ -624,10 +625,16 @@ class TestMailIntegration:
             pytest.skip("no INBOX message with attachments to save")
 
         before = {p.resolve() for p in tmp_path.rglob("*")}
-        count = connector.save_attachments(
+        result = connector.save_attachments(
             message_id=target_id, save_directory=tmp_path
         )
-        assert isinstance(count, int)
+        assert isinstance(result["saved"], int)
+        assert isinstance(result["attachments_found"], int)
+        # A zero always explains itself; a non-zero never carries a reason.
+        if result["saved"] == 0:
+            assert result["reason"]
+        else:
+            assert result["reason"] is None
 
         written = {p.resolve() for p in tmp_path.rglob("*") if p.is_file()}
         # Every file that appeared is strictly inside the save directory.

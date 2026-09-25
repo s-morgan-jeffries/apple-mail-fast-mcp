@@ -189,7 +189,8 @@ INVOCATION_CASES: list[tuple[str, dict[str, Any], str, Any]] = [
         "save_attachments",
         {"message_id": "msg-1", "save_directory": _TMP_DIR},
         "save_attachments",
-        {"saved": 0, "rejected": []},
+        {"saved": 0, "rejected": [], "attachments_found": 0, "failures": [],
+         "reason": "no attachments"},
     ),
     (
         "create_mailbox",
@@ -333,7 +334,10 @@ class TestStringifiedParamCoercion:
     async def test_save_attachments_stringified_int_indices(
         self, mock_mail: MagicMock, tmp_path: Path
     ) -> None:
-        mock_mail.save_attachments.return_value = {"saved": 0, "rejected": []}
+        mock_mail.save_attachments.return_value = {
+            "saved": 0, "rejected": [], "attachments_found": 0, "failures": [],
+            "reason": "no attachments",
+        }
         result = await server.mcp.call_tool(
             "save_attachments",
             {"message_id": "m1", "save_directory": str(tmp_path),

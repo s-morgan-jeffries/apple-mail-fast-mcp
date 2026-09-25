@@ -5475,7 +5475,11 @@ class TestNonJsonPathsThreadTimeout:
     ) -> None:
         connector = AppleMailConnector(timeout=126)
         mock_get.return_value = [{"name": "a.pdf"}]
-        mock_run.return_value = MagicMock(returncode=0, stdout="1", stderr="")
+        # save_attachments now reports JSON (per-attachment failures); the
+        # `with timeout` clause this class guards is unchanged.
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout='{"saved":1,"failures":{}}', stderr=""
+        )
         connector.save_attachments("123", tmp_path)
         assert "with timeout of 126 seconds" in self._script_from(mock_run)
 
@@ -5561,6 +5565,9 @@ class TestSaveAttachmentsImapFastPath:
             mock_as.assert_not_called()  # no AppleScript cross-scan
 
         assert result["saved"] == 2
+        assert result["attachments_found"] == 2
+        assert result["failures"] == []
+        assert result["reason"] is None
         assert (tmp_path / "offer.pdf").read_bytes() == b"PDF-OFFER"
         assert (tmp_path / "agreement.pdf").read_bytes() == b"PDF-AGREE"
         mock_imap.fetch_raw_message.assert_called_once_with(
@@ -5635,6 +5642,7 @@ class TestSaveAttachmentsImapFastPath:
                 )
         assert result["saved"] == 0
         assert result["rejected"][0]["reason"] == "per_attachment_cap"
+        assert "byte caps" in result["reason"]  # IMAP path explains zeros too
         assert not (tmp_path / "big.bin").exists()
 
 

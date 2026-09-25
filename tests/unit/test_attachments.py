@@ -111,7 +111,7 @@ class TestSaveAttachments:
         mock_run.side_effect = [
             '[{"name":"document.pdf","mime_type":"application/pdf",'
             '"size":1,"downloaded":true}]',
-            "1",
+            '{"saved":1,"failures":{}}',
         ]
 
         result = connector.save_attachments(
@@ -134,7 +134,7 @@ class TestSaveAttachments:
             '[{"name":"a.pdf","mime_type":"application/pdf","size":1,"downloaded":true},'
             '{"name":"b.pdf","mime_type":"application/pdf","size":2,"downloaded":true},'
             '{"name":"c.pdf","mime_type":"application/pdf","size":3,"downloaded":true}]',
-            "3",
+            '{"saved":3,"failures":{}}',
         ]
 
         result = connector.save_attachments(
@@ -178,7 +178,7 @@ class TestSaveAttachments:
             '"size":100,"downloaded":true},'
             '{"name":"b.bin","mime_type":"application/octet-stream",'
             '"size":100,"downloaded":true}]',
-            "1",
+            '{"saved":1,"failures":{}}',
         ]
         result = connector.save_attachments("12345", tmp_path)
         assert result["saved"] == 1
@@ -195,7 +195,7 @@ class TestSaveAttachments:
         mock_run.side_effect = [
             '[{"name":"unknown.bin","mime_type":"application/octet-stream",'
             '"size":0,"downloaded":false}]',
-            "1",
+            '{"saved":1,"failures":{}}',
         ]
         result = connector.save_attachments("12345", tmp_path)
         assert result["saved"] == 1
@@ -213,7 +213,7 @@ class TestSaveAttachments:
         mock_run.side_effect = [
             '[{"name":"big.bin","mime_type":"application/octet-stream",'
             '"size":5,"downloaded":false}]',
-            "1",
+            '{"saved":1,"failures":{}}',
         ]
         # ...but the actual written file is 100 bytes (> 10-byte cap).
         written = tmp_path / "big.bin"
@@ -226,6 +226,113 @@ class TestSaveAttachments:
         assert [r["reason"] for r in result["rejected"]] == [
             "per_attachment_cap_postwrite"
         ]
+
+    # A bare {"saved": 0, "rejected": []} could not be told apart from "no
+    # attachments", "not downloaded yet" or "Mail refused"; a zero always
+    # says why.
+
+    @patch.object(AppleMailConnector, "_get_attachments_applescript")
+    def test_zero_saved_explains_no_attachments(
+        self, mock_get: MagicMock, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        mock_get.return_value = []
+        result = connector.save_attachments("12372", tmp_path)
+        assert result["saved"] == 0
+        assert result["attachments_found"] == 0
+        assert result["failures"] == []
+        assert "no separate mail attachments" in result["reason"]
+        assert "get_messages" in result["reason"]
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_zero_saved_explains_not_downloaded(
+        self, mock_run: MagicMock, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        mock_run.side_effect = [
+            '[{"name":"shot.png","mime_type":"image/png",'
+            '"size":227580,"downloaded":false}]',
+            '{"saved":0,"failures":[{"index":0,'
+            '"error":"Mail got an error: AppleEvent handler failed."}]}',
+        ]
+        result = connector.save_attachments("12372", tmp_path)
+        assert result["saved"] == 0
+        assert result["attachments_found"] == 1
+        assert "not downloaded" in result["reason"]
+        assert result["failures"] == [{
+            "index": 0, "name": "shot.png", "downloaded": False,
+            "error": "Mail got an error: AppleEvent handler failed.",
+        }]
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_zero_saved_reports_mail_error_text(
+        self, mock_run: MagicMock, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        mock_run.side_effect = [
+            '[{"name":"shot.png","mime_type":"image/png",'
+            '"size":10,"downloaded":true}]',
+            '{"saved":0,"failures":[{"index":0,'
+            '"error":"Mail got an error: some failure"}]}',
+        ]
+        result = connector.save_attachments("12372", tmp_path)
+        assert result["saved"] == 0
+        assert "Mail refused to save" in result["reason"]
+        assert "shot.png: Mail got an error: some failure" in result["reason"]
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_zero_saved_explains_indices_that_match_nothing(
+        self, mock_run: MagicMock, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        mock_run.return_value = (
+            '[{"name":"a.pdf","mime_type":"application/pdf",'
+            '"size":1,"downloaded":true}]'
+        )
+        result = connector.save_attachments("12372", tmp_path, [5])
+        assert result["saved"] == 0
+        assert "matched the requested attachment_indices" in result["reason"]
+        mock_run.assert_called_once()  # no save script ran
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_zero_saved_explains_byte_caps(
+        self, mock_run: MagicMock, tmp_path: Path
+    ) -> None:
+        connector = AppleMailConnector(timeout=30, max_attachment_bytes=10)
+        mock_run.return_value = (
+            '[{"name":"big.bin","mime_type":"application/octet-stream",'
+            '"size":100,"downloaded":true}]'
+        )
+        result = connector.save_attachments("12372", tmp_path)
+        assert result["saved"] == 0
+        assert "byte caps" in result["reason"]
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_partial_save_lists_failures_without_reason(
+        self, mock_run: MagicMock, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        mock_run.side_effect = [
+            '[{"name":"a.pdf","mime_type":"application/pdf","size":1,'
+            '"downloaded":true},{"name":"b.pdf","mime_type":"application/pdf",'
+            '"size":1,"downloaded":true}]',
+            '{"saved":1,"failures":[{"index":1,"error":"nope"}]}',
+        ]
+        result = connector.save_attachments("12372", tmp_path)
+        assert result["saved"] == 1
+        assert result["reason"] is None
+        assert result["failures"][0]["name"] == "b.pdf"
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_save_script_records_per_attachment_errors(
+        self, mock_run: MagicMock, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        """The per-save `try` captures the error instead of swallowing it."""
+        mock_run.side_effect = [
+            '[{"name":"a.pdf","mime_type":"application/pdf",'
+            '"size":1,"downloaded":true}]',
+            '{"saved":1,"failures":{}}',
+        ]
+        connector.save_attachments("12345", tmp_path)
+        save_script = mock_run.call_args_list[-1][0][0]
+        assert "on error errMsg" in save_script
+        assert "|index|:(ai - 1)" in save_script
+        assert 'error "Can\'t get message: not found"' in save_script
 
     def test_save_to_invalid_directory(self, connector: AppleMailConnector) -> None:
         """Test error when save directory is invalid."""
@@ -355,7 +462,7 @@ class TestSaveAttachmentsPathTraversal:
         mock_run.side_effect = [
             '[{"name":"../../../../tmp/evil.sh","mime_type":"x",'
             '"size":1,"downloaded":true}]',
-            "1",
+            '{"saved":1,"failures":{}}',
         ]
         result = connector.save_attachments(message_id="123", save_directory=tmp_path)
 

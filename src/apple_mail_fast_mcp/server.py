@@ -1742,19 +1742,28 @@ def save_attachments(
             ``account`` for the IMAP fast path.
 
     Returns:
-        Dict with ``success``, ``saved`` (count written), ``directory``, and
+        Dict with ``success``, ``saved`` (count written), ``directory``,
         ``rejected`` (attachments skipped by the per-attachment / aggregate
-        byte caps, each ``{name, size, reason}``; #236).
+        byte caps, each ``{name, size, reason}``; #236),
+        ``attachments_found`` (how many attachments the message has),
+        ``failures`` (attachments Mail refused to save, each
+        ``{index, name, downloaded, error}``) and ``reason`` (why nothing
+        was saved; ``None`` when something was). A ``saved: 0`` always
+        carries a ``reason``: no separate attachment (an image pasted into
+        the HTML body is part of the body), not downloaded yet, a Mail
+        error, the byte caps, or indices that matched nothing.
 
     Example:
         >>> save_attachments("12345", "/Users/me/Downloads")
         {"success": True, "saved": 2, "directory": "/Users/me/Downloads",
-         "rejected": []}
+         "rejected": [], "attachments_found": 2, "failures": [],
+         "reason": None}
 
         >>> save_attachments("12345", "/Users/me/Downloads", [0, 2])
         {"success": True, "saved": 1, "directory": "/Users/me/Downloads",
          "rejected": [{"name": "huge.bin", "size": 2147483648,
-                       "reason": "per_attachment_cap"}]}
+                       "reason": "per_attachment_cap"}],
+         "attachments_found": 3, "failures": [], "reason": None}
     """
     from pathlib import Path
 
@@ -1808,6 +1817,9 @@ def save_attachments(
             "directory": save_directory,
             # Attachments skipped/removed by the byte caps (#236), if any.
             "rejected": result["rejected"],
+            "attachments_found": result["attachments_found"],
+            "failures": result["failures"],
+            "reason": result["reason"],
         }
 
     except (FileNotFoundError, ValueError) as e:
