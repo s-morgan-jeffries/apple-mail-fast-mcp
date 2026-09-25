@@ -3,6 +3,7 @@ AppleScript-based connector for Apple Mail.
 """
 
 import logging
+import mimetypes
 import re
 import smtplib
 import subprocess
@@ -475,6 +476,71 @@ def _compute_draft_extract_targets(
             raise ValueError(f"draft attachment {name!r} escapes dest_dir")
         targets.append(target)
     return targets
+
+
+# Per-attachment property reads for the AppleScript paths, each read
+# individually guarded; appends one record to `collected`.
+#
+# Mail.app raises "AppleEvent handler failed" (-10000) on `MIME type of att`
+# for some real, fully downloaded attachments (seen on a PNG screenshot whose
+# `name`, `file size` and `downloaded` all read fine). With the four reads in
+# one record expression, that single failure aborted the enumeration:
+# `get_attachments` / `save_attachments` answered "no attachments" for a
+# savable attachment, `get_message(include_attachments=True)` reported the
+# message as not found, and search / selection listings failed outright.
+# A failed read falls back to a safe default; an empty `mime_type` is
+# re-derived from the filename by `_fill_missing_mime_types`.
+_ATTACHMENT_RECORD_BLOCK = """
+                        set aName to ""
+                        try
+                            set aName to (name of att) as text
+                        end try
+                        set aMime to ""
+                        try
+                            set aMime to (MIME type of att) as text
+                        end try
+                        set aSize to 0
+                        try
+                            set aSize to (file size of att) as integer
+                        end try
+                        set aDown to false
+                        try
+                            set aDown to (downloaded of att) as boolean
+                        end try
+                        set end of collected to {|name|:aName, |mime_type|:aMime, |size|:aSize, |downloaded|:aDown}
+"""
+
+# `attList` for the paths that embed attachments in a message record.
+_ATTACHMENT_LIST_CLAUSE = (
+    "\n                        set collected to {}"
+    "\n                        repeat with att in mail attachments of msg"
+    + _ATTACHMENT_RECORD_BLOCK
+    + "                        end repeat"
+    "\n                        set attList to collected\n"
+)
+
+
+def _fill_missing_mime_types(
+    attachments: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Derive an empty ``mime_type`` from the filename extension (see
+    ``_ATTACHMENT_RECORD_BLOCK``), falling back to
+    ``application/octet-stream``. Mutates and returns the list."""
+    for att in attachments:
+        if not att.get("mime_type"):
+            guessed, _ = mimetypes.guess_type(str(att.get("name", "")))
+            att["mime_type"] = guessed or "application/octet-stream"
+    return attachments
+
+
+def _fill_message_mime_types(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Apply ``_fill_missing_mime_types`` to each message's ``attachments``."""
+    for msg in messages:
+        if isinstance(msg.get("attachments"), list):
+            _fill_missing_mime_types(msg["attachments"])
+    return messages
 
 
 def _filter_imap_results_to_cutoff(
@@ -2200,12 +2266,7 @@ class AppleMailConnector:
         effective_limit = str(limit) if limit else "999999999"
 
         if include_attachments:
-            attachments_clause = '''
-                    set attList to {}
-                    repeat with att in mail attachments of msg
-                        set attRecord to {|name|:(name of att), |mime_type|:(MIME type of att), |size|:(file size of att), |downloaded|:(downloaded of att)}
-                        set end of attList to attRecord
-                    end repeat'''
+            attachments_clause = _ATTACHMENT_LIST_CLAUSE
             attachments_field = ", |attachments|:attList"
         else:
             attachments_clause = ""
@@ -2243,7 +2304,9 @@ class AppleMailConnector:
             handlers=_MAILBOX_RESOLVER_HANDLERS,
         )
         result = self._run_applescript(script)
-        return cast(list[dict[str, Any]], parse_applescript_json(result))
+        return _fill_message_mime_types(
+            cast(list[dict[str, Any]], parse_applescript_json(result))
+        )
 
     def get_message(
         self,
@@ -2388,13 +2451,7 @@ class AppleMailConnector:
         )
 
         if include_attachments:
-            attachments_clause = '''
-                        set attList to {}
-                        repeat with att in mail attachments of msg
-                            set attRecord to {|name|:(name of att), |mime_type|:(MIME type of att), |size|:(file size of att), |downloaded|:(downloaded of att)}
-                            set end of attList to attRecord
-                        end repeat
-'''
+            attachments_clause = _ATTACHMENT_LIST_CLAUSE
             attachments_field = ", |attachments|:attList"
         else:
             attachments_clause = ""
@@ -2424,7 +2481,9 @@ class AppleMailConnector:
 
         script = _wrap_as_json_script(tell_body, timeout=self.timeout)
         result = self._run_applescript(script)
-        return cast(dict[str, Any], parse_applescript_json(result))
+        msg = cast(dict[str, Any], parse_applescript_json(result))
+        _fill_message_mime_types([msg])
+        return msg
 
     def auto_template_vars(self, message_id: str | None) -> dict[str, str]:
         """Build the auto-fill variable dict for render_template.
@@ -2792,11 +2851,11 @@ class AppleMailConnector:
                         set msg to first message of mb whose ({id_match_clause})
                         set attList to mail attachments of msg
 
-                        set resultData to {{}}
+                        set collected to {{}}
                         repeat with att in attList
-                            set attRecord to {{|name|:(name of att), |mime_type|:(MIME type of att), |size|:(file size of att), |downloaded|:(downloaded of att)}}
-                            set end of resultData to attRecord
+{_ATTACHMENT_RECORD_BLOCK}
                         end repeat
+                        set resultData to collected
                         exit repeat
                     end try
                 end repeat
@@ -2811,7 +2870,11 @@ class AppleMailConnector:
 
         script = _wrap_as_json_script(tell_body, timeout=self.timeout)
         result = self._run_applescript(script)
-        return cast(list[dict[str, Any]], parse_applescript_json(result))
+        parsed = parse_applescript_json(result)
+        # An empty AppleScript list `{}` can bridge to a JSON object.
+        if not parsed:
+            return []
+        return _fill_missing_mime_types(cast(list[dict[str, Any]], parsed))
 
     def get_thread(self, message_id: str) -> list[dict[str, Any]]:
         """Return all messages in the thread containing ``message_id``.
@@ -4683,12 +4746,7 @@ class AppleMailConnector:
         )
 
         if include_attachments:
-            attachments_clause = '''
-                set attList to {}
-                repeat with att in mail attachments of msg
-                    set attRecord to {|name|:(name of att), |mime_type|:(MIME type of att), |size|:(file size of att), |downloaded|:(downloaded of att)}
-                    set end of attList to attRecord
-                end repeat'''
+            attachments_clause = _ATTACHMENT_LIST_CLAUSE
             attachments_field = ", |attachments|:attList"
         else:
             attachments_clause = ""
@@ -4708,7 +4766,9 @@ class AppleMailConnector:
 
         script = _wrap_as_json_script(tell_body, timeout=self.timeout)
         result = self._run_applescript(script)
-        return cast(list[dict[str, Any]], parse_applescript_json(result))
+        return _fill_message_mime_types(
+            cast(list[dict[str, Any]], parse_applescript_json(result))
+        )
 
     def _resolve_draft_lookup_id(self, draft_id: str) -> str:
         """Map a ``draft_id`` to Mail.app's internal numeric id for the

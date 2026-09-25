@@ -582,8 +582,10 @@ class TestMailIntegration:
         Chains off search_messages for a real ID. Guards against the
         NSJSONSerialization `|size|` selector-collision bug fixed in #23.
         Empty list is a valid pass — most messages have no attachments.
+        Uses the AppleScript search so the id is numeric: an RFC id from the
+        IMAP search is refused here without account+mailbox (#415).
         """
-        matches = connector.search_messages(
+        matches = connector._search_messages_applescript(
             account=test_account, mailbox="INBOX", limit=1
         )
         if not matches:
@@ -597,6 +599,53 @@ class TestMailIntegration:
             assert isinstance(att["mime_type"], str)
             assert isinstance(att["size"], int)
             assert isinstance(att["downloaded"], bool)
+
+    def test_attachment_enumeration_survives_unreadable_properties(
+        self, connector: AppleMailConnector, test_account: str
+    ) -> None:
+        """A message Mail says has an attachment must enumerate one.
+
+        `MIME type of att` can raise -10000 on a real, downloaded attachment.
+        With the property reads unguarded that emptied the list, so
+        save_attachments answered "saved 0" for a savable attachment. Mocks
+        cannot catch this: the failure lives in Mail.app.
+        """
+        msgs = connector._search_messages_applescript(
+            account=test_account, mailbox="INBOX", has_attachment=True, limit=1
+        )
+        if not msgs:
+            pytest.skip("no attachment-bearing message in test INBOX")
+
+        atts = connector._get_attachments_applescript(str(msgs[0]["id"]))
+        assert atts, "Mail reported has_attachment but enumeration came back empty"
+        for a in atts:
+            assert isinstance(a["name"], str)
+            assert a["mime_type"], "mime_type must never come back empty"
+            assert isinstance(a["size"], int)
+            assert isinstance(a["downloaded"], bool)
+
+    def test_get_message_keeps_the_message_when_asking_for_attachments(
+        self, connector: AppleMailConnector, test_account: str
+    ) -> None:
+        """include_attachments must never turn a message into "not found".
+
+        An unguarded attachment property read failed inside the `try` that
+        decides whether the message was located, so the same id resolved
+        without attachments and raised MailMessageNotFoundError with them.
+        """
+        msgs = connector._search_messages_applescript(
+            account=test_account, mailbox="INBOX", has_attachment=True, limit=1
+        )
+        if not msgs:
+            pytest.skip("no attachment-bearing message in test INBOX")
+        mid = str(msgs[0]["id"])
+
+        without = connector._get_message_applescript(mid, False, False)
+        with_atts = connector._get_message_applescript(mid, False, True)
+
+        assert with_atts["id"] == without["id"]
+        assert with_atts["subject"] == without["subject"]
+        assert isinstance(with_atts["attachments"], list)
 
     def test_save_attachments_stays_contained(
         self, connector: AppleMailConnector, test_account: str, tmp_path: Path

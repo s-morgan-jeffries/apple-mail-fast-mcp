@@ -1,6 +1,7 @@
 """Unit tests for attachment functionality."""
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -76,7 +77,8 @@ class TestGetAttachments:
         mock_run.return_value = "[]"
         connector.get_attachments("12345")
         script = mock_run.call_args[0][0]
-        assert "|name|:(name of att)" in script
+        assert "|name|:aName" in script
+        assert "set aName to (name of att) as text" in script
 
     @patch.object(AppleMailConnector, "_run_applescript")
     def test_get_attachments_script_quotes_size_key(
@@ -90,8 +92,150 @@ class TestGetAttachments:
         mock_run.return_value = "[]"
         connector.get_attachments("msg-1")
         script = mock_run.call_args[0][0]
-        assert "|size|:(file size of att)" in script
-        assert ", size:(file size of att)" not in script
+        assert "|size|:aSize" in script
+        assert ", size:aSize" not in script
+        assert "set aSize to (file size of att) as integer" in script
+
+
+class TestAttachmentPropertyResilience:
+    """Mail.app raises "AppleEvent handler failed" (-10000) on `MIME type of
+    att` for some real attachments. Each property read is guarded on its own
+    so one bad property cannot take down the enumeration, the message, or a
+    whole search / selection listing."""
+
+    GUARDED_READS = (
+        "set aName to (name of att) as text",
+        "set aMime to (MIME type of att) as text",
+        "set aSize to (file size of att) as integer",
+        "set aDown to (downloaded of att) as boolean",
+    )
+
+    @pytest.fixture
+    def connector(self) -> AppleMailConnector:
+        return AppleMailConnector(timeout=30)
+
+    def _assert_reads_guarded(self, script: str) -> None:
+        for read in self.GUARDED_READS:
+            assert read in script
+            # Each read sits directly inside its own try/end try.
+            assert script[: script.index(read)].rstrip().endswith("try")
+        assert "(MIME type of att)}" not in script
+
+    @pytest.mark.parametrize(
+        ("call", "payload"),
+        [
+            (lambda c: c.get_attachments("12345"), "[]"),
+            (
+                lambda c: c.get_message("12345", include_attachments=True),
+                '{"id":"12345","attachments":[]}',
+            ),
+            (
+                lambda c: c._search_messages_applescript(
+                    account="A", mailbox="INBOX", include_attachments=True
+                ),
+                "[]",
+            ),
+            (lambda c: c.get_selected_messages(include_attachments=True), "[]"),
+        ],
+        ids=["get_attachments", "get_message", "search", "selected"],
+    )
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_every_enumeration_guards_each_read(
+        self,
+        mock_run: MagicMock,
+        call: Any,
+        payload: str,
+        connector: AppleMailConnector,
+    ) -> None:
+        mock_run.return_value = payload
+        call(connector)
+        self._assert_reads_guarded(mock_run.call_args[0][0])
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_result_published_only_after_full_enumeration(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """`resultData` must not be pre-set to an empty list: a mid-loop
+        failure then read as "this message has no attachments"."""
+        mock_run.return_value = "[]"
+        connector.get_attachments("12345")
+        script = mock_run.call_args[0][0]
+        assert "set resultData to {}" not in script
+        assert script.index("set collected to {}") < script.index(
+            "set resultData to collected"
+        )
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_missing_mime_type_falls_back_to_extension(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        mock_run.return_value = (
+            '[{"name":"Captura de pantalla.png","mime_type":"",'
+            '"size":227580,"downloaded":true}]'
+        )
+        atts = connector.get_attachments("12372")
+        assert atts[0]["mime_type"] == "image/png"
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_unknown_extension_falls_back_to_octet_stream(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        mock_run.return_value = (
+            '[{"name":"blob.zzz","mime_type":"","size":1,"downloaded":true}]'
+        )
+        atts = connector.get_attachments("12372")
+        assert atts[0]["mime_type"] == "application/octet-stream"
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_reported_mime_type_is_kept(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        mock_run.return_value = (
+            '[{"name":"shot.png","mime_type":"application/x-custom",'
+            '"size":1,"downloaded":true}]'
+        )
+        atts = connector.get_attachments("12372")
+        assert atts[0]["mime_type"] == "application/x-custom"
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_empty_dict_from_applescript_is_an_empty_list(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """An empty AppleScript `{}` can bridge to a JSON object."""
+        mock_run.return_value = "{}"
+        assert connector.get_attachments("12372") == []
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_message_attachments_get_mime_fallback(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        mock_run.return_value = (
+            '{"id":"12372","subject":"x","attachments":'
+            '[{"name":"shot.png","mime_type":"","size":1,"downloaded":true}]}'
+        )
+        msg = connector.get_message("12372", include_attachments=True)
+        assert msg["attachments"][0]["mime_type"] == "image/png"
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_listing_attachments_get_mime_fallback(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        mock_run.return_value = (
+            '[{"id":"1","attachments":'
+            '[{"name":"a.pdf","mime_type":"","size":1,"downloaded":true}]},'
+            '{"id":"2"}]'
+        )
+        msgs = connector.get_selected_messages(include_attachments=True)
+        assert msgs[0]["attachments"][0]["mime_type"] == "application/pdf"
+        assert "attachments" not in msgs[1]
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_no_attachment_clause_when_not_requested(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        mock_run.return_value = '{"id":"12372","subject":"x"}'
+        connector.get_message("12372", include_attachments=False)
+        assert "mail attachments of msg" not in mock_run.call_args[0][0]
 
 
 class TestSaveAttachments:
