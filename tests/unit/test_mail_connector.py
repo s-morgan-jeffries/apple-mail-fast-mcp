@@ -4861,6 +4861,65 @@ class TestBulkOpsSourceMailbox:
                 source_mailbox="INBOX",
             )
 
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_update_message_combined_move_is_verified(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """A move combined with read/flag changes gets the same landing
+        check as a pure move; it used to report success while Gmail only
+        added the label."""
+        connector._imap_failure_until["Gmail"] = time.monotonic() + 60
+        mock_run.return_value = "1,0"
+        count = connector.update_message(
+            ["abc"],
+            read_status=True,
+            flag_color="red",
+            destination_mailbox="Newsletters",
+            account="Gmail",
+            source_mailbox="INBOX",
+        )
+        script = mock_run.call_args[0][0]
+        assert count == 1
+        assert "name of mailbox of msg" in script
+        # read/flag run first, the move last (IMAP STORE needs the source).
+        read_at = script.index("set read status of msg to true")
+        flag_at = script.index("set flag index of msg to")
+        move_at = script.index("set mailbox of msg to destMailbox")
+        assert read_at < move_at and flag_at < move_at
+        assert "delete msg" not in script
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_update_message_unverified_combined_move_raises_imap_required(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        from apple_mail_fast_mcp.exceptions import MailImapRequiredError
+
+        connector._imap_failure_until["Gmail"] = time.monotonic() + 60
+        mock_run.return_value = "0,1"  # read applied, message never left
+        with pytest.raises(
+            MailImapRequiredError, match="read/flag changes.*its own"
+        ):
+            connector.update_message(
+                ["abc"],
+                read_status=True,
+                destination_mailbox="Newsletters",
+                account="Gmail",
+                source_mailbox="INBOX",
+            )
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_update_message_without_move_is_not_verified(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        connector._imap_failure_until["Gmail"] = time.monotonic() + 60
+        mock_run.return_value = "1"
+        connector.update_message(
+            ["abc"], read_status=True, account="Gmail", source_mailbox="INBOX"
+        )
+        script = mock_run.call_args[0][0]
+        assert "failCount" not in script
+        assert "destMailbox" not in script
+
     # ------ flag_message ------
 
     @patch.object(AppleMailConnector, "_run_applescript")

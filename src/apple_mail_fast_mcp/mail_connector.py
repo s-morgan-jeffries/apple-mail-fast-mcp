@@ -3973,11 +3973,16 @@ class AppleMailConnector:
         account: str,
         source_mailbox: str | None,
         destination_mailbox: str,
+        pre_actions: tuple[str, ...] = (),
     ) -> int:
         """Move messages via AppleScript ``set mailbox`` and verify each one
         left the source (#364). Raises MailImapRequiredError if any message
         silently stayed put (the Gmail no-op) — the move can only be done
-        reliably over IMAP. Returns the count that verifiably moved."""
+        reliably over IMAP. Returns the count that verifiably moved.
+
+        ``pre_actions`` run on each matched message before the move (the
+        read/flag half of a combined ``update_message`` patch), so a
+        combined patch gets the same verification as a pure move."""
         from .utils import sanitize_input
 
         account_clause = applescript_account_clause(account)
@@ -3996,7 +4001,7 @@ class AppleMailConnector:
         repeat_block = _bulk_repeat_block(
             account=account if source_mailbox is not None else None,
             source_mailbox=source_mailbox,
-            actions=["set mailbox of msg to destMailbox"],
+            actions=[*pre_actions, "set mailbox of msg to destMailbox"],
             counter_var="moveCount",
             verify_dest_var="destMailbox",
         )
@@ -4018,12 +4023,27 @@ class AppleMailConnector:
         moved, failed = self._parse_move_counts(self._run_applescript(script))
         if failed > 0:
             src = source_mailbox or "the source mailbox"
+            if pre_actions:
+                # A combined patch never takes the IMAP fast path, so
+                # setup-imap alone would not help (#364).
+                advice = (
+                    " The read/flag changes in the same patch were applied. "
+                    "On Gmail, label moves only apply reliably over IMAP, "
+                    "which takes move-only patches: send the move as its own "
+                    "update_message call with source_mailbox (and run "
+                    "`apple-mail-fast-mcp setup-imap --account <name>` if the "
+                    "account has no IMAP credentials)."
+                )
+            else:
+                advice = (
+                    " On Gmail, label moves only apply reliably over IMAP: "
+                    "run `apple-mail-fast-mcp setup-imap --account <name>` "
+                    "for this account and retry."
+                )
             raise MailImapRequiredError(
                 f"Move to {destination_mailbox!r} could not be confirmed for "
-                f"{failed} message(s) — they never left {src!r}. On Gmail, "
-                f"label moves only apply reliably over IMAP: run "
-                f"`apple-mail-fast-mcp setup-imap --account <name>` for this "
-                f"account and retry. (#364)"
+                f"{failed} message(s) — they never left {src!r}.{advice} "
+                f"(#364)"
             )
         return moved
 
@@ -4164,6 +4184,9 @@ class AppleMailConnector:
                 when destination_mailbox is set.
             MailAccountNotFoundError: account doesn't exist.
             MailMailboxNotFoundError: destination mailbox doesn't exist.
+            MailImapRequiredError: a move on the AppleScript fallback, alone
+                or combined with read/flag changes, could not be confirmed
+                (the Gmail silent no-op, #364).
         """
         if not message_ids:
             return 0
@@ -4196,23 +4219,6 @@ class AppleMailConnector:
         if imap_count is not None:
             return imap_count
 
-        # Pure move (no read/flag) on the AppleScript fallback: route through
-        # the verified mover so a Gmail silent-no-op fails loud instead of
-        # quietly losing the message (#364). gmail_mode is deprecated/ignored.
-        pure_move = (
-            destination_mailbox is not None
-            and read_status is None
-            and flagged is None
-            and flag_color is None
-        )
-        if pure_move:
-            return self._run_verified_move(
-                message_ids,
-                account=cast(str, account),
-                source_mailbox=source_mailbox,
-                destination_mailbox=cast(str, destination_mailbox),
-            )
-
         actions: list[str] = []
 
         if read_status is not None:
@@ -4221,13 +4227,19 @@ class AppleMailConnector:
 
         actions.extend(self._build_flag_actions(flagged, flag_color))
 
-        # Move (always last — IMAP STORE requires source folder). gmail_mode
-        # is deprecated/ignored (#364): never copy+delete (it trashes on
-        # Gmail). Combined move+read/flag patches stay on this unverified
-        # path; the move itself is a plain relabel that never routes through
-        # Trash.
+        # Any move on the AppleScript fallback, alone or combined with
+        # read/flag changes, goes through the verified mover so a Gmail
+        # silent no-op fails loud instead of reporting success (#364). The
+        # move runs last (IMAP STORE requires the source folder).
+        # gmail_mode is deprecated/ignored: never copy+delete.
         if destination_mailbox is not None:
-            actions.append("set mailbox of msg to destMailbox")
+            return self._run_verified_move(
+                message_ids,
+                account=cast(str, account),
+                source_mailbox=source_mailbox,
+                destination_mailbox=destination_mailbox,
+                pre_actions=tuple(actions),
+            )
 
         repeat_block = _bulk_repeat_block(
             account=account if source_mailbox is not None else None,
@@ -4246,20 +4258,8 @@ class AppleMailConnector:
             for mid in message_ids
         )
 
-        # Set up destMailbox at script level when moving; the actions list
-        # references it inside the loop.
-        dest_setup = ""
-        if destination_mailbox is not None:
-            account_clause = applescript_account_clause(cast(str, account))
-            mb_safe = escape_applescript_string(sanitize_input(destination_mailbox))
-            dest_setup = (
-                f'set accountRef to {account_clause}\n'
-                f'            set destMailbox to my resolveMailbox(accountRef, "{mb_safe}")'
-            )
-
         script = f"{_MAILBOX_RESOLVER_HANDLERS}\n" + _wrap_with_timeout(
             f"""tell application "Mail"
-            {dest_setup}
             set idList to {{{id_list}}}
             set updateCount to 0
 
