@@ -65,6 +65,15 @@ Use POSIX file references — `POSIX file "/path/to/file"`. Convert Python `Path
 AppleScript (path-traversal → arbitrary write); sanitize and compute the target path on the Python
 side first.
 
+## Attachment properties can fail individually
+
+`MIME type of att` can raise "AppleEvent handler failed" (`-10000`) on a real, downloaded attachment
+whose `name`, `file size` and `downloaded` all read fine. Read each attachment property in its own
+`try` with a safe default (`_ATTACHMENT_RECORD_BLOCK` in the connector); an empty `mime_type` is
+re-derived from the filename. With the reads in one record expression, that single failure emptied
+`get_attachments`, made `get_message(include_attachments=True)` report the message as not found, and
+failed whole search / selection listings.
+
 ## Error parsing
 
 AppleScript errors surface on stderr; the connector maps them to typed exceptions (note macOS uses

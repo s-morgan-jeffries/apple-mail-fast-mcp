@@ -124,6 +124,8 @@ save attachment theAttach in POSIX file "/Users/user/Downloads/"
 
 **Path conversion:** Python `Path` objects → `.as_posix()` → AppleScript `POSIX file "..."`.
 
+**Attachment properties:** read each one in its own `try` (reuse `_ATTACHMENT_RECORD_BLOCK`). `MIME type of att` raises -10000 on some real attachments, and in a shared record expression that one failure emptied the list or made the whole message look missing.
+
 **Security:** Always validate:
 - File exists before sending
 - Directory exists before saving
