@@ -2199,11 +2199,46 @@ class TestGetAttachmentContent:
 # ---------------------------------------------------------------------------
 
 
+def _saved(
+    saved: int, rejected: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """A connector save_attachments result."""
+    return {
+        "saved": saved,
+        "rejected": rejected or [],
+        "attachments_found": saved,
+        "failures": [],
+        "reason": None if saved else "why",
+    }
+
+
 class TestSaveAttachments:
+    def test_zero_saved_passes_reason_and_failures_through(
+        self, mock_mail: MagicMock, mock_logger: MagicMock, tmp_path: Any
+    ) -> None:
+        """A ``saved: 0`` reaches the caller with its explanation."""
+        failures = [{"index": 0, "name": "shot.png", "downloaded": False,
+                     "error": "AppleEvent handler failed."}]
+        mock_mail.save_attachments.return_value = {
+            "saved": 0,
+            "rejected": [],
+            "attachments_found": 1,
+            "failures": failures,
+            "reason": "not downloaded",
+        }
+
+        result = save_attachments("1", str(tmp_path))
+
+        assert result["success"] is True
+        assert result["saved"] == 0
+        assert result["attachments_found"] == 1
+        assert result["failures"] == failures
+        assert result["reason"] == "not downloaded"
+
     def test_success_returns_saved_count(
         self, mock_mail: MagicMock, mock_logger: MagicMock, tmp_path: Any
     ) -> None:
-        mock_mail.save_attachments.return_value = {"saved": 2, "rejected": []}
+        mock_mail.save_attachments.return_value = _saved(2)
 
         result = save_attachments("1", str(tmp_path))
 
@@ -2211,13 +2246,16 @@ class TestSaveAttachments:
         assert result["saved"] == 2
         assert result["directory"] == str(tmp_path)
         assert result["rejected"] == []
+        assert result["attachments_found"] == 2
+        assert result["failures"] == []
+        assert result["reason"] is None
         mock_logger.log_operation.assert_called_once()
 
     def test_account_mailbox_pass_through_for_imap_fast_path(
         self, mock_mail: MagicMock, mock_logger: MagicMock, tmp_path: Any
     ) -> None:
         # #371: account/mailbox unlock the IMAP fast path in the connector.
-        mock_mail.save_attachments.return_value = {"saved": 1, "rejected": []}
+        mock_mail.save_attachments.return_value = _saved(1)
 
         save_attachments(
             "1", str(tmp_path), account="Gmail", mailbox="INBOX"
@@ -2233,7 +2271,7 @@ class TestSaveAttachments:
         """Byte-cap rejections (#236) are passed through to the tool payload."""
         rejected = [{"name": "huge.bin", "size": 9_999_999_999,
                      "reason": "per_attachment_cap"}]
-        mock_mail.save_attachments.return_value = {"saved": 1, "rejected": rejected}
+        mock_mail.save_attachments.return_value = _saved(1, rejected=rejected)
 
         result = save_attachments("1", str(tmp_path))
 

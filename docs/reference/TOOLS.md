@@ -637,7 +637,10 @@ Save attachments from a message to a directory.
   "success": true,
   "saved": 2,
   "directory": "/Users/me/Downloads",
-  "rejected": []
+  "rejected": [],
+  "attachments_found": 2,
+  "failures": [],
+  "reason": null
 }
 ```
 
@@ -646,6 +649,13 @@ caps (per-attachment default 100 MB, aggregate 500 MB per call — disk-fill DoS
 each as `{"name", "size", "reason"}` where reason is `per_attachment_cap` / `aggregate_cap` (pre-check)
 or `*_postwrite` (an oversized file deleted after writing). Override the caps with
 `APPLE_MAIL_MCP_MAX_ATTACHMENT_BYTES` / `APPLE_MAIL_MCP_MAX_TOTAL_ATTACHMENT_BYTES`.
+
+`attachments_found` is how many attachments the message has. `failures` lists attachments Mail
+refused to save, each as `{"index", "name", "downloaded", "error"}` with Mail's own error text.
+**A `saved: 0` always carries a `reason`**, since the bare count could not tell apart: no separate
+attachment (an image pasted into the HTML body is part of the body; read it with `get_messages`),
+an attachment Mail has not downloaded yet, a per-attachment error from Mail, the byte caps, or
+`attachment_indices` that matched nothing. `reason` is `null` whenever something was saved.
 
 **Examples:**
 

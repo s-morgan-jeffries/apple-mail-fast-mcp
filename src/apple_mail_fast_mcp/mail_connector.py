@@ -407,6 +407,96 @@ def _prune_oversized_written(
     return removed, rejected
 
 
+def _describe_save_failures(
+    attachments: list[dict[str, Any]],
+    raw_failures: Any,
+) -> list[dict[str, Any]]:
+    """Turn the AppleScript per-attachment save errors into
+    ``{index, name, downloaded, error}`` rows. ``raw_failures`` is a list of
+    records, or an empty dict when AppleScript serialized an empty list."""
+    if not isinstance(raw_failures, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for failure in raw_failures:
+        if not isinstance(failure, dict):
+            continue
+        try:
+            idx = int(failure.get("index", -1))
+        except (TypeError, ValueError):
+            idx = -1
+        att = attachments[idx] if 0 <= idx < len(attachments) else {}
+        rows.append(
+            {
+                "index": idx,
+                "name": str(att.get("name", "")),
+                "downloaded": bool(att.get("downloaded")),
+                "error": str(failure.get("error", "")).strip(),
+            }
+        )
+    return rows
+
+
+def _explain_zero_saved(
+    message_id: str,
+    attachments: list[dict[str, Any]],
+    rejected: list[dict[str, Any]],
+    failures: list[dict[str, Any]],
+) -> str:
+    """Why ``save_attachments`` wrote nothing. A bare ``saved: 0`` with an
+    empty ``rejected`` could mean no attachments, not downloaded yet, a
+    Mail error, or indices that matched nothing."""
+    if failures:
+        if all(not f["downloaded"] for f in failures):
+            return (
+                f"message {message_id!r} has {len(attachments)} attachment(s) "
+                f"but Mail has not downloaded them; open the message in Mail "
+                f"(or let it finish syncing) and retry"
+            )
+        joined = "; ".join(
+            f"{f['name'] or 'attachment #' + str(f['index'])}: "
+            f"{f['error'] or 'unknown error'}"
+            for f in failures
+        )
+        return f"Mail refused to save every selected attachment ({joined})"
+    if rejected:
+        return (
+            f"all {len(rejected)} selected attachment(s) were skipped by the "
+            f"byte caps (see 'rejected')"
+        )
+    if not attachments:
+        return (
+            f"message {message_id!r} has no separate mail attachments. An "
+            f"image pasted into the HTML body is part of the body, not an "
+            f"attachment Mail can export - read it with get_messages instead"
+        )
+    return (
+        f"none of the {len(attachments)} attachment(s) on message "
+        f"{message_id!r} matched the requested attachment_indices"
+    )
+
+
+def _save_attachments_result(
+    message_id: str,
+    attachments: list[dict[str, Any]],
+    saved: int,
+    rejected: list[dict[str, Any]],
+    failures: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """The ``save_attachments`` result shared by the IMAP and AppleScript
+    paths. ``reason`` is set exactly when nothing was saved."""
+    return {
+        "saved": saved,
+        "rejected": rejected,
+        "attachments_found": len(attachments),
+        "failures": failures,
+        "reason": (
+            None
+            if saved
+            else _explain_zero_saved(message_id, attachments, rejected, failures)
+        ),
+    }
+
+
 def _compute_attachment_save_targets(
     attachment_names: list[str],
     save_directory: Path,
@@ -3709,10 +3799,15 @@ class AppleMailConnector:
             attachment_indices: Indices of attachments to save (None = all)
 
         Returns:
-            ``{"saved": int, "rejected": list[dict]}`` — count actually
-            written, and per-rejection records ``{name, size, reason}`` where
-            reason is ``per_attachment_cap`` / ``aggregate_cap`` (pre-check) or
-            ``*_postwrite`` (post-write net).
+            ``{"saved", "rejected", "attachments_found", "failures",
+            "reason"}``: ``saved`` is the count actually written;
+            ``rejected`` holds ``{name, size, reason}`` records where reason
+            is ``per_attachment_cap`` / ``aggregate_cap`` (pre-check) or
+            ``*_postwrite`` (post-write net); ``attachments_found`` is how
+            many attachments the message has; ``failures`` holds
+            ``{index, name, downloaded, error}`` for attachments Mail refused
+            to save, with Mail's error text; ``reason`` explains a
+            ``saved: 0`` and is ``None`` otherwise.
 
         Raises:
             FileNotFoundError: If save directory doesn't exist
@@ -3773,7 +3868,9 @@ class AppleMailConnector:
             total_cap=self.max_total_attachment_bytes,
         )
         if not allowed:
-            return {"saved": 0, "rejected": rejected}
+            return _save_attachments_result(
+                message_id, attachments, 0, rejected, []
+            )
 
         targets = _compute_attachment_save_targets(
             [str(a.get("name", "")) for a in attachments],
@@ -3781,7 +3878,9 @@ class AppleMailConnector:
             allowed,
         )
         if not targets:
-            return {"saved": 0, "rejected": rejected}
+            return _save_attachments_result(
+                message_id, attachments, 0, rejected, []
+            )
 
         # Accept BOTH id spaces so a row from the IMAP search path pipes
         self._reject_rfc_id_scan(message_id)
@@ -3796,9 +3895,11 @@ class AppleMailConnector:
             f'"{escape_applescript_string(str(path))}"' for _, path in targets
         )
 
-        script = _wrap_with_timeout(
-            f"""tell application "Mail"
-            -- Search all accounts for message
+        # Per-attachment save errors are recorded with Mail's error text
+        # instead of being swallowed, so a short count says which failed.
+        tell_body = f"""
+        tell application "Mail"
+            set resultData to missing value
             repeat with acc in accounts
                 repeat with mb in mailboxes of acc
                     try
@@ -3807,6 +3908,7 @@ class AppleMailConnector:
                         set idxList to {{{idx_list}}}
                         set pathList to {{{path_list}}}
                         set saveCount to 0
+                        set failures to {{}}
 
                         repeat with k from 1 to count of idxList
                             set ai to item k of idxList
@@ -3814,21 +3916,29 @@ class AppleMailConnector:
                             try
                                 save (item ai of theAtts) in (POSIX file tp)
                                 set saveCount to saveCount + 1
+                            on error errMsg
+                                set end of failures to {{|index|:(ai - 1), |error|:(errMsg as text)}}
                             end try
                         end repeat
 
-                        return saveCount
+                        set resultData to {{|saved|:saveCount, |failures|:failures}}
+                        exit repeat
                     end try
                 end repeat
+                if resultData is not missing value then exit repeat
             end repeat
 
-            error "Message not found"
-        end tell""",
-            timeout=self.timeout,
-        )
+            if resultData is missing value then
+                error "Can't get message: not found"
+            end if
+        end tell
+        """
 
-        result = self._run_applescript(script)
-        saved = int(result) if result.isdigit() else 0
+        script = _wrap_as_json_script(tell_body, timeout=self.timeout)
+        raw = parse_applescript_json(self._run_applescript(script))
+        parsed = raw if isinstance(raw, dict) else {}
+        saved = int(parsed.get("saved") or 0)
+        failures = _describe_save_failures(attachments, parsed.get("failures"))
 
         # Post-write net (#236): delete any file that landed over the cap
         # (e.g. Mail under-reported size pre-download) and report it.
@@ -3838,7 +3948,9 @@ class AppleMailConnector:
             total_cap=self.max_total_attachment_bytes,
         )
         rejected.extend(post_rejected)
-        return {"saved": max(0, saved - removed), "rejected": rejected}
+        return _save_attachments_result(
+            message_id, attachments, max(0, saved - removed), rejected, failures
+        )
 
     def _imap_save_attachments(
         self,
@@ -3886,7 +3998,9 @@ class AppleMailConnector:
             total_cap=self.max_total_attachment_bytes,
         )
         if not allowed:
-            return {"saved": 0, "rejected": rejected}
+            return _save_attachments_result(
+                message_id, attachments, 0, rejected, []
+            )
 
         targets = _compute_attachment_save_targets(
             [a["name"] for a in attachments], save_directory, allowed
@@ -3905,7 +4019,9 @@ class AppleMailConnector:
             total_cap=self.max_total_attachment_bytes,
         )
         rejected.extend(post_rejected)
-        return {"saved": max(0, saved - removed), "rejected": rejected}
+        return _save_attachments_result(
+            message_id, attachments, max(0, saved - removed), rejected, []
+        )
 
     def move_messages(
         self,
