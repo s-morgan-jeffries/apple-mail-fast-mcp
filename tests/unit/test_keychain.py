@@ -195,19 +195,49 @@ class TestSetImapPassword:
     def test_writes_via_security_with_update_flag(self, mock_run):
         mock_run.return_value = _mock_security(0)
         set_imap_password("iCloud", "user@icloud.com", "appspecificpw")
-        cmd = mock_run.call_args[0][0]
-        # -U makes the command idempotent (overwrite existing entry).
-        assert cmd == [
-            "security",
-            "add-generic-password",
-            "-s",
-            "apple-mail-fast-mcp.imap.iCloud",
-            "-a",
-            "user@icloud.com",
-            "-w",
-            "appspecificpw",
-            "-U",
-        ]
+        # The command goes to `security -i` on stdin; -U makes it idempotent
+        # (overwrite existing entry).
+        assert mock_run.call_args[0][0] == ["security", "-i"]
+        assert mock_run.call_args.kwargs["input"] == (
+            'add-generic-password -U -s "apple-mail-fast-mcp.imap.iCloud" '
+            '-a "user@icloud.com" -w "appspecificpw"\n'
+        )
+
+    @patch("apple_mail_fast_mcp.keychain.subprocess.run")
+    def test_password_never_in_argv(self, mock_run):
+        # Process arguments are readable by any local user via `ps` (#469).
+        mock_run.return_value = _mock_security(0)
+        set_imap_password("iCloud", "user@icloud.com", "s3cret-app-pw")
+        argv = mock_run.call_args[0][0]
+        assert not any("s3cret-app-pw" in arg for arg in argv)
+
+    @patch("apple_mail_fast_mcp.keychain.subprocess.run")
+    def test_quotes_and_backslashes_are_escaped(self, mock_run):
+        mock_run.return_value = _mock_security(0)
+        set_imap_password('My "Work"', "user@example.com", 'pa"ss\\word $(x);')
+        assert mock_run.call_args.kwargs["input"] == (
+            'add-generic-password -U -s "apple-mail-fast-mcp.imap.My \\"Work\\"" '
+            '-a "user@example.com" -w "pa\\"ss\\\\word $(x);"\n'
+        )
+
+    @pytest.mark.parametrize(
+        "account, email, password",
+        [
+            ("iCloud", "user@icloud.com", "line\nbreak"),
+            ("iCloud", "user@icloud.com", "carriage\rreturn"),
+            ("iCloud", "user@icloud.com", "nul\0char"),
+            ("iCloud", "user@icloud.com\nx", "pw"),
+            ("i\nCloud", "user@icloud.com", "pw"),
+        ],
+    )
+    @patch("apple_mail_fast_mcp.keychain.subprocess.run")
+    def test_rejects_line_breaks_without_running_security(
+        self, mock_run, account, email, password
+    ):
+        # A line break would end the `security -i` command early.
+        with pytest.raises(MailKeychainError, match="line breaks"):
+            set_imap_password(account, email, password)
+        mock_run.assert_not_called()
 
     @patch("apple_mail_fast_mcp.keychain.subprocess.run")
     def test_zero_exit_returns_none(self, mock_run):
