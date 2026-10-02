@@ -70,18 +70,36 @@ def _env_var_name(mail_app_account: str) -> str | None:
     return IMAP_PASSWORD_ENV_PREFIX + suffix
 
 
-def _run_security(args: list[str]) -> subprocess.CompletedProcess[str]:
+def _run_security(
+    args: list[str], stdin: str | None = None
+) -> subprocess.CompletedProcess[str]:
     """Invoke ``security`` capturing output; map a missing binary to
     ``MailKeychainError`` (the only failure not signalled via exit code)."""
     try:
         return subprocess.run(
             args,
+            input=stdin,
             capture_output=True,
             text=True,
             check=False,
         )
     except FileNotFoundError as exc:
         raise MailKeychainError(f"`security` binary not found: {exc}") from exc
+
+
+def _quote_for_interactive(value: str) -> str:
+    """Quote one argument for a ``security -i`` command line.
+
+    ``security -i`` reads commands from stdin and splits them like a shell:
+    a double-quoted value may hold spaces, with ``\\`` and ``"`` escaped. A
+    line break would end the command early (and could start another), so it
+    is rejected rather than stored as something else. (#469)
+    """
+    if any(char in value for char in "\n\r\0"):
+        raise MailKeychainError(
+            "Keychain values can't contain line breaks or NUL characters."
+        )
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def _raise_security_failure(
@@ -208,9 +226,10 @@ def set_imap_password(
 
     Uses ``security add-generic-password ... -U`` so re-running with a
     new password updates the existing entry instead of failing with a
-    duplicate-item error. The password is passed as an argument to
-    ``security`` (no shell interpolation, no env var); ``subprocess.run``
-    keeps it out of any shell history.
+    duplicate-item error. The command goes to ``security -i`` on stdin, so
+    the password never appears in a process's arguments, which any local
+    user can read with ``ps`` (#469). ``security -i`` reports the command's
+    exit status and stderr as a direct call would.
 
     Args:
         mail_app_account: Mail.app account name (e.g. "iCloud", "Gmail").
@@ -219,23 +238,19 @@ def set_imap_password(
 
     Raises:
         MailKeychainAccessDeniedError: ACL or user denial.
-        MailKeychainError: Any other ``security(1)`` failure.
+        MailKeychainError: Any other ``security(1)`` failure, or a value
+            containing a line break or NUL character.
     """
     # Writes go to the new prefix only (#337); no legacy fallback on writes.
     service = SERVICE_NAME_PREFIX + mail_app_account
-    result = _run_security(
-        [
-            "security",
-            "add-generic-password",
-            "-s",
-            service,
-            "-a",
-            email,
-            "-w",
-            password,
-            "-U",
-        ]
+    quoted_service = _quote_for_interactive(service)
+    quoted_email = _quote_for_interactive(email)
+    quoted_password = _quote_for_interactive(password)
+    command = (
+        f"add-generic-password -U -s {quoted_service} -a {quoted_email} "
+        f"-w {quoted_password}\n"
     )
+    result = _run_security(["security", "-i"], stdin=command)
     if result.returncode == 0:
         return
     _raise_security_failure(result, service, email, "add-generic-password")
