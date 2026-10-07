@@ -8382,6 +8382,16 @@ class TestResolveImplicitAccount:
     def connector(self) -> AppleMailConnector:
         return AppleMailConnector(timeout=30)
 
+    @pytest.fixture(autouse=True)
+    def _no_ambient_default_account(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A developer who has adopted MAIL_DEFAULT_ACCOUNT via their shell
+        profile (the documented per-session usage) must not make the
+        no-env-var cases below flaky. Tests that want the var set do so
+        explicitly via monkeypatch.setenv, which overrides this."""
+        monkeypatch.delenv("MAIL_DEFAULT_ACCOUNT", raising=False)
+
     def test_single_enabled_account_returns_name(
         self, connector: AppleMailConnector
     ) -> None:
@@ -8427,6 +8437,91 @@ class TestResolveImplicitAccount:
         with patch.object(
             AppleMailConnector, "list_accounts",
             side_effect=RuntimeError("osascript boom"),
+        ):
+            assert connector._resolve_implicit_account() is None
+
+    def test_multi_account_honors_default_account_env_var(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """MAIL_DEFAULT_ACCOUNT lets >1-account setups engage the clean IMAP
+        path without every caller passing from_account (#321 follow-up)."""
+        monkeypatch.setenv("MAIL_DEFAULT_ACCOUNT", "Gmail")
+        with patch.object(
+            AppleMailConnector, "list_accounts",
+            return_value=[
+                {"name": "iCloud", "enabled": True},
+                {"name": "Gmail", "enabled": True},
+            ],
+        ):
+            assert connector._resolve_implicit_account() == "Gmail"
+
+    def test_default_account_env_var_matches_by_uuid(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same-named accounts (e.g. two "Gmail" entries) are only
+        disambiguated by id/UUID, so the env var must accept one — same as
+        from_account itself."""
+        monkeypatch.setenv("MAIL_DEFAULT_ACCOUNT", "uuid-of-second-gmail")
+        with patch.object(
+            AppleMailConnector, "list_accounts",
+            return_value=[
+                {"id": "uuid-of-first-gmail", "name": "Gmail", "enabled": True},
+                {"id": "uuid-of-second-gmail", "name": "Gmail", "enabled": True},
+            ],
+        ):
+            assert (
+                connector._resolve_implicit_account() == "uuid-of-second-gmail"
+            )
+
+    def test_default_account_env_var_overrides_sole_enabled_account(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MAIL_DEFAULT_ACCOUNT", "iCloud")
+        with patch.object(
+            AppleMailConnector, "list_accounts",
+            return_value=[{"name": "iCloud", "enabled": True}],
+        ):
+            assert connector._resolve_implicit_account() == "iCloud"
+
+    def test_default_account_env_var_unmatched_name_falls_back(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An env var naming an account that doesn't exist (or isn't
+        enabled) must not be trusted blindly — fall back to the existing
+        sole-enabled-account heuristic instead."""
+        monkeypatch.setenv("MAIL_DEFAULT_ACCOUNT", "Nonexistent")
+        with patch.object(
+            AppleMailConnector, "list_accounts",
+            return_value=[
+                {"name": "iCloud", "enabled": True},
+                {"name": "Gmail", "enabled": True},
+            ],
+        ):
+            assert connector._resolve_implicit_account() is None
+
+    def test_default_account_env_var_disabled_account_falls_back(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MAIL_DEFAULT_ACCOUNT", "OldPOP")
+        with patch.object(
+            AppleMailConnector, "list_accounts",
+            return_value=[
+                {"name": "iCloud", "enabled": True},
+                {"name": "OldPOP", "enabled": False},
+            ],
+        ):
+            assert connector._resolve_implicit_account() == "iCloud"
+
+    def test_default_account_env_var_empty_string_ignored(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MAIL_DEFAULT_ACCOUNT", "   ")
+        with patch.object(
+            AppleMailConnector, "list_accounts",
+            return_value=[
+                {"name": "iCloud", "enabled": True},
+                {"name": "Gmail", "enabled": True},
+            ],
         ):
             assert connector._resolve_implicit_account() is None
 
