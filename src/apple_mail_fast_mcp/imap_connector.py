@@ -22,7 +22,9 @@ See ``docs/plans/2026-04-23-imap-connector-design.md``.
 
 from __future__ import annotations
 
+import base64 as _base64
 import logging
+import quopri as _quopri
 import re
 import threading
 import time
@@ -46,7 +48,7 @@ from .exceptions import (
     MailImapTrashNotFoundError,
     MailMessageNotFoundError,
 )
-from .utils import parse_rfc822_ids
+from .utils import DEFAULT_MAX_BODY_BYTES, parse_rfc822_ids
 
 logger = logging.getLogger(__name__)
 
@@ -742,6 +744,73 @@ def _leaf_has_attachment(structure: tuple[Any, ...]) -> bool:
     return any(_disposition_marks_attachment(elem) for elem in structure)
 
 
+def _bodystructure_text_parts(structure: Any) -> list[dict[str, Any]]:
+    """Return the body's text parts, numbered per RFC 3501 §6.4.5.
+
+    Lets a caller that only wants the body skip downloading attachments with
+    it (#473). A text part carrying an ``attachment`` disposition is someone's
+    attached .txt, not body text, so it is left out. Returns ``[]`` when the
+    structure is missing or unparseable — the caller then falls back to the
+    full fetch.
+    """
+    out: list[dict[str, Any]] = []
+
+    def _is_attachment(leaf: tuple[Any, ...]) -> bool:
+        return any(
+            isinstance(e, tuple) and e and isinstance(e[0], bytes)
+            and e[0].lower() == b"attachment"
+            for e in leaf
+        )
+
+    def _charset_of(params: Any) -> str:
+        if isinstance(params, tuple):
+            for i in range(0, len(params) - 1, 2):
+                k = params[i]
+                if isinstance(k, bytes) and k.lower() == b"charset":
+                    v = params[i + 1]
+                    if isinstance(v, (bytes, bytearray)):
+                        return _decode(v)
+        return "utf-8"
+
+    def _walk(node: Any, prefix: str) -> None:
+        if not isinstance(node, tuple) or not node:
+            return
+        if isinstance(node[0], list):
+            for i, child in enumerate(node[0], 1):
+                _walk(child, f"{prefix}.{i}" if prefix else str(i))
+            return
+        if not isinstance(node[0], bytes) or len(node) < 7:
+            return
+        if node[0].lower() != b"text" or _is_attachment(node):
+            return
+        out.append({
+            "part": prefix or "1",
+            "subtype": _decode(node[1]).lower() if len(node) > 1 else "plain",
+            "encoding": _decode(node[5]).lower() if len(node) > 5 else "",
+            "charset": _charset_of(node[2] if len(node) > 2 else ()),
+        })
+
+    _walk(structure, "")
+    return out
+
+
+def _decode_body_part(raw: bytes, encoding: str, charset: str) -> str:
+    """Undo one part's transfer encoding and character set."""
+    try:
+        if encoding == "base64":
+            data = _base64.b64decode(bytes(raw), validate=False)
+        elif encoding in ("quoted-printable", "quotedprintable"):
+            data = _quopri.decodestring(bytes(raw))
+        else:
+            data = bytes(raw)
+    except Exception:  # noqa: BLE001 — a malformed part must not fail the fetch
+        data = bytes(raw)
+    try:
+        return data.decode(charset or "utf-8", "replace")
+    except LookupError:
+        return data.decode("utf-8", "replace")
+
+
 def _bodystructure_has_attachment(structure: Any) -> bool:
     """Walk an IMAPClient-parsed BODYSTRUCTURE tree and detect attachments.
 
@@ -878,6 +947,7 @@ def _build_get_message_result(
     want_body: bool,
     text_mode: bool,
     include_attachments: bool,
+    content: str | None = None,
 ) -> dict[str, Any]:
     """Assemble the get_message response dict from a single FETCH entry.
 
@@ -889,7 +959,10 @@ def _build_get_message_result(
     index contract); otherwise both fall back to the legacy behavior."""
     result = _envelope_to_dict(entry[b"ENVELOPE"], tuple(entry.get(b"FLAGS", ())))
     body_bytes = b""
-    if want_body:
+    if content is not None:
+        # Body already assembled from the text parts alone (#473).
+        result["content"] = content
+    elif want_body:
         body_bytes = _select_body_bytes(entry, body_key)
         result["content"] = (
             _extract_text_body(body_bytes) if text_mode else _decode(body_bytes)
@@ -1164,6 +1237,15 @@ class ImapConnector:
         if include_attachments and not have_full_body:
             fetch_keys.append(b"BODYSTRUCTURE")
 
+        # #473: when nobody asked for attachment metadata, a large message
+        # does not need to come down whole just to yield its text. Ask what
+        # the parts are and how big the message is first; the decision costs
+        # one cheap FETCH and is made below, after we see the size.
+        probe_parts = want_body and text_mode and not include_attachments
+        if probe_parts:
+            fetch_keys = [k for k in fetch_keys if k != body_key]
+            fetch_keys += [b"BODYSTRUCTURE", b"RFC822.SIZE"]
+
         with self._session() as client:
             client.select_folder(mailbox, readonly=True)
 
@@ -1185,13 +1267,55 @@ class ImapConnector:
                     f"{mailbox!r} between SEARCH and FETCH."
                 )
 
+            content: str | None = None
+            if probe_parts:
+                content = self._text_only_body(client, uids[0], entry)
+                if content is None:
+                    # Small message, or a structure we could not read —
+                    # the single full fetch is the right shape after all.
+                    entry.update(
+                        client.fetch(uids[:1], [body_key]).get(uids[0], {})
+                    )
+
             return _build_get_message_result(
                 entry,
                 body_key,
                 want_body=want_body,
                 text_mode=text_mode,
                 include_attachments=include_attachments,
+                content=content,
             )
+
+    def _text_only_body(
+        self, client: Any, uid: int, entry: dict[bytes, Any]
+    ) -> str | None:
+        """Fetch just the text parts of a large message (#473).
+
+        Returns ``None`` when the full fetch should be used instead: the
+        message is small enough that one round trip beats two, or its
+        BODYSTRUCTURE names no text part we can address.
+
+        The size gate is ``DEFAULT_MAX_BODY_BYTES`` because that is what the
+        body is truncated to anyway — above it, part of the download is
+        discarded by definition.
+        """
+        size = entry.get(b"RFC822.SIZE")
+        if not isinstance(size, int) or size <= DEFAULT_MAX_BODY_BYTES:
+            return None
+        parts = _bodystructure_text_parts(entry.get(b"BODYSTRUCTURE"))
+        plain = [p for p in parts if p["subtype"] == "plain"]
+        chosen = plain or parts
+        if not chosen:
+            return None
+
+        keys = [f"BODY.PEEK[{p['part']}]".encode() for p in chosen]
+        fetched = client.fetch([uid], keys).get(uid, {}) or {}
+        chunks = [
+            _decode_body_part(raw, p["encoding"], p["charset"])
+            for p in chosen
+            if (raw := fetched.get(f"BODY[{p['part']}]".encode()))
+        ]
+        return "\n\n".join(chunks) if chunks else None
 
     def fetch_raw_message(
         self, message_id: str, mailbox: str = "INBOX"

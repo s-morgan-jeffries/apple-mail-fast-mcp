@@ -1120,21 +1120,31 @@ class TestGetMessage:
     def test_default_fetch_keys_include_full_body(
         self, mock_cls: MagicMock
     ) -> None:
-        """Default body_format='text' → fetch ENVELOPE + FLAGS + BODY[] (the
-        whole message, so the body is MIME-parsed server-side and attachment
-        bytes are dropped from ``content``)."""
+        """Default body_format='text' still lands on BODY[] — the whole
+        message, so the body is MIME-parsed here and attachment bytes are
+        dropped from ``content``.
+
+        Since #473 that happens in two steps when no attachment metadata was
+        asked for: the first FETCH carries ENVELOPE + FLAGS + BODYSTRUCTURE +
+        RFC822.SIZE, and BODY[] follows only if the message is small enough
+        (or its structure unreadable) for the full fetch to be the right
+        shape. This mock reports no size, which is the unreadable case.
+        """
         self._setup_client(mock_cls)
 
         ImapConnector("h", 993, "u@e.com", "pw").get_message(
             "abc@x", mailbox="INBOX",
         )
 
-        fetch_keys = mock_cls.return_value.fetch.call_args[0][1]
-        assert b"ENVELOPE" in fetch_keys
-        assert b"FLAGS" in fetch_keys
-        assert b"BODY[]" in fetch_keys
-        assert b"BODY[TEXT]" not in fetch_keys
-        assert b"BODY[HEADER]" not in fetch_keys
+        calls = mock_cls.return_value.fetch.call_args_list
+        first_keys = calls[0][0][1]
+        assert b"ENVELOPE" in first_keys
+        assert b"FLAGS" in first_keys
+        assert b"BODY[TEXT]" not in first_keys
+        assert b"BODY[HEADER]" not in first_keys
+
+        all_keys = [k for call in calls for k in call[0][1]]
+        assert b"BODY[]" in all_keys
 
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_raw_body_format_fetches_legacy_body_text(
@@ -3962,3 +3972,141 @@ class TestResolveAnchor:
         client.search.return_value = []
         conn = ImapConnector("h", 993, "e@x", "pw")
         assert conn.resolve_anchor("nope@x") is None
+
+
+# BODYSTRUCTURE in the shape imapclient parses, for a message whose size is
+# dominated by one attachment:
+#   multipart/mixed
+#     1   text/plain  base64   1,206 B
+#     2   application/pdf base64 6,398,000 B
+_T473_TEXT = (
+    b"text", b"plain", (b"charset", b"utf-8"), None, None, b"base64", 1206, 30,
+)
+_T473_PDF = (
+    b"application", b"pdf", (b"name", b"big.pdf"), None, None, b"base64",
+    6398000, (b"attachment", (b"filename", b"big.pdf")),
+)
+_T473_STRUCTURE = ([_T473_TEXT, _T473_PDF], b"mixed")
+_T473_SIZE = 6_400_201
+
+
+class TestLargeMessageSkipsAttachmentDownload:
+    """get_message must not pull attachments down to return a body (#473).
+
+    Text mode fetches BODY[] so attachment metadata can come from parsing the
+    whole message, which is more reliable than BODYSTRUCTURE. That is worth
+    paying for when the caller asked for attachments — and wasted when it did
+    not: a 6.4MB message took 128s to fetch where its text part alone took
+    11s, and the body is truncated to DEFAULT_MAX_BODY_BYTES afterwards
+    regardless.
+    """
+
+    def _client(
+        self, mock_cls: MagicMock, *, size: int, text: bytes = "本文".encode(),
+    ) -> MagicMock:
+        import base64
+
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.search.return_value = [42]
+        encoded = base64.b64encode(text)
+
+        def _fetch(uids, keys):
+            entry: dict[bytes, Any] = {}
+            for k in keys:
+                key = k if isinstance(k, bytes) else k.encode()
+                if key == b"ENVELOPE":
+                    entry[b"ENVELOPE"] = _fake_envelope()
+                elif key == b"FLAGS":
+                    entry[b"FLAGS"] = (b"\\Seen",)
+                elif key == b"BODYSTRUCTURE":
+                    entry[b"BODYSTRUCTURE"] = _T473_STRUCTURE
+                elif key == b"RFC822.SIZE":
+                    entry[b"RFC822.SIZE"] = size
+                elif key == b"BODY.PEEK[1]":
+                    entry[b"BODY[1]"] = encoded
+                elif key in (b"BODY[]", b"BODY.PEEK[]"):
+                    entry[b"BODY[]"] = b"full message with the attachment"
+            return {42: entry}
+
+        client.fetch.side_effect = _fetch
+        return client
+
+    def _requested(self, client: MagicMock) -> list[bytes]:
+        return [k for call in client.fetch.call_args_list for k in call[0][1]]
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_large_message_fetches_only_the_text_part(
+        self, mock_cls: MagicMock
+    ) -> None:
+        client = self._client(mock_cls, size=_T473_SIZE)
+        conn = ImapConnector("h", 993, "e@x", "pw")
+
+        msg = conn.get_message("m@x", include_content=True)
+
+        assert msg["content"] == "本文"
+        requested = self._requested(client)
+        assert b"BODY.PEEK[1]" in requested
+        assert b"BODY[]" not in requested
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_small_message_is_unchanged(self, mock_cls: MagicMock) -> None:
+        """Below the cap the single full fetch is still the cheaper shape."""
+        client = self._client(mock_cls, size=2048)
+        conn = ImapConnector("h", 993, "e@x", "pw")
+
+        conn.get_message("m@x", include_content=True)
+
+        assert b"BODY[]" in self._requested(client)
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_attachments_requested_still_parses_the_whole_message(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """The reliability argument for the full fetch is untouched."""
+        client = self._client(mock_cls, size=_T473_SIZE)
+        conn = ImapConnector("h", 993, "e@x", "pw")
+
+        conn.get_message("m@x", include_content=True, include_attachments=True)
+
+        assert b"BODY[]" in self._requested(client)
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_raw_mode_is_unchanged(self, mock_cls: MagicMock) -> None:
+        client = self._client(mock_cls, size=_T473_SIZE)
+        conn = ImapConnector("h", 993, "e@x", "pw")
+
+        conn.get_message("m@x", include_content=True, body_format="raw")
+
+        assert b"BODY[1]" not in self._requested(client)
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_unusable_structure_falls_back_to_the_full_fetch(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """A server whose BODYSTRUCTURE we cannot read must still return a body."""
+        client = self._client(mock_cls, size=_T473_SIZE)
+
+        def _fetch(uids, keys):
+            entry: dict[bytes, Any] = {}
+            for k in keys:
+                key = k if isinstance(k, bytes) else k.encode()
+                if key == b"ENVELOPE":
+                    entry[b"ENVELOPE"] = _fake_envelope()
+                elif key == b"FLAGS":
+                    entry[b"FLAGS"] = (b"\\Seen",)
+                elif key == b"BODYSTRUCTURE":
+                    entry[b"BODYSTRUCTURE"] = b"not a structure"
+                elif key == b"RFC822.SIZE":
+                    entry[b"RFC822.SIZE"] = _T473_SIZE
+                elif key in (b"BODY[]", b"BODY.PEEK[]"):
+                    entry[b"BODY[]"] = b"Subject: x\r\n\r\nfallback body"
+            return {42: entry}
+
+        client.fetch.side_effect = _fetch
+        conn = ImapConnector("h", 993, "e@x", "pw")
+
+        msg = conn.get_message("m@x", include_content=True)
+
+        assert "fallback body" in msg["content"]
+        assert b"BODY[]" in self._requested(client)
