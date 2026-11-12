@@ -6653,7 +6653,9 @@ class TestCreateDraft:
             body="thanks",
         )
         script = mock_run.call_args[0][0]
-        assert "reply to all origMsg opening window false" in script
+        assert "reply origMsg opening window false reply to all true" in script
+        # "reply to all" is a parameter of `reply`, never the verb (-2741).
+        assert "reply to all origMsg" not in script
 
     @patch.object(AppleMailConnector, "_run_applescript")
     def test_reply_body_overrides_auto_content(
