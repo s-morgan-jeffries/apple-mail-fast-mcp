@@ -5235,7 +5235,8 @@ class AppleMailConnector:
 
         The reply/forward branches share the cross-account ``whose id
         is "{seed_id_safe}"`` lookup pattern, differing only in the
-        Mail.app verb (``reply`` / ``reply to all`` / ``forward``).
+        Mail.app command (``reply`` / ``reply ... reply to all true`` /
+        ``forward``).
         ``seed_id_safe`` is expected to be Mail's internal id —
         callers route RFC 5322 ids through
         ``_maybe_resolve_rfc_seed_id`` first (#205). (#193)
@@ -5245,10 +5246,18 @@ class AppleMailConnector:
                 f'set theMessage to make new outgoing message with properties '
                 f'{{subject:"{subject_safe}", content:"{body_safe}", visible:false}}'
             )
+        # Mail's dictionary: `reply <msg> [opening window bool] [reply to all
+        # bool]` and `forward <msg> [opening window bool]`. "reply to all" is
+        # a boolean PARAMETER of `reply`, not a verb: emitting
+        # `reply to all origMsg ...` fails to compile (-2741). Forward takes
+        # no reply-all parameter.
         if seed == "reply":
-            verb = "reply to all" if reply_all else "reply"
+            verb_clause = (
+                "reply origMsg opening window false"
+                + (" reply to all true" if reply_all else "")
+            )
         else:  # forward
-            verb = "forward"
+            verb_clause = "forward origMsg opening window false"
         # #432: this used to walk `accounts x mailboxes`, re-finding a message
         # its caller had just resolved. Mail's `id` is an INDEXED integer, so
         # probing the two unified mailboxes (locale-independent aggregations
@@ -5274,7 +5283,7 @@ class AppleMailConnector:
                 end try
             end if
             if origMsg is missing value then error "SEED_NOT_FOUND"
-            set theMessage to {verb} origMsg opening window false
+            set theMessage to {verb_clause}
         """
 
     def _create_draft_via_imap(
